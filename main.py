@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from aggregation_layer import AggregationLayer
     from top_face_overlay import TopFaceOverlay
     from transition_layer import TransitionLayer
+    from paper_stages import StageResult
 
 input_shp = "C:/University/PhD/Papers/Third Journal Paper/QGIS/OSM/BuildingFootprintStep0.shp"
 POLYGON_IDS = [3000, 3001, 3002, 3003, 3004]
@@ -373,10 +374,47 @@ def _run_aggregation_preview(args):
     return preview
 
 
-def main(argv=None) -> ExtrusionModel | AggregationPreview:
+def _run_paper(args):
+    from copy import copy
+    from paper_stages import build_paper_stage
+    paper_args = copy(args)
+    paper_args.aggregation_ids = args.ids if args.transformation == "aggregation" else None
+    paper_args.transition_ids = args.ids if args.transformation != "aggregation" else None
+    if args.no_overlay or args.no_triangulation or args.no_transition:
+        raise ValueError("Use --step in the paper viewer, or select --scene transition for legacy stage flags.")
+    stage = build_paper_stage(paper_args, args.transformation, args.step)
+    print(f"Paper: {stage.transformation} / {stage.spec.id} | {stage.kind} | sources={', '.join(stage.sources)}")
+    if not args.no_show or args.preview or args.export_paper:
+        if args.no_show:
+            import matplotlib
+            matplotlib.use("Agg")
+        from paper_session import PaperSession
+        session = PaperSession(paper_args, stage=stage)
+        if args.preview:
+            args.preview.parent.mkdir(parents=True, exist_ok=True)
+            session.figure.savefig(args.preview, dpi=160)
+            print(f"Viewer preview saved to {args.preview.resolve()}")
+        if args.export_paper:
+            paths = session.export_figure()
+            if paths is None:
+                raise ValueError(session.status.get_text())
+            print("Paper figure saved: " + ", ".join(str(path) for path in paths))
+        if not args.no_show:
+            session.show()
+        else:
+            import matplotlib.pyplot as plt
+            plt.close(session.figure)
+    return stage.model if stage.model is not None else stage
+
+
+def main(argv=None) -> ExtrusionModel | AggregationPreview | StageResult:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--scene", choices=("aggregation", "aggregation-preview", "transition"), default="aggregation",
-                        help="Default: 3D aggregation. Preview shows geometry; transition opens the existing source/target scene.")
+    parser.add_argument("--scene", choices=("paper", "aggregation", "aggregation-preview", "transition"), default="paper",
+                        help="Default: paper viewer with transformation and step dropdowns. Legacy scenes remain available.")
+    parser.add_argument("--transformation", choices=("polygon", "point", "polyline", "aggregation"), default="aggregation")
+    parser.add_argument("--step", default="final", help="Paper step ID, e.g. input, triangulation, inclined, shell, final.")
+    parser.add_argument("--figure-dir", type=Path, default=Path("artifacts/paper_figures"))
+    parser.add_argument("--export-paper", action="store_true", help="Export clean PNG/SVG and settings JSON for the selected paper step.")
     parser.add_argument("--input-shp", default=input_shp)
     parser.add_argument("--ids", nargs="+", help="Source IDs; defaults depend on the selected scene.")
     parser.add_argument("--z-down", type=float, default=0.0, help="Base elevation in metres.")
@@ -394,6 +432,11 @@ def main(argv=None) -> ExtrusionModel | AggregationPreview:
     parser.add_argument("--no-show", action="store_true", help="Validate without opening a window.")
     parser.add_argument("--preview", type=Path, help="Save a PNG of the interactive viewer.")
     args = parser.parse_args(argv)
+    if args.scene == "paper":
+        try:
+            return _run_paper(args)
+        except (ValueError, FileNotFoundError) as exc:
+            parser.error(str(exc))
     if args.ids is None:
         args.ids = POLYGON_IDS if args.scene == "transition" else AGGREGATION_IDS
     try:

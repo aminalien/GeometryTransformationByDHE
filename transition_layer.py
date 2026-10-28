@@ -431,6 +431,26 @@ class ProjectionRegion:
         return self.region_id
 
 
+def merge_transition_shells(model, upper_plans, source_z, base_faces=None):
+    """Plan the surviving boundary without allocating or editing DHE records."""
+    bottom_z = min(e.V.z for e in model.active_edges())
+    plans = {}
+    for cell in model.cells:
+        owner = cell.feature_id
+        shell = [p for p in upper_plans[owner] if p.part != "lower_cap"]
+        original = (base_faces[owner] if base_faces is not None else [
+            [(e.V.x, e.V.y, e.V.z) for e in face_edges(face)]
+            for face in dhe.get_UniqueFace_in_cell(cell.seed)])
+        for points in original:
+            if all(p[2] == source_z for p in points):
+                continue
+            part = "bottom_cap" if all(p[2] == bottom_z for p in points) else "base_wall"
+            shell.append(_FacetPlan(points, part, None, part, False))
+        _check_shell(shell)
+        plans[owner] = shell
+    return plans
+
+
 def build_transition_layer(model: ExtrusionModel, target_z: float = 10.0, *,
                            target=None, source_id="3000", source_z=5.0) -> TransitionLayer:
     """Union base and upper boundaries into one closed DHE cell per feature."""
@@ -449,25 +469,14 @@ def build_transition_layer(model: ExtrusionModel, target_z: float = 10.0, *,
     neighbours = {frozenset((str(a.D.V.i), str(b.D.V.i))) for a, b in model.shared_walls}
     expected = {owner: volumes[owner] + _planned_volume(shell)
                 for owner, shell in upper_plans.items()}
-    plans = {}
     # The union removes both coincident sides of every Z=source partition.
     # Rebuild the surviving boundary using a single dual vertex, including caps
     # as polygon faces. No hidden second cell or internal horizontal face remains.
-    for cell in model.cells:
-        owner = cell.feature_id
-        shell = [p for p in upper_plans[owner] if p.part != "lower_cap"]
-        base_faces = (prepared.base_faces[owner] if prepared else [
-            [(e.V.x, e.V.y, e.V.z) for e in face_edges(face)]
-            for face in dhe.get_UniqueFace_in_cell(cell.seed)])
-        for points in base_faces:
-            if all(p[2] == overlay.height for p in points):
-                continue
-            part = "bottom_cap" if all(p[2] == bottom_z for p in points) else "base_wall"
-            shell.append(_FacetPlan(points, part, None, part, False))
-        _check_shell(shell)
+    plans = merge_transition_shells(model, upper_plans, overlay.height,
+                                    prepared.base_faces if prepared else None)
+    for owner, shell in plans.items():
         if abs(_planned_volume(shell) - expected[owner]) > max(AREA_TOLERANCE, expected[owner]*1e-9):
             raise ValueError("A merged shell changes its feature volume.")
-        plans[owner] = shell
     projection_regions = prepared.projection_regions if prepared else [
         ProjectionRegion(r.cell_id, r.region_id, r.geometry, r.kind,
                          r.kind in (RegionKind.ACTIVE_TARGET_ONLY, RegionKind.COMMON_NONACTIVE))

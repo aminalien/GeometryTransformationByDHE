@@ -1,4 +1,4 @@
-# 3D polygon aggregation and DHE transitions
+# DHE paper viewer, 3D aggregation and transitions
 
 Run `main.py` in PyCharm, or:
 
@@ -6,7 +6,10 @@ Run `main.py` in PyCharm, or:
 .\.venv\Scripts\python.exe main.py
 ```
 
-The default scene constructs one 3D aggregate from features **8, 9, 17, 18, 21, 1123**.
+On the **paper** branch, the default scene is a single paper viewer with
+**Transformation** and **Implementation step** dropdowns. It starts at
+**Aggregation → Final single-cell DHE**, using features **8, 9, 17, 18, 21, 1123**.
+Use `--scene aggregation` for the original aggregate-only viewer.
 Use `--scene aggregation-preview` for the geometry-only preview.
 Use `--scene transition` for the existing 3D polygon, point and polyline workflow.
 
@@ -16,6 +19,72 @@ transforms to the target at Z=10. The model contains **five merged DHE cells**.
 
 The shapefiles are read only. Geometry is projected to **EPSG:32633**, shifted
 by a common XY origin, and measured in metres.
+
+## Paper viewer and implementation steps
+
+The transformation dropdown switches between polygon → polygon, polygon → point,
+polygon → polyline, and aggregation. The first three use cells **3000–3004** and
+source **3000**, with polygon **3006**, the source centroid, or polyline **3001**
+from the existing line shapefile as target. Aggregation uses the six IDs above.
+Each family remembers its last selected step. Source extents are fitted when
+families change; the camera and fixed world bounds are retained across its steps.
+
+| Family | Ordered step IDs (dropdown labels are descriptive) |
+| --- | --- |
+| Polygon → polygon | `input`, `overlay`, `regions`, `triangulation`, `inclined`, `final` |
+| Polygon → point | `input`, `triangulation`, `inclined`, `shell`, `final` |
+| Polygon → polyline | `input`, `extensions`, `triangulation`, `inclined`, `shell`, `final` |
+| Aggregation | `input`, `gaps`, `skeleton`, `partitions`, `inclined`, `shell`, `final` |
+
+**DHE state** identifies an actual live DHE model with half-edge navigation,
+dual display, current-face selection, and the existing `x`/`l` shading behavior.
+**Geometry preview** identifies planning data from the same routines used by the
+production builders. These previews do not claim sewn topology and do not offer
+DHE navigation. Geometry facets can be picked in XY for inspection.
+
+The polygon overlay, region classification, and temporary MEF triangulation are
+distinct stages. Point/polyline flat fan/strip views are geometric projections
+of their production plans, not new DHE roof subdivisions. Polyline extensions
+and chain regions come directly from collapse preparation. Aggregate skeleton
+faces, top ownership partitions, lifted faces, and complete shell plans are
+shown before the actual one-cell DHE construction.
+
+Final models retain the horizontal/vertical/inclined slicing controls. Their
+settings are remembered when leaving a final stage and restored on return.
+Earlier steps show a stage explanation in place of the section controls.
+Failed stage construction or rendering restores the previous model and controls.
+
+**Export figure** saves the current 3D and XY views together without widgets.
+**Export section** saves the cross-section alone and is active on final models.
+Each export produces a **300-dpi PNG**, **vector SVG**, and **settings JSON** in
+`artifacts/paper_figures/<transformation>/`, with a unique timestamped filename.
+The settings record IDs, stage, levels, origin, camera, colors, applicable
+selection/slicing state, and the current Git revision. Exports preserve the live
+display and DHE globals. The `--preview` option still saves the complete viewer
+including controls, which is useful for checking its layout.
+
+```powershell
+# Default interactive paper viewer
+.\.venv\Scripts\python.exe main.py
+
+# Start at a selected transformation and step
+.\.venv\Scripts\python.exe main.py --transformation polygon --step regions
+.\.venv\Scripts\python.exe main.py --transformation polyline --step extensions
+.\.venv\Scripts\python.exe main.py --transformation aggregation --step skeleton
+
+# Clean figure export without opening a window
+.\.venv\Scripts\python.exe main.py --transformation point --step inclined --no-show --export-paper
+
+# Choose an export directory, or save a viewer screenshot
+.\.venv\Scripts\python.exe main.py --figure-dir artifacts/my_paper_figures
+.\.venv\Scripts\python.exe main.py --no-show --preview artifacts/paper-viewer.png
+```
+
+`--ids` overrides the initial transformation's selected source set; switching to
+the other family group retains its historical default IDs. The original source,
+target, line and height flags remain available. Legacy stage flags such as
+`--no-triangulation` require `--scene transition`; the paper viewer uses `--step`.
+Paper-viewer code changes are published on **origin/paper**; **main** is unchanged.
 
 ## 3D aggregation
 
@@ -250,6 +319,12 @@ ordinary extrusion regardless of startup target kind.
 
 ## Callable API
 
+- `build_paper_stage(args, transformation, step)` returns a `StageResult` with
+  stable stage metadata, source geometry, fixed bounds and display plans. Its
+  `.model` is a live `ExtrusionModel` only for stages labeled **DHE state**.
+- `PaperSession(args, transformation="aggregation", step="final")` owns the
+  unified figure, `.switch_transformation()`, `.switch_stage()` and export.
+  `STAGES` in `paper_stages.py` defines all 24 supported combinations.
 - `construct_aggregation_model(path, ids, z_down=0, height=5, merge_z=9, target_z=10)`
   builds and validates one closed DHE aggregate. Heights are keyword-only.
 - `build_aggregation_model(preview, bottom_z=0, source_z=5, merge_z=9, top_z=10)`
@@ -266,8 +341,9 @@ ordinary extrusion regardless of startup target kind.
   union, hull, gap regions, labeled growth faces and skeleton arcs (with event
   times), per-source targets, meeting/hull target lines, and top partitions.
   `validate_aggregation(preview)` returns area coverage metrics.
-- `main()` returns an `ExtrusionModel` for `aggregation` (default) and
-  `transition`, or an `AggregationPreview` for `aggregation-preview`.
+- `main()` defaults to `paper`; it returns that stage's `ExtrusionModel` when
+  present, or its `StageResult` for geometry-only steps. Legacy `aggregation`
+  and `transition` return `ExtrusionModel`; `aggregation-preview` returns `AggregationPreview`.
   `--ids` defaults depend on the scene.
 - `construct_model(args, target_kind=...)` builds and validates a model without a viewer.
 - `build_model()`, `overlay_top_faces()`, and `triangulate_active_regions()`

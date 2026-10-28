@@ -77,6 +77,8 @@ class PreparedCollapse:
     context: TransitionContext
     role_by_xy: dict
     projection_regions: list
+    boundary_chains: list = field(default_factory=list)
+    endpoint_extensions: list = field(default_factory=list)
 
 
 def _node_loop(points, nodes, tolerance):
@@ -208,6 +210,7 @@ def prepare_collapse(model, target, source_id, source_z, target_z, tolerance=1e-
                 boundary[owner, tuple(sorted((first[:2],second[:2])))] = first[:2],second[:2],neighbour
     ring = list(orient(footprints[source_id], 1).exterior.coords)[:-1]
     triangles = []
+    chains = []
     if target.kind == "point":
         apex = (geometry.x, geometry.y, target_z)
         for a,b in zip(ring,ring[1:]+ring[:1]):
@@ -309,4 +312,5 @@ def prepare_collapse(model, target, source_id, source_z, target_z, tolerance=1e-
                RegionKind.ACTIVE_SOURCE_ONLY if owner == source_id else RegionKind.BACKGROUND,False)
                for owner,polygon in footprints.items()]
     context = TransitionContext(source_id,target.identifier,source_z,footprints,geometry,tolerance)
-    return PreparedCollapse(plans,base_faces,context,role_by_xy,regions)
+    return PreparedCollapse(plans,base_faces,context,role_by_xy,regions,chains,
+                            ends if target.kind == "polyline" else [])
