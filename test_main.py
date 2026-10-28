@@ -89,7 +89,7 @@ class ExtrusionTests(unittest.TestCase):
             model.active_edges(), dhe.Getdhe()[1], show=False, highlight_cells=True,
         )
         try:
-            self.assertEqual(len(viewer.cell_artists), 11)  # one shared face artist
+            self.assertEqual(len(viewer.cell_artists), 10)  # current face has its own fill
             start = viewer.e
             viewer.on_key(SimpleNamespace(key="f"))
             self.assertIs(viewer.e, start.NF)
@@ -109,8 +109,9 @@ class ExtrusionTests(unittest.TestCase):
             self.assertFalse(viewer.dual_edge_artists)
             viewer.on_key(SimpleNamespace(key="x"))
             self.assertFalse(viewer.cell_artists)
+            self.assertIsNotNone(viewer.selected_face_artist)
             viewer.on_key(SimpleNamespace(key="c"))
-            self.assertEqual(len(viewer.cell_artists), 6)
+            self.assertEqual(len(viewer.cell_artists), 5)
             viewer.on_key(SimpleNamespace(key="k"))
             self.assertIsNotNone(viewer.e)
             viewer.ax.view_init(elev=25, azim=45)

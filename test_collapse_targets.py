@@ -122,7 +122,7 @@ class CollapsedTargetTests(unittest.TestCase):
                 viewer.e = viewer.e.S
                 viewer._draw_highlight_line()
                 self.assertIsNot(selected,viewer.selected_face_artist)
-                self.assertEqual(selected.get_alpha(),0.42)
+                self.assertIsNone(selected.axes)
                 self.assertEqual(viewer.selected_face_artist.get_alpha(),0.5)
                 self.assertEqual(len(viewer.cell_artists),count)
                 self.assertFalse(viewer.face_halfedge_artists)

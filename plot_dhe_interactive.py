@@ -64,6 +64,11 @@ class DHEInteractivePlot:
         self.current_halfedge_line = None
         self.show_labels = True
         self.face_artist = None
+        self.selected_face_artist = None
+        self.current_face_fill_enabled = True
+        self._selected_face_key = None
+        self._selected_face_owner = None
+        self._selection_edge = seed_edge
         self.cell_artists = []
         self.ShownFacesList=[]
         self.hi_line = None
@@ -386,18 +391,26 @@ class DHEInteractivePlot:
         self._refresh_scene_colors()
 
     def _refresh_scene_colors(self):
+        # Some legacy navigation paths assign e directly. Treat an edge change
+        # as a fresh selection, including another edge of the same face.
+        if self.e is not self._selection_edge:
+            self._selection_edge = self.e
+            self.current_face_fill_enabled = True
         if not hasattr(self, "scene_faces"):
+            self._render_current_face()
             return
         focus = self._feature(self.e.D.V)
         exterior_focus = focus == "VINF"
         selected_key = tuple(sorted((e.V.x, e.V.y, e.V.z) for e in face_edges(self.e)))
-        self.selected_face_artist = None
-        for record in self.scene_faces.values():
+        for key, record in self.scene_faces.items():
             seeds = record["seeds"]
             incident = [e for e in seeds if self._feature(e.D.V) == focus]
             chosen = incident[0] if incident else min(seeds, key=lambda e: str(e.D.V.i))
             owner = self._feature(chosen.D.V)
-            visible = (bool(self.shaded_features) and not record["hidden"] and (
+            record["owner"] = "VINF" if exterior_focus else owner
+            # Selection owns this face independently, even after x or l.
+            # Keeping its background material hidden also prevents double fill.
+            visible = (key != selected_key and bool(self.shaded_features) and not record["hidden"] and (
                 record["exterior"] if exterior_focus else any(
                     self._feature(e.D.V) in self.shaded_features for e in seeds)))
             if not visible:
@@ -406,7 +419,6 @@ class DHEInteractivePlot:
                     record["artist"] = None
                 continue
             color = self.e.D.V.color if exterior_focus else chosen.D.V.color
-            record["owner"] = "VINF" if exterior_focus else owner
             if record["artist"] is None:
                 artist = Poly3DCollection(
                     [record["points"]], edgecolor=(0.15, 0.15, 0.15, 0.5),
@@ -414,12 +426,46 @@ class DHEInteractivePlot:
                 self.ax.add_collection3d(artist)
                 record["artist"] = artist
             record["artist"].set_facecolor(color)
-            selected = tuple(sorted(record["points"])) == selected_key
-            record["artist"].set_alpha(0.50 if selected else 0.42)
-            if selected:
-                self.selected_face_artist = record["artist"]
+            record["artist"].set_alpha(0.42)
         self.cell_artists = [r["artist"] for r in self.scene_faces.values()
                              if r["artist"] is not None]
+        self._render_current_face()
+
+    def _remove_current_face_artist(self):
+        if self.face_artist is not None:
+            self.face_artist.remove()
+        self.face_artist = None
+        self.selected_face_artist = None
+        self._selected_face_key = None
+        self._selected_face_owner = None
+
+    def _render_current_face(self):
+        """Draw the selected face regardless of which cells are shaded."""
+        points = [(e.V.x, e.V.y, e.V.z) for e in face_edges(self.e)]
+        key = tuple(sorted(points))
+        if not self.current_face_fill_enabled or len(set(points)) < 3:
+            self._remove_current_face_artist()
+            return
+        if (key != self._selected_face_key or self.e.D.V is not self._selected_face_owner
+                or self.face_artist is None):
+            self._remove_current_face_artist()
+            if self.any3d:
+                self.face_artist = Poly3DCollection([points], edgecolor="none", alpha=0.50)
+                self.ax.add_collection3d(self.face_artist)
+            else:
+                self.face_artist = Poly2D([p[:2] for p in points], closed=True,
+                                         edgecolor="none", alpha=0.50)
+                self.ax.add_patch(self.face_artist)
+            self._selected_face_key = key
+            self._selected_face_owner = self.e.D.V
+        self.face_artist.set_facecolor(self.fix_color(self.e.D.V.color))
+        self.face_artist.set_alpha(0.50)
+        self.selected_face_artist = self.face_artist
+
+    def _clear_current_face_fill(self):
+        self.current_face_fill_enabled = False
+        self._refresh_scene_colors()
+        self.fig.canvas.draw_idle()
 
     def _highlight_cell_faces(self):
         if not hasattr(self, "scene_faces"):
@@ -1126,6 +1172,9 @@ class DHEInteractivePlot:
     def _set_current_edge(self, e):
         """Update the current edge and refresh visuals."""
         self.e = e
+        self._selection_edge = e
+        self.current_face_fill_enabled = True
+        self._refresh_scene_colors()
         self._store_view_state()
         # ... do any plotting or removing ...
         self.fig.canvas.draw_idle()
@@ -1146,9 +1195,6 @@ class DHEInteractivePlot:
         return tuple(float(x) for x in col[:4])
 
     def _update_face_fill(self, removePreviousFace=True):
-        if self.face_artist is not None:
-            self.face_artist.remove()
-            self.face_artist = None
         self._refresh_scene_colors()
         self.fig.canvas.draw_idle()
 
@@ -1422,19 +1468,19 @@ class DHEInteractivePlot:
             return
         check=True
         if k == 'f':
-            self.e = self.e.NF
+            self._set_current_edge(self.e.NF)
         elif k == 's':
-            self.e = self.e.S
+            self._set_current_edge(self.e.S)
         elif k == 'a':
-            self.e = self.e.Adjacent()
+            self._set_current_edge(self.e.Adjacent())
         elif k == 'd':
-            self.e = self.e.D
+            self._set_current_edge(self.e.D)
         elif k == 'v':
-            self.e = self.e.NV
+            self._set_current_edge(self.e.NV)
         elif k == 'o':
-            self.e = self.e.PrevF()
+            self._set_current_edge(self.e.PrevF())
         elif k == 'e':
-            self.e = self.e.NextE()
+            self._set_current_edge(self.e.NextE())
         elif k == 'z':
              print((self.e.V.x,self.e.V.y,self.e.V.z))
         elif k == 'c':
@@ -1451,12 +1497,7 @@ class DHEInteractivePlot:
         elif k == 'l':
             check=False
             self._clear_HilightedLine_Vertex()
-            if self.face_artist is not None:
-                try:
-                    self.face_artist.remove()
-                except Exception:
-                    pass
-                self.face_artist = None
+            self._clear_current_face_fill()
         elif k == 'h':
             self.show_labels = not self.show_labels
             for t in self.vert_labels:

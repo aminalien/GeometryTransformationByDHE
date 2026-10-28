@@ -47,15 +47,18 @@ separate **2D cross-section** panel.
 
 - Each feature has a stable colour for its faces and section fills.
 - The current half-edge is red. Its face uses the current cell colour at
-  **50% opacity (alpha 0.50)**. Selection reuses the physical face artist,
-  avoiding duplicate coplanar fills.
+  **50% opacity (alpha 0.50)**. Its independent fill remains visible even when
+  cell shading is cleared. The background fill for that face is omitted to
+  avoid duplicate coplanar layers.
 - The projection shows the current edge in red and its companion face edges in
   cyan. Vertical edges project to points. Companion edges are not highlighted in 3D.
 - Navigating to exterior dual vertex **VINF** colours the exterior shell purple.
 - Click a projected transition triangle or a 3D edge, or enter an **Edge ID**.
 - Drag 3D to rotate. `f`: next face edge; `s`: symmetric edge;
   `a`: adjacent cell; `v`: next vertex edge.
-- `c`: shade current feature; `x`: clear shading; `q` / Escape: close.
+- `c`: shade current feature; `x`: clear cell shading while retaining the current
+  face fill; `l`: clear the current face fill until the next half-edge selection
+  or navigation; `q` / Escape: close.
   Checkboxes display dual vertices and half-edges.
 
 Removed intermediate faces and cells are excluded from live navigation.

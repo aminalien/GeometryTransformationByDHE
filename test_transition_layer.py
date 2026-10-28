@@ -194,7 +194,8 @@ class TransitionLayerTests(unittest.TestCase):
             self.assertFalse(panel.selection_3d_lines)
             self.assertIsNone(viewer.hi_line)
             self.assertIsNone(viewer.vert_highlight)
-            self.assertIsNone(viewer.face_artist)
+            self.assertIs(viewer.face_artist, viewer.selected_face_artist)
+            self.assertIsNotNone(viewer.face_artist)
             self.assertEqual(len(panel.halfedge_2d_artists), 3)
             old = [viewer.current_halfedge_line, *panel.halfedge_2d_artists]
             viewer.on_key(SimpleNamespace(key="f"))
@@ -223,7 +224,8 @@ class TransitionLayerTests(unittest.TestCase):
                 viewer._set_current_edge(current)
                 viewer._draw_highlight_line()
                 self.assertEqual(record["owner"], current.D.V.logical_feature_id)
-                self.assertEqual(tuple(record["artist"].get_facecolor()[0][:3]),
+                self.assertIsNone(record["artist"])
+                self.assertEqual(tuple(viewer.selected_face_artist.get_facecolor()[0][:3]),
                                  current.D.V.color[:3])
             self.assertTrue(all(r["artist"] is None for r in viewer.scene_faces.values()
                                 if r["hidden"]))
@@ -253,7 +255,7 @@ class TransitionLayerTests(unittest.TestCase):
             self.assertEqual(viewer.current_halfedge_line.get_color(), HILIGHT_COLOR)
             viewer.on_key(SimpleNamespace(key="s"))
             self.assertFalse(viewer.face_halfedge_artists)
-            self.assertIsNone(viewer.face_artist)
+            self.assertIsNotNone(viewer.face_artist)
         finally:
             plt.close(viewer.fig)
 
