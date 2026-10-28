@@ -1,4 +1,4 @@
-# DHE polygon, point and polyline transitions
+# Polygon aggregation preview and DHE transitions
 
 Run `main.py` in PyCharm, or:
 
@@ -6,12 +6,61 @@ Run `main.py` in PyCharm, or:
 .\.venv\Scripts\python.exe main.py
 ```
 
-Defaults use features **3000–3004**, source **3000**, and **polyline 3001** from
+The default scene previews aggregation of features **8, 9, 17, 18, 21, 1123**.
+Use `--scene transition` for the existing 3D polygon, point and polyline workflow.
+
+The transition scene defaults use features **3000–3004**, source **3000**, and **polyline 3001** from
 `LineGenerlized.shp`. Source 3000 retains its footprint through Z=5, then
 transforms to the target at Z=10. The model contains **five merged DHE cells**.
 
 The shapefiles are read only. Geometry is projected to **EPSG:32633**, shifted
 by a common XY origin, and measured in metres.
+
+## Aggregation geometry preview
+
+The preview calculates the source union `UP`, its convex hull `CH`, and the
+transition regions `CH − UP`. For the supplied six features, `UP` has four
+components; the gap has two regions, including a region with two holes.
+The source area is **639.229820 m²**, the gap area **567.452314 m²**, and the
+convex-hull area **1206.682134 m²**.
+
+Source boundaries expand at equal normal speed while the hull stays fixed.
+The straight skeleton is calculated with `py_straight_skeleton==0.1.0` inside
+a distant temporary frame, using the source union components as holes.
+Bounded holes inside the union are handled as separate skeleton domains.
+This follows the [exterior-skeleton frame method](https://doc.cgal.org/latest/Straight_skeleton_2/index.html).
+Faces inherit the ID of their originating source edge; existing shared source
+boundaries do not generate fronts. The result is clipped to `CH`.
+
+The calculation rejects frame influence inside the hull and requires stable
+source ownership when the frame margin doubles. It verifies source preservation,
+zero area overlaps, and complete hull coverage. Failed skeleton calculations
+report an error rather than using an approximate substitute.
+
+Three aligned XY panels show:
+
+1. Colored source footprints, the convex hull, and numbered gap regions.
+2. Skeleton trajectories, red meeting targets, and purple hull targets.
+3. Six colored top partitions, with dotted original source outlines.
+
+**Merged outline** switches the third panel to one convex-hull polygon.
+This is a geometry preview: it neither allocates DHE cells nor creates transition
+triangles. The subsequent 3D stage will produce one aggregate DHE cell and retain
+the original source IDs as provenance.
+
+Only the selected IDs participate. Unselected feature **2001** intersects the
+hull by approximately **4.99 m²** and is not treated as an obstacle.
+
+```powershell
+# Default aggregation preview
+.\.venv\Scripts\python.exe main.py
+
+# Validate and export without opening a window
+.\.venv\Scripts\python.exe main.py --no-show --preview artifacts/aggregation-preview.png
+
+# Preview another selection
+.\.venv\Scripts\python.exe main.py --scene aggregation-preview --ids 8 17
+```
 
 ## Target geometry
 
@@ -127,25 +176,25 @@ failure recovery, settings preservation and callback cleanup.
 ## Startup options and earlier stages
 
 ```powershell
-# New default
-.\.venv\Scripts\python.exe main.py --target-kind polyline --line-id 3001
+# Existing 3D transition scene
+.\.venv\Scripts\python.exe main.py --scene transition --target-kind polyline --line-id 3001
 
 # Other target types
-.\.venv\Scripts\python.exe main.py --target-kind point
-.\.venv\Scripts\python.exe main.py --target-kind polygon --target-id 3006
+.\.venv\Scripts\python.exe main.py --scene transition --target-kind point
+.\.venv\Scripts\python.exe main.py --scene transition --target-kind polygon --target-id 3006
 
 # Custom elevations
-.\.venv\Scripts\python.exe main.py --z-down 0 --height 5 --target-z 10
+.\.venv\Scripts\python.exe main.py --scene transition --z-down 0 --height 5 --target-z 10
 
 # Earlier polygon overlay/triangulation stages
-.\.venv\Scripts\python.exe main.py --target-kind polygon --no-transition
-.\.venv\Scripts\python.exe main.py --target-kind polygon --no-triangulation
+.\.venv\Scripts\python.exe main.py --scene transition --target-kind polygon --no-transition
+.\.venv\Scripts\python.exe main.py --scene transition --target-kind polygon --no-triangulation
 
 # Ordinary extrusion
-.\.venv\Scripts\python.exe main.py --ids 2001 2002 --height 10 --no-overlay
+.\.venv\Scripts\python.exe main.py --scene transition --ids 2001 2002 --height 10 --no-overlay
 
 # Save a preview and run checks
-.\.venv\Scripts\python.exe main.py --no-show --preview artifacts/polyline-collapse.png
+.\.venv\Scripts\python.exe main.py --scene transition --no-show --preview artifacts/polyline-collapse.png
 .\.venv\Scripts\python.exe -m unittest -v
 ```
 
@@ -156,6 +205,15 @@ ordinary extrusion regardless of startup target kind.
 
 ## Callable API
 
+- `construct_aggregation_preview(path, ids)` loads projected sources and returns
+  an `AggregationPreview` without modifying global DHE state.
+- `build_aggregation_preview(sources, origin=(0, 0), tolerance=1e-6)` accepts a
+  source-ID-to-local-Polygon mapping. The result exposes source geometries,
+  union, hull, gap regions, labeled growth faces and skeleton arcs (with event
+  times), per-source targets, meeting/hull target lines, and top partitions.
+  `validate_aggregation(preview)` returns area coverage metrics.
+- `main()` returns an `AggregationPreview` for the default scene, or an
+  `ExtrusionModel` for `--scene transition`. `--ids` defaults depend on the scene.
 - `construct_model(args, target_kind=...)` builds and validates a model without a viewer.
 - `build_model()`, `overlay_top_faces()`, and `triangulate_active_regions()`
   retain the earlier polygon construction workflow.
@@ -198,8 +256,9 @@ must remain single-ring polygons with original adjacency. Unsupported geometry
 fails preflight before DHE construction.
 
 Install `requirements.txt` in the configured environment. Constrained polygon
-triangulation requires **Shapely >=2.1** and **GEOS >=3.10**. No new dependencies
-or external `Slicing.py` are required.
+triangulation requires **Shapely >=2.1** and **GEOS >=3.10**. Aggregation adds
+**py_straight_skeleton 0.1.0**, which requires **Matplotlib >=3.10**. No external
+`Slicing.py` is required.
 
 `DHECore.py` is a construction-focused extraction of
 [aminalien/DHE/DHECore.py](https://github.com/aminalien/DHE/blob/main/DHECore.py),

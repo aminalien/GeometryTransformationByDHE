@@ -1,4 +1,4 @@
-"""Extrude selected shapefile footprints into connected Dual Half Edge cells."""
+"""Preview polygon aggregation or construct Dual Half Edge transitions."""
 
 from __future__ import annotations
 
@@ -18,11 +18,13 @@ import DHECore as dhe
 from DHECore import face_edges
 
 if TYPE_CHECKING:
+    from aggregation_geometry import AggregationPreview
     from top_face_overlay import TopFaceOverlay
     from transition_layer import TransitionLayer
 
 input_shp = "C:/University/PhD/Papers/Third Journal Paper/QGIS/OSM/BuildingFootprintStep0.shp"
 POLYGON_IDS = [3000, 3001, 3002, 3003, 3004]
+AGGREGATION_IDS = [8, 9, 17, 18, 21, 1123]
 SOURCE_ID = 3000
 TARGET_ID = 3006
 TARGET_KIND = "polyline"
@@ -317,10 +319,56 @@ def construct_model(args, *, target_kind=None) -> ExtrusionModel:
     return model
 
 
-def main(argv=None) -> ExtrusionModel:
+def construct_aggregation_preview(path=input_shp, ids=AGGREGATION_IDS) -> AggregationPreview:
+    """Load the selected sources and compute geometry without changing DHE state."""
+    from aggregation_geometry import build_aggregation_preview
+    footprints = load_selected_polygons(path, ids)
+    xmin, ymin = footprints.total_bounds[:2]
+    origin = (float(xmin), float(ymin))
+    sources = {str(row[ID_FIELD]): translate(row.geometry, xoff=-origin[0], yoff=-origin[1])
+               for _, row in footprints.iterrows()}
+    return build_aggregation_preview(sources, origin=origin, tolerance=TOLERANCE)
+
+
+def _run_aggregation_preview(args):
+    from aggregation_geometry import validate_aggregation
+    preview = construct_aggregation_preview(args.input_shp, args.ids)
+    metrics = validate_aggregation(preview)
+    print(f"Projected CRS: {PROJECTED_CRS}; local XY origin: {preview.origin}")
+    print(f"Aggregation sources: {', '.join(preview.sources)}; {len(preview.gap_regions)} transition regions")
+    print(f"UP={metrics['source_area']:.6f} m2; CH-UP={metrics['growth_area']:.6f} m2; "
+          f"CH={metrics['hull_area']:.6f} m2")
+    for key, partition in preview.partitions.items():
+        print(f"  Source {key}: top partition={partition.area:.6f} m2; "
+              f"target length={preview.targets[key].length:.6f} m")
+    print(f"Partition validation: overlap={metrics['overlap_area']:.9g}, "
+          f"missing={metrics['missing_area']:.9g}, excess={metrics['excess_area']:.9g} m2; "
+          f"frame stability error={preview.frame_stability_error:.9g} m2")
+    print("Geometry preview only; the 3D transition and single aggregate DHE cell are the next stage.")
+    if not args.no_show or args.preview:
+        if args.no_show:
+            import matplotlib
+            matplotlib.use("Agg")
+        from plot_aggregation_preview import AggregationPreviewPlot
+        viewer = AggregationPreviewPlot(preview)
+        if args.preview:
+            args.preview.parent.mkdir(parents=True, exist_ok=True)
+            viewer.fig.savefig(args.preview, dpi=160)
+            print(f"Preview saved to {args.preview.resolve()}")
+        if not args.no_show:
+            viewer.show()
+        else:
+            import matplotlib.pyplot as plt
+            plt.close(viewer.fig)
+    return preview
+
+
+def main(argv=None) -> ExtrusionModel | AggregationPreview:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--scene", choices=("aggregation-preview", "transition"), default="aggregation-preview",
+                        help="Default: aggregation geometry preview. Use transition for the existing 3D viewer.")
     parser.add_argument("--input-shp", default=input_shp)
-    parser.add_argument("--ids", nargs="+", default=POLYGON_IDS)
+    parser.add_argument("--ids", nargs="+", help="Source IDs; defaults depend on the selected scene.")
     parser.add_argument("--z-down", type=float, default=0.0, help="Base elevation in metres.")
     parser.add_argument("--height", type=float, default=EXTRUSION_HEIGHT, help="Source roof elevation in metres.")
     parser.add_argument("--source-id", default=SOURCE_ID, help="Source cell whose roof is being compared.")
@@ -335,7 +383,13 @@ def main(argv=None) -> ExtrusionModel:
     parser.add_argument("--no-show", action="store_true", help="Validate without opening a window.")
     parser.add_argument("--preview", type=Path, help="Save a PNG of the interactive viewer.")
     args = parser.parse_args(argv)
+    if args.ids is None:
+        args.ids = AGGREGATION_IDS if args.scene == "aggregation-preview" else POLYGON_IDS
     try:
+        if args.scene == "aggregation-preview":
+            if args.no_overlay or args.no_triangulation or args.no_transition:
+                raise ValueError("Extrusion/transition stage flags require --scene transition.")
+            return _run_aggregation_preview(args)
         model = construct_model(args)
         summaries = validate_model(model)
     except (ValueError, FileNotFoundError) as exc:

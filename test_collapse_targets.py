@@ -234,7 +234,7 @@ class ActualCollapseTests(unittest.TestCase):
                                          ("polyline",16,36,1508.7586452378)):
             with self.subTest(kind=kind):
                 with redirect_stdout(io.StringIO()):
-                    model = app.main(["--no-show","--target-kind",kind])
+                    model = app.main(["--scene","transition","--no-show","--target-kind",kind])
                 layer = model.transition
                 self.assertEqual(len(model.cells),5)
                 self.assertEqual(len(layer.connecting_facets),count)

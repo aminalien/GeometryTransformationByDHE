@@ -178,10 +178,10 @@ class ActualRoofOverlayTests(unittest.TestCase):
             self.assertAlmostEqual(cell_volume(cell), result.original_roofs[cell.feature_id].area * 10, places=6)
 
     def test_cli_defaults_and_legacy_extrusion_mode(self):
-        model = app.main(["--target-kind", "polygon", "--no-show"])
+        model = app.main(["--scene", "transition", "--target-kind", "polygon", "--no-show"])
         self.assertEqual(model.overlay.source_id, "3000")
         self.assertEqual(model.overlay.target_id, "3006")
-        legacy = app.main(["--target-kind", "polygon", "--ids", "2001", "2002", "--no-overlay", "--no-show"])
+        legacy = app.main(["--scene", "transition", "--target-kind", "polygon", "--ids", "2001", "2002", "--no-overlay", "--no-show"])
         self.assertIsNone(legacy.overlay)
         self.assertEqual(len(legacy.shared_walls), 3)
 

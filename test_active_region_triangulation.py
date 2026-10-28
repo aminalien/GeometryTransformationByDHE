@@ -184,12 +184,12 @@ class ActualActiveTriangulationTests(unittest.TestCase):
         validate_overlay(model)
 
     def test_cli_supports_triangulation_overlay_and_legacy_modes(self):
-        model = app.main(["--target-kind", "polygon", "--no-show"])
+        model = app.main(["--scene", "transition", "--target-kind", "polygon", "--no-show"])
         self.assertEqual(len(model.overlay.triangulation.triangles), 16)
-        step1 = app.main(["--target-kind", "polygon", "--no-show", "--no-triangulation"])
+        step1 = app.main(["--scene", "transition", "--target-kind", "polygon", "--no-show", "--no-triangulation"])
         self.assertIsNone(step1.overlay.triangulation)
         self.assertEqual(len(step1.overlay.fragments), 9)
-        legacy = app.main(["--target-kind", "polygon", "--no-show", "--ids", "2001", "2002", "--no-overlay"])
+        legacy = app.main(["--scene", "transition", "--target-kind", "polygon", "--no-show", "--ids", "2001", "2002", "--no-overlay"])
         self.assertIsNone(legacy.overlay)
 
 

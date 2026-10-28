@@ -349,7 +349,7 @@ class TransitionLayerTests(unittest.TestCase):
 class ActualTransitionTests(unittest.TestCase):
     def run_model(self, *args):
         with redirect_stdout(io.StringIO()):
-            return app.main(["--target-kind", "polygon", "--no-show", *args])
+            return app.main(["--scene", "transition", "--target-kind", "polygon", "--no-show", *args])
 
     def test_actual_shared_topology_volumes_and_default_levels(self):
         model = self.run_model()
