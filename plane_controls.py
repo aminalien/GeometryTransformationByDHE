@@ -118,8 +118,10 @@ class PlaneSlicingPanel:
         self.plane_artist = None
         self.current_sections = {}
         self.current_section = Polygon()
-        source_z = model.transition.source_z
-        target_z = model.transition.target_z
+        layer = model.aggregation or model.transition
+        self.source_id = layer.cell.feature_id
+        source_z = layer.source_z
+        target_z = layer.target_z
         self.positions = {"Horizontal": (source_z+target_z)/2, "Vertical": 0., "Inclined": 0.}
         self.colors = {c.feature_id: c.dual_vertex.color for c in model.cells}
         fig = viewer.fig
@@ -363,7 +365,7 @@ class PlaneSlicingPanel:
         self.ax.set_xlabel("Local X (m)" if horizontal else "Plane u (m)")
         self.ax.set_ylabel("Local Y (m)" if horizontal else "Plane v (m)")
         self.ax.grid(alpha=0.15)
-        source_id = self.model.overlay.source_id
+        source_id = self.source_id
         for owner, geometry in sections.items():
             for part in self._parts(geometry):
                 color = self.colors[owner]

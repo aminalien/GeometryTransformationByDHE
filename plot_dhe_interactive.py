@@ -367,6 +367,10 @@ class DHEInteractivePlot:
     def _feature(dual):
         return str(getattr(dual, "logical_feature_id", dual.i))
 
+    def _face_color(self, edge):
+        resolver = getattr(self, "face_color_resolver", None)
+        return resolver(edge) if resolver else edge.D.V.color
+
     def _initialize_scene_faces(self, active_edges, shaded=False):
         """One material artist per physical face, with both incident owners."""
         self.scene_faces = {}
@@ -418,7 +422,7 @@ class DHEInteractivePlot:
                     record["artist"].remove()
                     record["artist"] = None
                 continue
-            color = self.e.D.V.color if exterior_focus else chosen.D.V.color
+            color = self.e.D.V.color if exterior_focus else self._face_color(chosen)
             if record["artist"] is None:
                 artist = Poly3DCollection(
                     [record["points"]], edgecolor=(0.15, 0.15, 0.15, 0.5),
@@ -458,7 +462,7 @@ class DHEInteractivePlot:
                 self.ax.add_patch(self.face_artist)
             self._selected_face_key = key
             self._selected_face_owner = self.e.D.V
-        self.face_artist.set_facecolor(self.fix_color(self.e.D.V.color))
+        self.face_artist.set_facecolor(self.fix_color(self._face_color(self.e)))
         self.face_artist.set_alpha(0.50)
         self.selected_face_artist = self.face_artist
 
@@ -1775,7 +1779,7 @@ class _RoofOverlayPanel:
 def interactive_plot_dhe(seed_edge, loop_edges=None):
     viewer = DHEInteractivePlot(seed_edge, loop_edges=loop_edges)
     viewer.show()
-def interactive_plot_from_lists(dhe_List, Kill_List=None, pick='first', SlicingAnalyses=False, ExteraInfo=None, *, show=True, highlight_cells=False, overlay=None, transition=None, figure=None):
+def interactive_plot_from_lists(dhe_List, Kill_List=None, pick='first', SlicingAnalyses=False, ExteraInfo=None, *, show=True, highlight_cells=False, overlay=None, transition=None, aggregation=None, figure=None):
     """
     Visualize all half-edges in dhe_List except those in Kill_List.
     Highlight and start from a chosen CurrentEdge.
@@ -1822,6 +1826,8 @@ def interactive_plot_from_lists(dhe_List, Kill_List=None, pick='first', SlicingA
     viewer = DHEInteractivePlot(seed_edge, loop_edges=active_edges , unique_duals=unique_duals,
                                 SlicingAnalyses=SlicingAnalyses, ExteraInfo=ExteraInfo, figure=figure)
     viewer.baseline_connections = baseline
+    if aggregation is not None:
+        viewer.face_color_resolver = aggregation.face_color
     viewer._initialize_scene_faces(active_edges, shaded=highlight_cells)
     viewer._draw_highlight_line()
     viewer._update_face_fill()
@@ -1847,6 +1853,12 @@ def interactive_plot_from_lists(dhe_List, Kill_List=None, pick='first', SlicingA
             from plane_controls import PlaneSlicingPanel
             viewer.plane_controls = PlaneSlicingPanel(viewer, transition.model)
             viewer.transition_panel = viewer.plane_controls
+    if aggregation is not None:
+        from plot_aggregation_3d import AggregationProjectionPanel
+        from plane_controls import PlaneSlicingPanel
+        viewer.overlay_panel = AggregationProjectionPanel(viewer, aggregation)
+        viewer.plane_controls = PlaneSlicingPanel(viewer, aggregation.model)
+        viewer.transition_panel = viewer.plane_controls
     if show:
         viewer.show()
     return viewer

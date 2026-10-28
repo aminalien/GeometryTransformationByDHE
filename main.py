@@ -19,6 +19,7 @@ from DHECore import face_edges
 
 if TYPE_CHECKING:
     from aggregation_geometry import AggregationPreview
+    from aggregation_layer import AggregationLayer
     from top_face_overlay import TopFaceOverlay
     from transition_layer import TransitionLayer
 
@@ -64,6 +65,7 @@ class ExtrusionModel:
     shared_walls: list[tuple[dhe.DualHalfEdge, dhe.DualHalfEdge]]
     overlay: TopFaceOverlay | None = None
     transition: TransitionLayer | None = None
+    aggregation: AggregationLayer | None = None
 
     @property
     def all_cells(self) -> list[ExtrudedCell]:
@@ -330,6 +332,14 @@ def construct_aggregation_preview(path=input_shp, ids=AGGREGATION_IDS) -> Aggreg
     return build_aggregation_preview(sources, origin=origin, tolerance=TOLERANCE)
 
 
+def construct_aggregation_model(path=input_shp, ids=AGGREGATION_IDS, *, z_down=0.0,
+                                height=5.0, merge_z=9.0, target_z=10.0) -> ExtrusionModel:
+    """Build a single aggregate DHE cell from the selected skeleton partitions."""
+    from aggregation_layer import build_aggregation_model
+    return build_aggregation_model(construct_aggregation_preview(path, ids), bottom_z=z_down,
+                                   source_z=height, merge_z=merge_z, top_z=target_z)
+
+
 def _run_aggregation_preview(args):
     from aggregation_geometry import validate_aggregation
     preview = construct_aggregation_preview(args.input_shp, args.ids)
@@ -344,7 +354,7 @@ def _run_aggregation_preview(args):
     print(f"Partition validation: overlap={metrics['overlap_area']:.9g}, "
           f"missing={metrics['missing_area']:.9g}, excess={metrics['excess_area']:.9g} m2; "
           f"frame stability error={preview.frame_stability_error:.9g} m2")
-    print("Geometry preview only; the 3D transition and single aggregate DHE cell are the next stage.")
+    print("Geometry preview only; use --scene aggregation for the single-cell 3D model.")
     if not args.no_show or args.preview:
         if args.no_show:
             import matplotlib
@@ -365,8 +375,8 @@ def _run_aggregation_preview(args):
 
 def main(argv=None) -> ExtrusionModel | AggregationPreview:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--scene", choices=("aggregation-preview", "transition"), default="aggregation-preview",
-                        help="Default: aggregation geometry preview. Use transition for the existing 3D viewer.")
+    parser.add_argument("--scene", choices=("aggregation", "aggregation-preview", "transition"), default="aggregation",
+                        help="Default: 3D aggregation. Preview shows geometry; transition opens the existing source/target scene.")
     parser.add_argument("--input-shp", default=input_shp)
     parser.add_argument("--ids", nargs="+", help="Source IDs; defaults depend on the selected scene.")
     parser.add_argument("--z-down", type=float, default=0.0, help="Base elevation in metres.")
@@ -379,27 +389,37 @@ def main(argv=None) -> ExtrusionModel | AggregationPreview:
     parser.add_argument("--no-overlay", action="store_true", help="Construct ordinary extrusions only.")
     parser.add_argument("--no-triangulation", action="store_true", help="Stop after the step-1 roof overlay.")
     parser.add_argument("--target-z", type=float, default=10.0, help="Upper transition elevation in metres.")
+    parser.add_argument("--merge-z", type=float, default=9.0, help="Aggregation growth completion elevation, below target-z.")
     parser.add_argument("--no-transition", action="store_true", help="Stop after the flat step-2A triangulation.")
     parser.add_argument("--no-show", action="store_true", help="Validate without opening a window.")
     parser.add_argument("--preview", type=Path, help="Save a PNG of the interactive viewer.")
     args = parser.parse_args(argv)
     if args.ids is None:
-        args.ids = AGGREGATION_IDS if args.scene == "aggregation-preview" else POLYGON_IDS
+        args.ids = POLYGON_IDS if args.scene == "transition" else AGGREGATION_IDS
     try:
-        if args.scene == "aggregation-preview":
+        if args.scene != "transition":
             if args.no_overlay or args.no_triangulation or args.no_transition:
                 raise ValueError("Extrusion/transition stage flags require --scene transition.")
-            return _run_aggregation_preview(args)
-        model = construct_model(args)
+            if args.scene == "aggregation-preview":
+                return _run_aggregation_preview(args)
+            model = construct_aggregation_model(args.input_shp, args.ids, z_down=args.z_down,
+                                                 height=args.height, merge_z=args.merge_z, target_z=args.target_z)
+        else:
+            model = construct_model(args)
         summaries = validate_model(model)
     except (ValueError, FileNotFoundError) as exc:
         parser.error(str(exc))
     print(f"Projected CRS: {PROJECTED_CRS}; local XY origin: {model.origin}")
-    final_z = args.target_z if model.transition else args.height
+    final_z = args.target_z if model.transition or model.aggregation else args.height
     print(f"Cells: z={args.z_down:g} to {final_z:g} m; sewn shared faces: {len(model.shared_walls)}")
     for summary in summaries:
         print(f"Cell {summary['id']}: V={summary['vertices']}, E={summary['edges']}, "
               f"F={summary['faces']}; neighbors={summary['neighbors']}")
+    if model.aggregation:
+        layer = model.aggregation
+        print(f"Aggregation: {', '.join(layer.preview.sources)}; growth Z={layer.source_z:g} to {layer.merge_z:g}; "
+              f"hull top Z={layer.target_z:g}; {len(layer.connecting_facets)} inclined triangles; "
+              f"one DHE cell; volume={layer.expected_volume:.6f} m3")
     if model.transition:
         from top_face_overlay import cell_volume
         layer = model.transition
@@ -435,7 +455,7 @@ def main(argv=None) -> ExtrusionModel | AggregationPreview:
         else:
             viewer = interactive_plot_from_lists(
                 model.active_edges(), dhe.Getdhe()[1], show=False, highlight_cells=True,
-                overlay=model.overlay, transition=model.transition)
+                overlay=model.overlay, transition=model.transition, aggregation=model.aggregation)
         if args.preview:
             args.preview.parent.mkdir(parents=True, exist_ok=True)
             viewer.fig.savefig(args.preview, dpi=160)

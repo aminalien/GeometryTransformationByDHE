@@ -17,6 +17,8 @@ from shapely.geometry import LineString, Point, Polygon, box
 from shapely.geometry.base import BaseGeometry
 from shapely.geometry.polygon import orient
 
+SOURCE_COLORS = ("#277db4", "#ed8a23", "#26996b", "#b85769", "#20a8b5", "#c2a514")
+
 
 @dataclass(frozen=True)
 class GrowthFace:

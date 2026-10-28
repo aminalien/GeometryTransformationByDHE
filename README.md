@@ -1,4 +1,4 @@
-# Polygon aggregation preview and DHE transitions
+# 3D polygon aggregation and DHE transitions
 
 Run `main.py` in PyCharm, or:
 
@@ -6,7 +6,8 @@ Run `main.py` in PyCharm, or:
 .\.venv\Scripts\python.exe main.py
 ```
 
-The default scene previews aggregation of features **8, 9, 17, 18, 21, 1123**.
+The default scene constructs one 3D aggregate from features **8, 9, 17, 18, 21, 1123**.
+Use `--scene aggregation-preview` for the geometry-only preview.
 Use `--scene transition` for the existing 3D polygon, point and polyline workflow.
 
 The transition scene defaults use features **3000–3004**, source **3000**, and **polyline 3001** from
@@ -15,6 +16,51 @@ transforms to the target at Z=10. The model contains **five merged DHE cells**.
 
 The shapefiles are read only. Geometry is projected to **EPSG:32633**, shifted
 by a common XY origin, and measured in metres.
+
+## 3D aggregation
+
+The six sources form **one closed DHE cell**, identified as `aggregate`.
+The original footprints remain unchanged from **Z=0 to 5**. Between **Z=5 and 9**,
+their boundaries grow at equal normal speed according to the straight skeleton,
+clipped to the fixed convex hull. From **Z=9 to 10** the complete hull continues
+vertically to one flat polygon top. The upper band gives the joins positive
+thickness instead of having separate volumes merely touch on the top plane.
+
+For each skeleton face, arrival time `t` is the signed perpendicular distance
+from its originating source edge. The lower growth surface uses
+`Z = sourceZ + (mergeZ − sourceZ) × t / T`, where `T` is the largest arrival time
+inside the hull. Neighboring faces share canonical XYZ vertices. Only inclined
+growth faces are triangulated; the six polygon bottoms and single hull top are
+not triangulated. There are no internal walls between touching sources and no
+internal horizontal caps at Z=5 or Z=9.
+
+For the supplied data, the result has **100 vertices, 219 edges, 121 faces**,
+including **68 inclined triangles**, and volume **8520.712541 m³**. Source IDs
+remain attached to their derived faces. Those faces retain the six preview
+colors; the merged top uses the aggregate color and the exterior is purple.
+The linked XY panel shows source partitions, targets, and current face selection.
+The independent current-face fill remains at **50% opacity**, including after
+`x`; `l` suppresses it until the next selection.
+
+All slicing controls below work for the aggregate. Sections belong to one cell
+and can contain disconnected polygons or holes. At Z=5 they equal the source
+union; from Z=9 through Z=10 they equal the convex hull. Startup shows the 2D
+section at Z=7.5, with 3D slicing hidden until a slicing control is used.
+
+```powershell
+# Default 3D aggregation and export
+.\.venv\Scripts\python.exe main.py
+.\.venv\Scripts\python.exe main.py --no-show --preview artifacts/aggregation-3d.png
+
+# Use Z=5–10 for growth and Z=10–11 for the full-hull band
+.\.venv\Scripts\python.exe main.py --height 5 --merge-z 10 --target-z 11
+```
+
+Heights must be finite and satisfy `z-down < height < merge-z < target-z`.
+Geometry, closed edge incidence, vertex neighborhoods, Euler characteristic,
+planarity and volume are validated before publication. Unsupported geometry
+fails preflight; an allocation/validation failure restores the previous global
+DHE state. Original source footprints must have single-ring bottom faces.
 
 ## Aggregation geometry preview
 
@@ -45,18 +91,17 @@ Three aligned XY panels show:
 
 **Merged outline** switches the third panel to one convex-hull polygon.
 This is a geometry preview: it neither allocates DHE cells nor creates transition
-triangles. The subsequent 3D stage will produce one aggregate DHE cell and retain
-the original source IDs as provenance.
+triangles. Use `--scene aggregation` for the single aggregate DHE cell.
 
 Only the selected IDs participate. Unselected feature **2001** intersects the
 hull by approximately **4.99 m²** and is not treated as an obstacle.
 
 ```powershell
-# Default aggregation preview
-.\.venv\Scripts\python.exe main.py
+# Geometry-only aggregation preview
+.\.venv\Scripts\python.exe main.py --scene aggregation-preview
 
 # Validate and export without opening a window
-.\.venv\Scripts\python.exe main.py --no-show --preview artifacts/aggregation-preview.png
+.\.venv\Scripts\python.exe main.py --scene aggregation-preview --no-show --preview artifacts/aggregation-preview.png
 
 # Preview another selection
 .\.venv\Scripts\python.exe main.py --scene aggregation-preview --ids 8 17
@@ -205,6 +250,15 @@ ordinary extrusion regardless of startup target kind.
 
 ## Callable API
 
+- `construct_aggregation_model(path, ids, z_down=0, height=5, merge_z=9, target_z=10)`
+  builds and validates one closed DHE aggregate. Heights are keyword-only.
+- `build_aggregation_model(preview, bottom_z=0, source_z=5, merge_z=9, top_z=10)`
+  builds from an existing preview; `validate_aggregation_model(model)` validates
+  its boundary, caps, provenance, DHE pointers and volume.
+- `model.aggregation` is an `AggregationLayer` with the preview, aggregate cell,
+  heights, maximum arrival time, face provenance, colors, and expected volume.
+  `.horizontal_section(z)` computes the analytical wavefront section without
+  using the DHE slicing implementation. `model.transition` remains separate.
 - `construct_aggregation_preview(path, ids)` loads projected sources and returns
   an `AggregationPreview` without modifying global DHE state.
 - `build_aggregation_preview(sources, origin=(0, 0), tolerance=1e-6)` accepts a
@@ -212,8 +266,9 @@ ordinary extrusion regardless of startup target kind.
   union, hull, gap regions, labeled growth faces and skeleton arcs (with event
   times), per-source targets, meeting/hull target lines, and top partitions.
   `validate_aggregation(preview)` returns area coverage metrics.
-- `main()` returns an `AggregationPreview` for the default scene, or an
-  `ExtrusionModel` for `--scene transition`. `--ids` defaults depend on the scene.
+- `main()` returns an `ExtrusionModel` for `aggregation` (default) and
+  `transition`, or an `AggregationPreview` for `aggregation-preview`.
+  `--ids` defaults depend on the scene.
 - `construct_model(args, target_kind=...)` builds and validates a model without a viewer.
 - `build_model()`, `overlay_top_faces()`, and `triangulate_active_regions()`
   retain the earlier polygon construction workflow.

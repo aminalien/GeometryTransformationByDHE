@@ -99,7 +99,7 @@ class ActualAggregationTests(unittest.TestCase):
         original_edges, original_killed = dhe.Getdhe()
         before = (tuple(original_edges), set(original_killed))
         with redirect_stdout(io.StringIO()):
-            preview = app.main(["--no-show"])
+            preview = app.main(["--scene", "aggregation-preview", "--no-show"])
         self.assertEqual(list(preview.sources), [str(i) for i in app.AGGREGATION_IDS])
         self.assertEqual(len(list(preview.union.geoms)), 4)
         self.assertEqual(len(preview.gap_regions), 2)
@@ -124,7 +124,7 @@ class ActualAggregationTests(unittest.TestCase):
     def test_cli_preview_export_and_custom_selection(self):
         with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()):
             png = Path(directory) / "aggregation.png"
-            preview = app.main(["--ids", "8", "17", "--no-show", "--preview", str(png)])
+            preview = app.main(["--scene", "aggregation-preview", "--ids", "8", "17", "--no-show", "--preview", str(png)])
             self.assertEqual(set(preview.sources), {"8", "17"})
             self.assertGreater(png.stat().st_size, 1000)
 

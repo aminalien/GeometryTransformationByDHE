@@ -9,10 +9,9 @@ from matplotlib.path import Path
 from matplotlib.widgets import CheckButtons
 from shapely.geometry.polygon import orient
 
-from aggregation_geometry import AggregationPreview, line_parts, polygon_parts
+from aggregation_geometry import AggregationPreview, SOURCE_COLORS, line_parts, polygon_parts
 
 
-SOURCE_COLORS = ("#277db4", "#ed8a23", "#26996b", "#b85769", "#20a8b5", "#c2a514")
 HULL_COLOR = "#783fb0"
 SKELETON_COLOR = "#486272"
 MEETING_COLOR = "#c52d3e"
@@ -111,7 +110,7 @@ class AggregationPreviewPlot:
                       fontsize=10, color="#364152")
         self.fig.text(0.045, 0.035,
                       "Top partitions cover CH without area overlaps. Only selected features participate; "
-                      "DHE construction and the final cell merge follow in the next stage.", fontsize=9, color="#596270")
+                      "use --scene aggregation to inspect the single-cell 3D model.", fontsize=9, color="#596270")
         self.checkbox = CheckButtons(self.fig.add_axes([0.79, 0.055, 0.18, 0.045]), ["Merged outline"], [False])
         self.checkbox.on_clicked(self._toggle_merged)
         self.fig.canvas.draw_idle()
