@@ -79,10 +79,14 @@ the original aspect ratio determines the other. CLI inch and pixel overrides
 cannot be combined. Pixel dimensions do not change when DPI changes in pixel
 mode; physical size and the relative size of text do change.
 
-All figure text uses **Times New Roman**, including mathematical subscripts.
+Figure text uses **Times New Roman**, with one deliberate exception: the four
+transition-level labels `z_s`, `z_t`, `z_m`, and `z_b` use the earlier **DejaVu Sans
+mathematical lettering** for readability. Their sizes and saved offsets are
+unchanged. Other mathematical labels retain the Times New Roman style.
 The regular, italic, bold and bold-italic faces must be installed; the renderer
 reports missing fonts and does not substitute another family. SVG retains text
-elements and references Times New Roman; recipients need that font installed.
+elements and references Times New Roman and DejaVu Sans; the viewer needs those
+fonts for identical lettering.
 PDF embeds TrueType font subsets where supported. Font files are not distributed.
 
 In Fonts, independently change `title`, `panel_title`, `panel_letter`,

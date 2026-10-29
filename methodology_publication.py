@@ -209,7 +209,13 @@ def annotate(ax,point,label,settings,role="name",color="#172033",offset=(3,7)):
                        bbox=dict(facecolor="white",edgecolor="none",alpha=.78,pad=.5))
     artist._publication_anchor3d=tuple(point) if hasattr(ax,"get_zlim") else None
     artist._publication_default_offset=tuple(offset)
-    return register_text(fig,artist,key,settings)
+    register_text(fig,artist,key,settings)
+    if role=="z_level":
+        # Restore the earlier Matplotlib mathematical lettering only for the
+        # transition-level symbols; preserve sizes, offsets and all other text.
+        artist.set_fontfamily("DejaVu Sans")
+        artist.set_math_fontfamily("dejavusans")
+    return artist
 
 
 def update_projected(fig):

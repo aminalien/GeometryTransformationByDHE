@@ -35,7 +35,10 @@ class PublicationTests(unittest.TestCase):
             self.assertEqual(len(fig.axes),count)
             self.assertGreater(fig.get_figwidth(),7.2)
             for artist in fig.findobj(Text):
-                if artist.get_text(): self.assertIn("Times New Roman",artist.get_fontfamily())
+                if not artist.get_text(): continue
+                is_level="/z_level:" in getattr(artist,"publication_id","")
+                self.assertIn("DejaVu Sans" if is_level else "Times New Roman",artist.get_fontfamily())
+                if is_level: self.assertEqual(artist.get_math_fontfamily(),"dejavusans")
             self.assertTrue(all(a.get_fontsize()==16 for key,a in fig._publication_artists.items() if "/z_level:" in key))
             fig.clear()
         terminal=[i for i in main_items(self.repo,5) if i.key.endswith("terminal_representation")]
@@ -45,6 +48,15 @@ class PublicationTests(unittest.TestCase):
         with matplotlib.rc_context(style(PublicationSettings())):
             glyphs=MathTextParser("path").parse(r"$z_s\quad z_t\quad z_m\quad z_b$",dpi=100).glyphs
             self.assertEqual({g[0].family_name for g in glyphs},{"Times New Roman"})
+        fig=render_main(self.repo,3)
+        with matplotlib.rc_context(style(PublicationSettings())):
+            labels=[a for key,a in fig._publication_artists.items() if "/z_level:" in key]
+            self.assertEqual({a.get_text() for a in labels},{"$z_s$","$z_t$","$z_m$","$z_b$"})
+            for label in labels:
+                glyphs=MathTextParser("path").parse(label.get_text(),dpi=100,prop=label.get_fontproperties()).glyphs
+                self.assertTrue(all(g[0].family_name.startswith("DejaVu Sans") for g in glyphs))
+                self.assertEqual(label.get_fontsize(),16)
+        fig.clear()
         require_times_new_roman.cache_clear()
         try:
             with patch("methodology_publication.font_manager.findfont",side_effect=ValueError("not installed")):
