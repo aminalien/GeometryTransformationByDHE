@@ -186,7 +186,7 @@ class SnapshotTests(unittest.TestCase):
     def test_exports_valid_privacy_manifest_captions_and_dpi(self):
         with tempfile.TemporaryDirectory() as directory:
             for case,data in self.data.items():
-                paths = export_view(data,5,output=directory)
+                paths = export_view(data,5,output=directory,dpi=300)
                 self.assertEqual(paths[0].suffix,".svg")
                 svg = paths[0].read_text(encoding="utf-8")
                 self.assertIn("<svg",svg)
@@ -194,7 +194,7 @@ class SnapshotTests(unittest.TestCase):
                 self.assertTrue(paths[1].read_bytes().startswith(b"%PDF"))
                 with Image.open(paths[2]) as im:
                     self.assertAlmostEqual(im.info["dpi"][0],300,delta=.1)
-                    self.assertEqual(im.size[0],2160)
+                    self.assertEqual(im.size[0],3000)
                 for filename in ("figure_captions.md","figure_manifest.json"):
                     content = Path(directory,filename).read_text(encoding="utf-8")
                     for banned in ("private_","C:/University","C:\\University","OBJECTID"):
@@ -238,6 +238,7 @@ class DesktopTests(unittest.TestCase):
     def tearDownClass(cls):
         try:
             if hasattr(cls,"app") and cls.app.figure:
+                if cls.app.editor: cls.app.editor.disconnect()
                 cls.app.canvas.toolbar = None
                 cls.app.figure.clear()
         finally:
@@ -275,6 +276,23 @@ class DesktopTests(unittest.TestCase):
             var.set(not var.get())
         app.refresh()
         self.assertIn("Actual computed state",app.status.get())
+
+    def test_manuscript_mode_and_text_editor_native_controls(self):
+        app=self.app
+        for name,value in app.vars.items(): value.set(getattr(ViewOptions(),name))
+        app.mode.set("Manuscript Figures 2–6")
+        app.mode_box.event_generate("<<ComboboxSelected>>"); self.root.update()
+        for stage,title in enumerate(STAGES,1):
+            app.stage_var.set(f"{stage}. {title}")
+            app.stage_box.event_generate("<<ComboboxSelected>>"); self.root.update()
+            self.assertIn(f"Figure {stage+1}",app.status.get())
+            self.assertIn("disabled",app.case_box.state())
+            self.assertEqual(len(app.figure.axes),{1:2,2:4,3:4,4:5,5:12}[stage])
+        app.edit_text.set(True); app.toggle_editor()
+        self.assertTrue(app.editor.enabled)
+        app.edit_text.set(False); app.toggle_editor()
+        self.assertFalse(app.editor.enabled)
+        app.mode.set("Case gallery"); app.refresh()
 
 
 if __name__ == "__main__":

@@ -8,9 +8,10 @@ the project directory with the Python interpreter configured for this project.
 ```powershell
 .\.venv\Scripts\python.exe methodology_figure_generator.py
 .\.venv\Scripts\python.exe methodology_figure_generator.py --no-gui --export-all
+.\.venv\Scripts\python.exe methodology_figure_generator.py --no-gui --main-figures --dpi 600
 .\.venv\Scripts\python.exe methodology_figure_generator.py --no-gui --case p2p --stage 2 --panel region_classification --export
 .\.venv\Scripts\python.exe methodology_figure_generator.py --no-gui --case p2pt --stage 5 --export --dpi 600
-.\.venv\Scripts\python.exe -m unittest test_methodology_figures -v
+.\.venv\Scripts\python.exe -m unittest test_methodology_figures test_methodology_publication -v
 ```
 
 Dependencies are those already used by the project: NumPy, Shapely, GeoPandas,
@@ -35,8 +36,131 @@ Export current view preserves its toggles, selected panel and camera preset.
 Export All uses the documented default style for every combined and individual
 panel. Files have deterministic names such as
 `stage2_p2p_region_classification.svg`. SVG and PDF are vector outputs; PNG is
-300 dpi by default, with 600 dpi available. Exported figures contain no GUI
-widgets. Default combined figures are 7.2 inches wide, with row-dependent height.
+600 dpi by default. The editable DPI field offers 300, 600, 1200 and 2400 and
+accepts higher positive values. Exported figures contain no GUI widgets.
+Default working figures are 10 inches wide, with automatic height and larger
+3D panels. The GUI preview uses at most 100 dpi, reduced for very large canvases,
+independently of PNG export DPI.
+
+## Five main manuscript figures
+
+Choose **Manuscript Figures 2–6** under Figure set. The Stage dropdown selects
+the corresponding manuscript figure; Case and Panel are disabled because the
+main layouts have fixed scientific panel recipes. Selection, preparation and
+DHE integration use representative process panels. Facet planning compares four
+cases. Final extraction has four rows (P2P, P2Pt, P2L, AGG) and three columns
+(actual DHE, intermediate section, terminal geometry), with one shared legend.
+All views reuse the existing immutable computed snapshots. The captions in
+`main_figure_captions.md` match the five captions in the local revised manuscript.
+
+## Publication settings: inches, pixels, DPI and fonts
+
+Open **Publication settings** to edit separate JSON tabs for Fonts, Layout,
+Export, View, Panels, Annotations and Views. These are visualization settings;
+editing them does not modify computational algorithms. `null` means automatic.
+Use **Save settings / positions** and **Load settings** to preserve and restore
+the complete settings and current camera/limits. The fully populated template
+is `publication_settings.example.json`.
+
+```powershell
+# Physical size, arbitrary DPI; dimensions are inches
+.\.venv\Scripts\python.exe methodology_figure_generator.py --no-gui --case p2p --stage 5 --panel realized_dhe --export --width 4.5 --height 4 --dpi 1200
+# Exact pixel dimensions; DPI sets the physical size and text scale
+.\.venv\Scripts\python.exe methodology_figure_generator.py --no-gui --case p2pt --stage 5 --panel terminal_representation --export --width-px 6000 --height-px 6000 --dpi 2400
+# Apply a saved style and annotation configuration
+.\.venv\Scripts\python.exe methodology_figure_generator.py --config my_settings.json
+.\.venv\Scripts\python.exe methodology_figure_generator.py --no-gui --main-figures --config my_settings.json
+```
+
+Physical and pixel sizing are explicit alternatives. In the Export tab, set
+`size_mode` to `physical` to use Layout `width_in` and `height_in`, or `pixels`
+to use `width_px` and `height_px`. If only one pixel dimension is provided,
+the original aspect ratio determines the other. CLI inch and pixel overrides
+cannot be combined. Pixel dimensions do not change when DPI changes in pixel
+mode; physical size and the relative size of text do change.
+
+All figure text uses **Times New Roman**, including mathematical subscripts.
+The regular, italic, bold and bold-italic faces must be installed; the renderer
+reports missing fonts and does not substitute another family. SVG retains text
+elements and references Times New Roman; recipients need that font installed.
+PDF embeds TrueType font subsets where supported. Font files are not distributed.
+
+In Fonts, independently change `title`, `panel_title`, `panel_letter`,
+`axis_label`, `tick`, `legend`, `name`, `vertex`, `edge`, `z_level`, `z_axis`,
+and `footer` (points). The default Z-level size is **16 pt**, versus 10 pt for
+ordinary ticks. To enlarge Z labels alone, change `fonts.z_level`.
+
+## Layout, cameras and annotation placement
+
+Layout exposes `width_in`, `height_in`, `plot_height_in`, `legend_space_in`,
+`left`/`right` fractional margins, `top_in`/`bottom_in`, `wspace`, `hspace`,
+`three_d_width_ratio`, and optional `row_heights`/`width_ratios` arrays. Array
+lengths must match the current layout's grid; use per-panel overrides for a
+setting intended for one specific view. Legends receive measured space rather
+than a fixed large empty band. `show_title` and `show_footer` can hide duplicated
+headings or explanatory text when placing the figure in the manuscript.
+
+View settings expose `zoom`, `projection` (`persp` or `ortho`),
+`focal_length`, `aspect`, `axis_pad`, `z_offset_points`, `legend_loc` and
+`legend_columns`. Zoom changes display scale; it does not alter coordinates.
+Z labels are projected callouts attached to their actual transition levels;
+their offsets persist when the camera changes.
+
+For individual subplot control, use the Panels tab. Keys are
+`view-key/panel-key`; view keys and panel keys are present in the manifest and
+saved Views/Annotations tabs. A gallery example is:
+
+```json
+{
+  "stage5_p2pt_realized_dhe/realized_dhe": {
+    "rect": [0.10, 0.17, 0.76, 0.70],
+    "elev": 30, "azim": -50, "roll": 0, "zoom": 1.1,
+    "xlim": [-0.2, 4.2], "ylim": [-0.2, 4.2], "zlim": [-0.1, 2.2],
+    "aspect": [1, 1, 0.8],
+    "legend_anchor": [0.5, 0.12], "legend_loc": "upper center", "legend_columns": 3
+  }
+}
+```
+
+Turn on **Edit text**, then drag a feature/vertex/edge label, Z callout, title,
+panel letter, axis label or legend. Turn it off to restore 3D rotation. Click
+**Reset selected text** to restore that item's automatic placement, or save
+settings to keep the adjustment. Manual positions take precedence over automatic
+placement and survive view switches and exports. 3D labels retain their true
+geometric anchors; dragging adjusts the offset rather than the geometry.
+Native automatically positioned X/Y tick labels use font/padding settings rather
+than individual drag handles.
+
+The Annotations tab also permits precise adjustments without dragging:
+
+```json
+{
+  "stage5_p2pt_realized_dhe/realized_dhe/z_level:$z_s$": {
+    "offset": [20, 4], "ha": "left", "va": "center", "rotation": 0
+  }
+}
+```
+
+Offsets are points. Titles and panel labels use `position` in their original
+figure/axes coordinate system; axis labels use `axes_position`; legends use
+`anchor` in figure fractions and `loc`. Main-figure keys start with
+`main_figure_N_stageM`; mixed-case panel keys include a case prefix such as
+`p2pt:realized_dhe`. Save a dragged example to obtain its exact key.
+
+## Memory and format limits
+
+There is no application DPI ceiling. Before allocating a raster, the exporter
+estimates peak memory from its pixel dimensions and compares it with
+`export.memory_budget_mib` (initially 1024 MiB) and available memory where
+accessible. The preview status shows pixels and estimated MiB. Backend dimension
+limits and allocation errors are reported. Adjust the budget in settings or with
+`--memory-budget-mib`; increasing DPI alone is unnecessary for vector geometry.
+
+If PNG is unavailable, SVG/PDF remain available and the manifest records the
+reason. No lower-resolution PNG is substituted. A pre-existing PNG is not replaced
+when a new raster request is rejected; consult the current manifest's per-format
+status. Each successfully written format replaces its file atomically. Small
+physical canvases with large fonts may need manual font/margin adjustments.
 
 The output directory is self-contained: figures, `figure_captions.md`,
 `figure_manifest.json`, `example_metadata.json`, `visualization_status.md`,

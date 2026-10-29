@@ -17,25 +17,23 @@ import json
 from pathlib import Path
 import textwrap
 
-import matplotlib
-from matplotlib.backends.backend_agg import FigureCanvasAgg
-from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch, PathPatch
 from matplotlib.path import Path as MplPath
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import numpy as np
 from shapely.geometry.polygon import orient
+from methodology_publication import (
+    PublicationSettings, PanelItem, MAIN_CAPTIONS, main_items, render_items,
+    annotate, register_text, scoped_canvas, TextEditor, capture_views,
+    save_formats, raster_spec,
+)
 
 from methodology_figure_data import (
     BLUE, CASES, COLORS, GREEN, MAGENTA, OVERLAY_NOTE, PURPLE, STAGES,
     CaseData, Panel, build_case,
 )
 
-STYLE = {"font.family": "DejaVu Sans", "font.size": 9, "axes.titlesize": 9,
-         "axes.labelsize": 8, "xtick.labelsize": 7, "ytick.labelsize": 7,
-         "legend.fontsize": 7, "svg.fonttype": "none", "svg.hashsalt": "DHE-methodology",
-         "pdf.fonttype": 42, "savefig.facecolor": "white", "axes.unicode_minus": True}
 CAMERAS = {"Oblique": (26, -55), "Front": (14, -90), "Side": (15, 0), "Top": (90, -90)}
 
 
@@ -103,7 +101,8 @@ def _legend_shape(shape, three):
     return Line2D([], [], color=shape.color, linestyle=shape.style, linewidth=1.5)
 
 
-def _draw_panel(ax, panel, data, options, three):
+def _draw_panel(ax, panel, data, options, three, settings=None):
+    settings=settings or PublicationSettings()
     legends, annotations, used_text = {}, [], set()
     local_points, local_edges = set(), set()
 
@@ -112,11 +111,9 @@ def _draw_panel(ax, panel, data, options, three):
             return
         # Prefer a short callout above the geometry; avoid duplicate labels from multipart regions.
         used_text.add(label)
-        if three:
-            ax.text(*point, label, fontsize=7, color=color, zorder=10)
-        else:
-            annotation = ax.annotate(label, point[:2], xytext=(3, 7), textcoords="offset points",
-                        fontsize=7, color=color, bbox=dict(facecolor="white", edgecolor="none", alpha=.8, pad=.6))
+        role="vertex" if label.startswith("v") and label[1:].isdigit() else "edge" if label.startswith("e") and label[1:].isdigit() else "name"
+        annotation=annotate(ax,point,label,settings,role,color)
+        if not three:
             annotations.append(annotation)
 
     def draw_line(coords, color, style="-", width=1.1, marker=None):
@@ -264,15 +261,23 @@ def _draw_panel(ax, panel, data, options, three):
     pad = span * .12
     ax.set_xlim(xmin-pad,xmax+pad)
     ax.set_ylim(ymin-pad,ymax+pad)
-    ax.set_xlabel("x (local)")
-    ax.set_ylabel("y (local)")
+    ax.set_xlabel("x (local)",fontsize=settings["fonts"]["axis_label"],labelpad=settings["view"]["axis_pad"])
+    ax.set_ylabel("y (local)",fontsize=settings["fonts"]["axis_label"],labelpad=settings["view"]["axis_pad"])
+    ax.tick_params(labelsize=settings["fonts"]["tick"])
     if three:
         ax.set_zlim(-.08,2.15)
         ax.set_box_aspect((max(xmax-xmin,1),max(ymax-ymin,1),span*.72))
         ticks = [0,1,1.8,2] if data.case == "agg" else [0,1,2]
-        ax.set_zticks(ticks, ["$z_b$","$z_s$","$z_m$","$z_t$"] if data.case == "agg" else ["$z_b$","$z_s$","$z_t$"])
+        ax.set_zticks(ticks, [""]*len(ticks))
+        symbols=["$z_b$","$z_s$","$z_m$","$z_t$"] if data.case=="agg" else ["$z_b$","$z_s$","$z_t$"]
+        for z,symbol in zip(ticks,symbols):
+            label=annotate(ax,(xmax,ymin,z),symbol,settings,"z_level",offset=(settings["view"]["z_offset_points"],
+                           4 if z==2 and data.case=="agg" else -4 if z==1.8 else 0))
+            label._publication_zlevel=z
+            label.set_bbox(None)
         ax.set_zlabel("")
-        ax.text2D(.95,.80,"$z$",transform=ax.transAxes,fontsize=8)
+        register_text(ax.figure,ax.text2D(.97,.92,"$z$",transform=ax.transAxes,fontsize=settings["fonts"]["z_axis"]),
+                      ax.figure._publication_key+"/"+ax.methodology_panel_key+"/z_axis",settings)
         ax.tick_params(axis="z",pad=1)
         ax.view_init(*CAMERAS[options.camera])
         for axis in (ax.xaxis,ax.yaxis,ax.zaxis):
@@ -288,6 +293,8 @@ def _draw_panel(ax, panel, data, options, three):
         occupied = []
         offsets = ((3,7),(3,-14),(-36,7),(-36,-14),(3,22),(-36,22),(12,-27),(-55,-27),(12,36))
         for annotation in annotations:
+            if annotation.publication_id in settings["annotations"]:
+                continue
             for offset in offsets:
                 annotation.set_position(offset)
                 bbox = annotation.get_window_extent(renderer).expanded(1.08,1.15)
@@ -297,62 +304,23 @@ def _draw_panel(ax, panel, data, options, three):
     return legends
 
 
-def render(data: CaseData, stage_number=1, panel="combined", options=None, axes_views=None):
-    options = options or ViewOptions()
-    stage = data.stages[stage_number-1]
-    panels = selected_panels(stage,panel)
-    # Dedicated physical space for headers, plots, and legends prevents long
-    # four-class legends or 3D labels from colliding with the next row/footer.
-    construction_layout = len(panels)==5 and stage_number==4
-    columns = 2 if len(panels)>1 else 1
-    rows = 2 if construction_layout else (len(panels)+columns-1)//columns
-    plot_height,legend_height = (2.65,1.05) if len(panels)>1 else (3.2,.85)
-    band = plot_height + .4 + legend_height + .45
-    height = 1.3 + rows*band + .5
-    with matplotlib.rc_context(STYLE):
-        fig = Figure(figsize=(7.2,height),layout=None)
-        FigureCanvasAgg(fig)
-        heading = f"Stage {stage.number} · {CASES[data.case].split(' — ')[0]}\n{stage.title}"
-        fig.suptitle(textwrap.fill(heading.split('\n')[0],70)+"\n"+textwrap.fill(stage.title,74),fontsize=11,y=1-.12/height)
-        for i,p in enumerate(panels):
-            three = "3D" in p.dimensions and (options.dimension == "3D" or options.dimension == "Auto" and p.default_3d)
-            if construction_layout:
-                row,col,ncols = (0,i,3) if i<3 else (1,i-3,2)
-            else:
-                row,col,ncols = i//columns,i%columns,columns
-            gap = .10 if ncols==2 else .065
-            width = (.80-gap*(ncols-1))/ncols
-            left = .09+col*(width+gap)
-            top = height-1.3-row*band
-            bottom = (top-plot_height)/height
-            ax = fig.add_axes((left,bottom,width,plot_height/height),projection="3d" if three else None)
-            ax.methodology_panel_key = p.key
-            letter = chr(97+stage.panels.index(p))
-            ax.set_title(f"({letter}) " + textwrap.fill(p.title,25 if ncols==3 else 34 if ncols==2 else 65),pad=12,
-                         fontsize=8 if ncols==3 else 9)
-            legends = _draw_panel(ax,p,data,options,three)
-            view = (axes_views or {}).get(p.key)
-            if view:
-                ax.set_xlim(view["xlim"])
-                ax.set_ylim(view["ylim"])
-                if three and "zlim" in view:
-                    ax.set_zlim(view["zlim"])
-                    ax.view_init(view["elev"],view["azim"],roll=view["roll"])
-            if options.legend and legends:
-                legend_columns = 2 if len(legends)>3 and ncols<3 else 1
-                legend_labels = [textwrap.fill(label,23 if legend_columns==2 else 31 if ncols==3 else 54)
-                                 for label in legends]
-                fig.legend(list(legends.values()),legend_labels,loc="upper center",
-                           bbox_to_anchor=(left+width/2,(top-plot_height-.42)/height),
-                           bbox_transform=fig.transFigure,ncol=legend_columns,
-                           frameon=False,handlelength=1.7,columnspacing=.8,fontsize=6.5)
-        footer = stage.annotation or "Actual computed states · Z denotes an ordered transition coordinate, not terrain elevation."
-        if stage_number == 4:
-            footer += "\nOperator panels are partial construction snapshots; subsequent sewing closes the cells."
-        elif stage_number == 5:
-            footer += "\nChecked: cycles/pointers, facet planarity, caps, volumes and terminal geometry."
-        fig.text(.5,.025,textwrap.fill(footer,103),ha="center",va="bottom",fontsize=7)
-        return fig
+def render(data: CaseData, stage_number=1, panel="combined", options=None, axes_views=None, settings=None):
+    options=options or ViewOptions()
+    stage=data.stages[stage_number-1]
+    items=tuple(PanelItem(data,p,p.key,chr(97+stage.panels.index(p)),p.title)
+                for p in selected_panels(stage,panel))
+    footer=stage.annotation or "Z denotes an ordered transition coordinate, not terrain elevation."
+    key=f"stage{stage_number}_{data.case}_{panel}"
+    title=f"Stage {stage_number} · {CASES[data.case].split(' — ')[0]} · {stage.title}"
+    return render_items(items,stage_number,key,title,footer,options,settings,axes_views,_draw_panel)
+
+
+def render_main(repo,stage,options=None,axes_views=None,settings=None):
+    items=main_items(repo,stage)
+    footer=OVERLAY_NOTE if stage==2 else "Z denotes an ordered transition coordinate."
+    return render_items(items,stage,f"main_figure_{stage+1}_stage{stage}",
+                        f"Figure {stage+1} · {STAGES[stage-1]}",footer,
+                        options or ViewOptions(),settings,axes_views,_draw_panel,main=True)
 
 
 def caption(data, stage, panels):
@@ -367,43 +335,55 @@ def caption(data, stage, panels):
     return " ".join(pieces)
 
 
-def export_view(data, stage_number, panel="combined", output="methodology_figures", dpi=300, options=None, axes_views=None):
-    if dpi not in {300,600}:
-        raise ValueError("Publication PNG resolution must be 300 or 600 dpi")
-    options = options or ViewOptions()
-    output = Path(output)
-    output.mkdir(parents=True,exist_ok=True)
-    stage = data.stages[stage_number-1]
-    panels = selected_panels(stage,panel)
-    key = f"stage{stage_number}_{data.case}_{panel}"
-    fig = render(data,stage_number,panel,options,axes_views)
-    filenames = []
-    with matplotlib.rc_context(STYLE):
-        for suffix in ("svg","pdf","png"):
-            filename = key+"."+suffix
-            meta = {"Creator":"DHE Methodology Figure Generator"}
-            if suffix == "svg":
-                meta["Date"] = None
-            elif suffix == "pdf":
-                meta.update(CreationDate=None,ModDate=None)
-            fig.savefig(output/filename,dpi=dpi,metadata=meta)
-            filenames.append(filename)
-    fig.clear()
-    manifest_file = output/"figure_manifest.json"
-    records = json.loads(manifest_file.read_text(encoding="utf-8")) if manifest_file.exists() else []
-    record = {"key":key,"stage":stage_number,"stage_title":stage.title,"case":data.case,"panel":panel,
-              "caption_key":key,"caption":caption(data,stage,panels),"status":stage.status,
-              "source_routines":[p.routine for p in panels],
-              "checks":sorted({c for p in panels for c in p.checks}),
-              "png_dpi":dpi,"settings":asdict(options),"filenames":filenames}
-    if axes_views:
-        record["axes_views"] = axes_views
-    records = [r for r in records if r["key"] != key]+[record]
+def _write_manifest(output,record):
+    output=Path(output)
+    path=output/"figure_manifest.json"
+    records=json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+    records=[r for r in records if r["key"]!=record["key"]]+[record]
     records.sort(key=lambda r:(r["case"],r["stage"],r["panel"]))
-    manifest_file.write_text(json.dumps(records,indent=2,ensure_ascii=False)+"\n",encoding="utf-8")
+    path.write_text(json.dumps(records,indent=2,ensure_ascii=False,allow_nan=False)+"\n",encoding="utf-8")
     (output/"figure_captions.md").write_text("# Methodology figure captions\n\n"+"\n\n".join(
         f"### {r['caption_key']}\n\n{r['caption']}" for r in records)+"\n",encoding="utf-8")
-    return tuple(output/f for f in filenames)
+
+
+def _export_figure(fig,key,stage,case,panel,panels,caption_text,output,settings,dpi,options,axes_views):
+    paths,formats,spec=save_formats(fig,output,key,settings,dpi)
+    record={"key":key,"stage":stage,"stage_title":STAGES[stage-1],"case":case,"panel":panel,
+            "caption_key":key,"caption":caption_text,"status":"actual",
+            "source_routines":[p.routine for p in panels],
+            "checks":sorted({c for p in panels for c in p.checks}),"png_dpi":spec["dpi"],
+            "raster":spec,"formats":formats,"settings":asdict(options),
+            "publication_settings":settings.values,"filenames":[p.name for p in paths]}
+    if axes_views: record["axes_views"]=axes_views
+    _write_manifest(output,record)
+    fig.clear()
+    if hasattr(fig.canvas,"renderer"):
+        del fig.canvas.renderer
+    return paths
+
+
+def export_view(data, stage_number, panel="combined", output="methodology_figures", dpi=None,
+                options=None, axes_views=None, settings=None):
+    settings=settings or PublicationSettings()
+    if dpi is not None:
+        settings=settings.copy(); settings["export"]["dpi"]=dpi; settings.validate()
+    options=options or ViewOptions()
+    stage=data.stages[stage_number-1]
+    panels=selected_panels(stage,panel)
+    fig=render(data,stage_number,panel,options,axes_views,settings)
+    return _export_figure(fig,f"stage{stage_number}_{data.case}_{panel}",stage_number,data.case,panel,
+                          panels,caption(data,stage,panels),output,settings,dpi,options,axes_views)
+
+
+def export_main(repo,stage,output="methodology_figures",dpi=None,options=None,axes_views=None,settings=None):
+    settings=settings or PublicationSettings()
+    if dpi is not None:
+        settings=settings.copy(); settings["export"]["dpi"]=dpi; settings.validate()
+    options=options or ViewOptions()
+    items=main_items(repo,stage)
+    fig=render_main(repo,stage,options,axes_views,settings)
+    return _export_figure(fig,f"main_figure_{stage+1}_stage{stage}",stage,"main","combined",
+                          [i.panel for i in items],MAIN_CAPTIONS[stage],output,settings,dpi,options,axes_views)
 
 
 class Repository:
@@ -446,7 +426,7 @@ def write_support_files(repo, output):
         ignore.write_text("*\n!.gitignore\n",encoding="utf-8")
 
 
-def export_all(repo, output="methodology_figures", dpi=300, progress=None):
+def export_all(repo, output="methodology_figures", dpi=None, progress=None, settings=None):
     completed, failures = [], []
     for case in CASES:
         try:
@@ -457,7 +437,9 @@ def export_all(repo, output="methodology_figures", dpi=300, progress=None):
         for stage in data.stages:
             for key in ("combined", *(p.key for p in stage.panels)):
                 try:
-                    paths = export_view(data,stage.number,key,output,dpi)
+                    paths = export_view(data,stage.number,key,output,dpi,settings=settings)
+                    if not any(p.suffix==".png" for p in paths):
+                        failures.append((case,f"stage{stage.number}/{key}","PNG unavailable; see manifest"))
                     completed.append((case,stage.number,key))
                     if progress:
                         progress(f"Exported {paths[0].stem}")
@@ -469,13 +451,34 @@ def export_all(repo, output="methodology_figures", dpi=300, progress=None):
     return completed,failures
 
 
+def export_manuscript(repo,output="methodology_figures",settings=None,progress=None):
+    done,failures=[],[]
+    for stage in range(1,6):
+        try:
+            paths=export_main(repo,stage,output,settings=settings)
+            done.append(stage)
+            if not any(p.suffix==".png" for p in paths): failures.append((stage,"PNG unavailable; see manifest"))
+            if progress: progress(f"Exported Figure {stage+1}")
+        except Exception as exc:
+            failures.append((stage,type(exc).__name__+": "+str(exc)))
+    write_support_files(repo,output)
+    Path(output,"main_figure_captions.md").write_text("# Main Methodology figures\n\n"+"\n\n".join(
+        f"**Figure {n+1}.** {MAIN_CAPTIONS[n]}" for n in range(1,6))+"\n",encoding="utf-8")
+    Path(output,"export_report.json").write_text(json.dumps({"exported_views":len(done),"failures":failures},indent=2)+"\n",encoding="utf-8")
+    return done,failures
+
+
 class MethodologyApp:
     """Native dropdowns avoid Matplotlib widget mouse-grab conflicts."""
-    def __init__(self,root,repo=None,output="methodology_figures",case="p2p",stage=1):
+    def __init__(self,root,repo=None,output="methodology_figures",case="p2p",stage=1,settings=None):
         import tkinter as tk
         from tkinter import ttk
         self.tk,self.ttk,self.root = tk,ttk,root
         self.repo,self.output = repo or Repository(),output
+        self.settings=settings or PublicationSettings()
+        self.editor=None
+        self.mode=tk.StringVar(value="Case gallery")
+        self.edit_text=tk.BooleanVar(value=False)
         self.root.title("DHE Methodology Figure Generator")
         self.root.geometry("1260x920")
         self.case_var = tk.StringVar(value=CASES[case])
@@ -483,7 +486,7 @@ class MethodologyApp:
         self.panel_var = tk.StringVar(value="Combined panels")
         self.dimension = tk.StringVar(value="Auto")
         self.camera = tk.StringVar(value="Oblique")
-        self.dpi = tk.StringVar(value="300")
+        self.dpi = tk.StringVar(value=str(self.settings["export"]["dpi"]))
         self.vars = {name:tk.BooleanVar(value=getattr(ViewOptions(),name)) for name in
                      ("legend","outlines","labels","vertex_ids","edge_ids","primal","dual","ownership")}
         controls = ttk.Frame(root,padding=8)
@@ -493,6 +496,7 @@ class MethodologyApp:
         self.panel_box = self._combo(controls,"Panel",self.panel_var,["Combined panels"],50,2)
         self.dimension_box = self._combo(controls,"View",self.dimension,["Auto","2D","3D"],8,3)
         self.camera_box = self._combo(controls,"Camera",self.camera,list(CAMERAS),10,4)
+        self.mode_box=self._combo(controls,"Figure set",self.mode,["Case gallery","Manuscript Figures 2–6"],30,5)
         self.widgets = {}
         toggles = ttk.Frame(root,padding=(8,0))
         toggles.pack(fill="x")
@@ -506,9 +510,18 @@ class MethodologyApp:
         exports = ttk.Frame(root,padding=8)
         exports.pack(fill="x")
         ttk.Label(exports,text="PNG dpi").pack(side="left")
-        ttk.Combobox(exports,textvariable=self.dpi,values=("300","600"),width=6,state="readonly").pack(side="left",padx=6)
+        dpi_box=ttk.Combobox(exports,textvariable=self.dpi,values=("300","600","1200","2400"),width=7)
+        dpi_box.pack(side="left",padx=6)
+        dpi_box.bind("<<ComboboxSelected>>",self.dpi_changed)
+        dpi_box.bind("<Return>",self.dpi_changed)
         ttk.Button(exports,text="Export current view",command=self.export_current).pack(side="left",padx=6)
         ttk.Button(exports,text="Export All",command=self.export_everything).pack(side="left",padx=6)
+        ttk.Button(exports,text="Publication settings",command=self.settings_dialog).pack(side="left",padx=6)
+        ttk.Checkbutton(exports,text="Edit text",variable=self.edit_text,command=self.toggle_editor).pack(side="left",padx=6)
+        tools=ttk.Frame(root,padding=(8,0)); tools.pack(fill="x")
+        ttk.Button(tools,text="Save settings / positions",command=self.save_settings).pack(side="left",padx=4)
+        ttk.Button(tools,text="Load settings",command=self.load_settings).pack(side="left",padx=4)
+        ttk.Button(tools,text="Reset selected text",command=self.reset_text).pack(side="left",padx=4)
         self.status = tk.StringVar()
         ttk.Label(exports,textvariable=self.status,wraplength=600).pack(side="left",padx=8)
         self.description = tk.Text(root,height=5,wrap="word",font=("Segoe UI",9),padx=10,pady=5)
@@ -559,13 +572,22 @@ class MethodologyApp:
             self.panel_box.configure(values=list(self.panel_keys))
             self.panel_var.set(next(k for k,v in self.panel_keys.items() if v == key))
             panels = selected_panels(stage,key)
+            is_main=self.mode.get()!="Case gallery"
+            self.case_box.configure(state="disabled" if is_main else "readonly")
+            self.panel_box.configure(state="disabled" if is_main else "readonly")
+            if is_main:
+                panels=tuple(i.panel for i in main_items(self.repo,stage.number))
             caps = capabilities(panels)
             for name,widget in self.widgets.items():
                 applicable = caps.get(name,True) and (name not in {"vertex_ids","edge_ids"} or self.vars["labels"].get())
                 widget.configure(state="normal" if applicable else "disabled")
             self.dimension_box.configure(state="readonly" if caps["dimension"] else "disabled")
             self.camera_box.configure(state="readonly" if caps["camera"] and self.dimension.get() != "2D" else "disabled")
-            new_figure = render(data,stage.number,key,self.options())
+            if self.figure and event is not None and event.widget in (self.dimension_box,self.camera_box):
+                self.settings["views"].pop(self.figure._publication_key,None)
+            new_figure = (render_main(self.repo,stage.number,self.options(),settings=self.settings) if is_main else
+                          render(data,stage.number,key,self.options(),settings=self.settings))
+            if self.editor: self.editor.disconnect()
             if self.canvas:
                 self.canvas.toolbar = None
             if self.toolbar:
@@ -576,12 +598,15 @@ class MethodologyApp:
                 self.figure.clear()
             self.figure = new_figure
             self.canvas = FigureCanvasTkAgg(new_figure,master=self.plot_frame)
+            scoped_canvas(self.canvas,self.settings)
             self.toolbar = NavigationToolbar2Tk(self.canvas,self.holder,pack_toolbar=False)
             self.toolbar.pack(side="bottom",fill="x")
             self.canvas.get_tk_widget().pack()
             self.canvas.draw()
+            self.editor=TextEditor(self.figure,self.settings)
+            self.editor.set_enabled(self.edit_text.get())
             unavailable = [k for k,v in caps.items() if not v]
-            text = caption(data,stage,panels)+"\nSources: "+"; ".join(dict.fromkeys(p.routine for p in panels))
+            text = (MAIN_CAPTIONS[stage.number] if is_main else caption(data,stage,panels))+"\nSources: "+"; ".join(dict.fromkeys(p.routine for p in panels))
             text += "\nChecks: "+"; ".join(sorted({c for p in panels for c in p.checks}))
             if unavailable:
                 text += "\nDisabled controls have no applicable data in this view: "+", ".join(unavailable)+"."
@@ -589,7 +614,10 @@ class MethodologyApp:
             self.description.delete("1.0","end")
             self.description.insert("1.0",text)
             self.description.configure(state="disabled")
-            self.status.set(f"Actual computed state · {data.cell_count} final cell(s)")
+            spec=raster_spec(self.figure,self.settings)
+            self.status.set("Actual computed state · "+(f"Figure {stage.number+1}" if is_main else f"{data.cell_count} final cell(s)")+
+                            f" · {spec['width_px']}×{spec['height_px']} px · est. {spec['estimated_memory_mib']} MiB"+
+                            (" · PNG exceeds memory budget" if spec["reason"] else ""))
         except Exception as exc:
             self.status.set("Data not captured / unavailable: "+str(exc))
             self.description.configure(state="normal")
@@ -598,22 +626,21 @@ class MethodologyApp:
             self.description.configure(state="disabled")
             if self.figure:
                 self.figure.clear()
-                self.figure.text(.5,.5,"Data not captured / unavailable",ha="center")
                 self.canvas.draw_idle()
 
     def export_current(self):
         from tkinter import messagebox
         try:
             data,stage,key = self.selection()
-            views = {}
-            for ax in self.figure.axes:
-                state = {"xlim":list(ax.get_xlim()),"ylim":list(ax.get_ylim())}
-                if hasattr(ax,"get_zlim"):
-                    state.update(zlim=list(ax.get_zlim()),elev=float(ax.elev),azim=float(ax.azim),roll=float(ax.roll))
-                views[ax.methodology_panel_key] = state
-            paths = export_view(data,stage.number,key,self.output,int(self.dpi.get()),self.options(),views)
+            views=capture_views(self.figure)
+            self.settings["export"]["dpi"]=float(self.dpi.get()); self.settings.validate()
+            if self.mode.get()=="Case gallery":
+                paths = export_view(data,stage.number,key,self.output,options=self.options(),axes_views=views,settings=self.settings)
+            else:
+                paths=export_main(self.repo,stage.number,self.output,options=self.options(),axes_views=views,settings=self.settings)
             write_support_files(self.repo,self.output)
-            self.status.set(f"Saved {paths[0].stem}: SVG, PDF and PNG")
+            spec=raster_spec(self.figure,self.settings)
+            self.status.set(f"Saved {paths[0].stem}: "+("SVG, PDF and PNG" if len(paths)==3 else "SVG/PDF; PNG unavailable. "+str(spec["reason"])))
         except Exception as exc:
             messagebox.showerror("Export failed",str(exc))
 
@@ -623,8 +650,72 @@ class MethodologyApp:
         def progress(message):
             self.status.set(message)
             self.root.update_idletasks()
-        done,failures = export_all(self.repo,self.output,int(self.dpi.get()),progress)
+        try:
+            self.settings["export"]["dpi"]=float(self.dpi.get()); self.settings.validate()
+            if self.mode.get()=="Case gallery":
+                done,failures = export_all(self.repo,self.output,progress=progress,settings=self.settings)
+            else:
+                done,failures=export_manuscript(self.repo,self.output,self.settings,progress)
+        except Exception as exc:
+            self.status.set("Export failed: "+str(exc)); return
         self.status.set(f"Exported {len(done)} views; {len(failures)} failures. See export_report.json.")
+
+    def toggle_editor(self):
+        if self.editor: self.editor.set_enabled(self.edit_text.get())
+
+    def dpi_changed(self,event=None):
+        try:
+            value=float(self.dpi.get())
+            proposed=self.settings.copy(); proposed["export"]["dpi"]=value; proposed.validate()
+            self.settings=proposed; self.refresh()
+        except ValueError as exc: self.status.set(str(exc))
+
+    def reset_text(self):
+        if self.editor and self.editor.selected:
+            self.settings["annotations"].pop(self.editor.selected,None)
+            self.refresh()
+
+    def save_settings(self):
+        from tkinter import filedialog,messagebox
+        try:
+            self.settings["views"][self.figure._publication_key]=capture_views(self.figure)
+            self.settings["export"]["dpi"]=float(self.dpi.get()); self.settings.validate()
+            path=filedialog.asksaveasfilename(defaultextension=".json",initialfile="publication_settings.json",filetypes=[("JSON","*.json")])
+            if path: self.settings.save(path)
+        except Exception as exc: messagebox.showerror("Settings",str(exc))
+
+    def load_settings(self):
+        from tkinter import filedialog,messagebox
+        path=filedialog.askopenfilename(filetypes=[("JSON","*.json")])
+        if not path: return
+        try:
+            self.settings=PublicationSettings.load(path)
+            self.dpi.set(str(self.settings["export"]["dpi"]))
+            self.refresh()
+        except Exception as exc: messagebox.showerror("Settings",str(exc))
+
+    def settings_dialog(self):
+        from tkinter import messagebox
+        from tkinter.scrolledtext import ScrolledText
+        dialog=self.tk.Toplevel(self.root); dialog.title("Publication settings · inches, points and pixels")
+        notebook=self.ttk.Notebook(dialog); notebook.pack(fill="both",expand=True)
+        editors={}
+        # Each tab exposes all settings, including per-panel overrides; JSON null
+        # means automatic. This avoids hiding advanced controls behind code edits.
+        for section in self.settings.values:
+            frame=self.ttk.Frame(notebook); notebook.add(frame,text=section.title())
+            widget=ScrolledText(frame,width=78,height=23,font=("Consolas",10))
+            widget.pack(fill="both",expand=True)
+            widget.insert("1.0",json.dumps(self.settings[section],indent=2,ensure_ascii=False))
+            editors[section]=widget
+        self.ttk.Label(dialog,text="Edit numeric values, arrays or annotation overrides. null = automatic. See README for keys.").pack(pady=6)
+        def apply():
+            try:
+                settings=PublicationSettings({section:json.loads(w.get("1.0","end")) for section,w in editors.items()})
+                self.settings=settings; self.dpi.set(str(settings["export"]["dpi"]))
+                self.refresh(); dialog.destroy()
+            except Exception as exc: messagebox.showerror("Invalid publication settings",str(exc),parent=dialog)
+        self.ttk.Button(dialog,text="Apply and redraw",command=apply).pack(pady=8)
 
 
 def main(argv=None):
@@ -633,20 +724,53 @@ def main(argv=None):
     parser.add_argument("--stage",type=int,choices=range(1,6),default=1)
     parser.add_argument("--panel",default="combined",help="Panel key from the manifest, or combined")
     parser.add_argument("--output",default="methodology_figures")
-    parser.add_argument("--dpi",type=int,choices=(300,600),default=300)
+    parser.add_argument("--dpi",type=float,help="Positive export DPI; presets include 300, 600, 1200 and 2400")
+    parser.add_argument("--config",help="Publication settings JSON")
+    parser.add_argument("--save-config",help="Write the resolved settings JSON")
+    parser.add_argument("--width",type=float,help="Physical figure width in inches")
+    parser.add_argument("--height",type=float,help="Physical figure height in inches")
+    parser.add_argument("--width-px",type=int)
+    parser.add_argument("--height-px",type=int)
+    parser.add_argument("--memory-budget-mib",type=float)
+    parser.add_argument("--main-figures",action="store_true",help="Export the five manuscript stage figures")
+    parser.add_argument("--main-figure-stage",type=int,choices=range(1,6),help="Export one manuscript stage figure")
     parser.add_argument("--no-gui",action="store_true")
     parser.add_argument("--export",action="store_true")
     parser.add_argument("--export-all",action="store_true")
     args = parser.parse_args(argv)
+    settings=PublicationSettings.load(args.config) if args.config else PublicationSettings()
+    if args.dpi is not None: settings["export"]["dpi"]=args.dpi
+    if args.memory_budget_mib is not None: settings["export"]["memory_budget_mib"]=args.memory_budget_mib
+    if args.width_px is not None or args.height_px is not None:
+        if args.width is not None or args.height is not None: parser.error("Choose physical inches or pixel dimensions, not both")
+        settings["export"].update(size_mode="pixels",width_px=args.width_px,height_px=args.height_px)
+    elif args.width is not None or args.height is not None:
+        settings["export"]["size_mode"]="physical"
+        if args.width is not None: settings["layout"]["width_in"]=args.width
+        if args.height is not None: settings["layout"]["height_in"]=args.height
+    try: settings.validate()
+    except ValueError as exc: parser.error(str(exc))
+    if args.save_config: settings.save(args.save_config)
     repo = Repository()
+    if args.main_figures:
+        done,failures=export_manuscript(repo,args.output,settings,print)
+        print(f"Exported {len(done)} main figures; {len(failures)} failures")
+        return 1 if failures else 0
+    if args.main_figure_stage:
+        paths=export_main(repo,args.main_figure_stage,args.output,settings=settings)
+        for path in paths: print(path)
+        write_support_files(repo,args.output)
+        return 0 if any(p.suffix==".png" for p in paths) else 1
     if args.export_all:
-        done,failures = export_all(repo,args.output,args.dpi,print)
+        done,failures = export_all(repo,args.output,progress=print,settings=settings)
         print(f"Exported {len(done)} views; {len(failures)} failures")
         return 1 if failures else 0
     if args.export:
-        for path in export_view(repo.get(args.case),args.stage,args.panel,args.output,args.dpi):
+        paths=export_view(repo.get(args.case),args.stage,args.panel,args.output,settings=settings)
+        for path in paths:
             print(path)
         write_support_files(repo,args.output)
+        if not any(p.suffix==".png" for p in paths): return 1
     if args.no_gui:
         if not args.export:
             for case in CASES:
@@ -656,7 +780,7 @@ def main(argv=None):
         return 0
     import tkinter as tk
     root = tk.Tk()
-    MethodologyApp(root,repo,args.output,args.case,args.stage)
+    MethodologyApp(root,repo,args.output,args.case,args.stage,settings)
     root.mainloop()
     return 0
 
