@@ -79,20 +79,21 @@ the original aspect ratio determines the other. CLI inch and pixel overrides
 cannot be combined. Pixel dimensions do not change when DPI changes in pixel
 mode; physical size and the relative size of text do change.
 
-Figure text uses **Times New Roman**, with one deliberate exception: the four
-transition-level labels `z_s`, `z_t`, `z_m`, and `z_b` use the earlier **DejaVu Sans
-mathematical lettering** for readability. Their sizes and saved offsets are
-unchanged. Other mathematical labels retain the Times New Roman style.
+Figure text uses **Times New Roman**. The four transition-level labels `z_s`,
+`z_t`, `z_m`, and `z_b` use the same mathematical font as the z-axis symbol and
+default to **10 pt**, matching the X/Y tick labels. Saved offsets are preserved.
 The regular, italic, bold and bold-italic faces must be installed; the renderer
 reports missing fonts and does not substitute another family. SVG retains text
-elements and references Times New Roman and DejaVu Sans; the viewer needs those
-fonts for identical lettering.
+elements and references Times New Roman; the viewer needs that font for
+identical lettering.
 PDF embeds TrueType font subsets where supported. Font files are not distributed.
 
 In Fonts, independently change `title`, `panel_title`, `panel_letter`,
 `axis_label`, `tick`, `legend`, `name`, `vertex`, `edge`, `z_level`, `z_axis`,
-and `footer` (points). The default Z-level size is **16 pt**, versus 10 pt for
-ordinary ticks. To enlarge Z labels alone, change `fonts.z_level`.
+and `footer` (points). Z-level and ordinary tick labels both default to **10 pt**.
+Independent sizing remains available through `fonts.z_level` and `fonts.tick`.
+Older saved configurations may still explicitly specify a larger `z_level`;
+set it to the same value as `tick` to obtain the matching size.
 
 ## Layout, cameras and annotation placement
 

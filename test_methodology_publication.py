@@ -36,10 +36,8 @@ class PublicationTests(unittest.TestCase):
             self.assertGreater(fig.get_figwidth(),7.2)
             for artist in fig.findobj(Text):
                 if not artist.get_text(): continue
-                is_level="/z_level:" in getattr(artist,"publication_id","")
-                self.assertIn("DejaVu Sans" if is_level else "Times New Roman",artist.get_fontfamily())
-                if is_level: self.assertEqual(artist.get_math_fontfamily(),"dejavusans")
-            self.assertTrue(all(a.get_fontsize()==16 for key,a in fig._publication_artists.items() if "/z_level:" in key))
+                self.assertIn("Times New Roman",artist.get_fontfamily())
+            self.assertTrue(all(a.get_fontsize()==10 for key,a in fig._publication_artists.items() if "/z_level:" in key))
             fig.clear()
         terminal=[i for i in main_items(self.repo,5) if i.key.endswith("terminal_representation")]
         self.assertEqual([i.panel.shapes[0].geometry.geom_type for i in terminal],["Polygon","Point","MultiLineString","Polygon"])
@@ -54,8 +52,13 @@ class PublicationTests(unittest.TestCase):
             self.assertEqual({a.get_text() for a in labels},{"$z_s$","$z_t$","$z_m$","$z_b$"})
             for label in labels:
                 glyphs=MathTextParser("path").parse(label.get_text(),dpi=100,prop=label.get_fontproperties()).glyphs
-                self.assertTrue(all(g[0].family_name.startswith("DejaVu Sans") for g in glyphs))
-                self.assertEqual(label.get_fontsize(),16)
+                self.assertEqual({g[0].family_name for g in glyphs},{"Times New Roman"})
+                axis_symbol=next(a for key,a in fig._publication_artists.items()
+                                 if key.endswith("/z_axis") and a.axes is label.axes)
+                self.assertEqual(label.get_fontfamily(),axis_symbol.get_fontfamily())
+                self.assertEqual(label.get_math_fontfamily(),axis_symbol.get_math_fontfamily())
+                self.assertEqual(label.get_fontsize(),label.axes.get_xticklabels()[0].get_fontsize())
+                self.assertEqual(label.get_fontsize(),10)
         fig.clear()
         require_times_new_roman.cache_clear()
         try:

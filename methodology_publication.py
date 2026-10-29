@@ -25,7 +25,7 @@ from mpl_toolkits.mplot3d import proj3d
 DEFAULTS = {
     "fonts": {"title":14., "panel_title":12., "panel_letter":12., "axis_label":11.,
               "tick":10., "legend":9., "name":11., "vertex":10., "edge":10.,
-              "z_level":16., "z_axis":12., "footer":9.},
+              "z_level":10., "z_axis":12., "footer":9.},
     "layout": {"width_in":10., "height_in":None, "plot_height_in":3.6,
                "legend_space_in":1.25, "left":.07, "right":.95, "top_in":.72,
                "bottom_in":.65, "wspace":.28, "hspace":.12,
@@ -210,11 +210,6 @@ def annotate(ax,point,label,settings,role="name",color="#172033",offset=(3,7)):
     artist._publication_anchor3d=tuple(point) if hasattr(ax,"get_zlim") else None
     artist._publication_default_offset=tuple(offset)
     register_text(fig,artist,key,settings)
-    if role=="z_level":
-        # Restore the earlier Matplotlib mathematical lettering only for the
-        # transition-level symbols; preserve sizes, offsets and all other text.
-        artist.set_fontfamily("DejaVu Sans")
-        artist.set_math_fontfamily("dejavusans")
     return artist
 
 
