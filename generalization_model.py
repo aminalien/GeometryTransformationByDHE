@@ -9,11 +9,10 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, field
 from math import isfinite
-from itertools import product
 from types import SimpleNamespace
 
 import numpy as np
-from shapely import constrained_delaunay_triangles, set_precision, union_all
+from shapely import constrained_delaunay_triangles, union_all
 from shapely.affinity import translate
 from shapely.geometry import Polygon, Point, LineString
 from shapely.geometry.polygon import orient
@@ -21,10 +20,16 @@ from shapely.ops import polygonize, unary_union
 
 import DHECore as dhe
 from generalization_geometry import TOL, polygon_target, visible_point, skeleton_ridge, feature_color
+from shell_conformity import (CoordinateRegistry, arithmetic_bound, TransitionShellError,
+                             check_face_intersections, check_interface_pairs, diagnosed_transition)
 
 
 def xyz(p):
-    return tuple(round(float(v), 8) for v in p)
+    return tuple(float(v) for v in p)
+
+
+def _lerp(a,b,t):
+    return a if t==0 or a==b else b if t==1 else a+(b-a)*t
 
 
 def parts(g):
@@ -34,6 +39,61 @@ def parts(g):
     elif hasattr(g, "geoms"):
         for child in g.geoms:
             yield from parts(child)
+
+
+def _conform_footprints(geometries):
+    """Insert shared boundary nodes without moving a neighbouring boundary."""
+    all_points=[tuple(p) for g in geometries.values() for p in g.exterior.coords[:-1]]
+    registry=CoordinateRegistry(all_points,dimension=2)
+    points=np.array(sorted({registry.canonical(p) for p in all_points}))
+    result={}
+    for owner,geometry in geometries.items():
+        ring=[registry.canonical(p) for p in orient(geometry,1).exterior.coords[:-1]]
+        output=[]
+        for a,b in zip(ring,ring[1:]+ring[:1]):
+            av,bv=np.asarray(a),np.asarray(b);d=bv-av;length=np.linalg.norm(d)
+            t=(points-av)@d/(length*length)
+            indices=np.flatnonzero((t>registry.bound/length)&(t<1-registry.bound/length)&
+                                  (np.linalg.norm(points-av-t[:,None]*d,axis=1)<=registry.bound))
+            output.append(a)
+            output.extend(tuple(points[i]) for i in sorted(indices,key=lambda i:t[i]))
+        result[owner]=Polygon(output)
+    return result
+
+
+def _conform_input_interfaces(geometries):
+    """Record real input boundary intersections before subtracting the XY origin.
+
+    A point on a long edge in projected CRS can cease to be exactly collinear
+    after independent floating-point translations. Insert the SAME intersection
+    endpoint on both input rings first; do not infer adjacency from proximity.
+    """
+    nodes={k:set() for k in geometries}
+    def coordinates(g):
+        if g.is_empty:return []
+        if g.geom_type in ('Point','LineString','LinearRing'):return list(g.coords)
+        return [p for child in g.geoms for p in coordinates(child)]
+    owners=list(geometries)
+    for i,k in enumerate(owners):
+        for j in owners[:i]:
+            points=coordinates(geometries[k].boundary.intersection(geometries[j].boundary))
+            nodes[k].update(points);nodes[j].update(points)
+    result={}
+    for owner,g in geometries.items():
+        ring=list(g.exterior.coords)[:-1];existing=set(ring)
+        insertions=defaultdict(list)
+        segments=[LineString([a,b]) for a,b in zip(ring,ring[1:]+ring[:1])]
+        for point in nodes[owner]-existing:
+            index=min(range(len(segments)),key=lambda i:segments[i].distance(Point(point)))
+            if segments[index].distance(Point(point))>arithmetic_bound(ring):
+                raise TransitionShellError('An input interface junction is not on its generating boundary.',
+                    'input_interface_nonconformity',cell=owner,point=point)
+            insertions[index].append((segments[index].project(Point(point)),point))
+        output=[]
+        for i,p in enumerate(ring):
+            output.append(p);output.extend(q for _,q in sorted(insertions[i]))
+        result[owner]=Polygon(output)
+    return result
 
 
 @dataclass
@@ -57,15 +117,37 @@ class Patch:
     source: int
     points: list[tuple]
     geometry: Polygon = field(init=False)
+    _height_cache: dict = field(default_factory=dict, init=False, repr=False)
 
     def __post_init__(self):
         self.points = [xyz(p) for p in self.points]
         self.geometry = Polygon([p[:2] for p in self.points])
 
     def height(self, point):
+        point=tuple(point)
+        if point in self._height_cache:
+            return self._height_cache[point]
+        bound=arithmetic_bound(self.points)
+        # A real patch endpoint or constant-level boundary edge carries an
+        # explicit level. Do not reconstruct it through a barycentric solve.
+        for vertex in self.points:
+            if max(abs(point[k]-vertex[k]) for k in (0,1))<=bound:
+                self._height_cache[point]=vertex[2]
+                return vertex[2]
+        for a,b in zip(self.points,self.points[1:]+self.points[:1]):
+            if a[2]!=b[2]:
+                continue
+            av,bv=np.array(a[:2]),np.array(b[:2]);d=bv-av
+            length=np.linalg.norm(d)
+            t=float((np.asarray(point)-av)@d/(length*length))
+            if -bound/length<=t<=1+bound/length and np.linalg.norm(np.asarray(point)-av-t*d)<=bound:
+                self._height_cache[point]=a[2]
+                return a[2]
         a, b, c = np.asarray(self.points)
         u, v = np.linalg.solve(np.column_stack((b[:2]-a[:2], c[:2]-a[:2])), np.asarray(point)-a[:2])
-        return float(a[2]+u*(b[2]-a[2])+v*(c[2]-a[2]))
+        value=float(a[2]+u*(b[2]-a[2])+v*(c[2]-a[2]))
+        self._height_cache[point]=value
+        return value
 
 
 @dataclass
@@ -99,21 +181,12 @@ def _restore(core):
 def _node_faces(faces):
     """Node all 3D face edges, including historical edges and vertical junctions."""
     cleaned = []
-    bins = defaultdict(list)
-    offsets = tuple(product((-1,0,1), repeat=3))
+    registry=CoordinateRegistry([p for f in faces for p in f.points])
     levels = {p[2] for face in faces if face.part in ("top","bottom") for p in face.points}
     def canonical(point):
         point = xyz(point)
-        level = next((z for z in levels if abs(point[2]-z)<TOL),None)
-        if level is not None:
-            point = (point[0],point[1],level)
-        key = tuple(round(v/TOL) for v in point)
-        for offset in offsets:
-            for old in bins[tuple(k+d for k,d in zip(key,offset))]:
-                if sum((a-b)**2 for a,b in zip(point,old)) <= TOL*TOL:
-                    return old
-        bins[key].append(point)
-        return point
+        role=point[2] if point[2] in levels else None
+        return registry.canonical(point,role)
     # Exact horizontal levels take precedence over near-level interpolations.
     # Otherwise canonicalization could tilt an intended polygon cap by 1e-8 m.
     for face in sorted(faces, key=lambda f: 0 if f.part in ("top", "bottom") else 1):
@@ -140,12 +213,13 @@ def _node_faces(faces):
             a, b = np.asarray(a), np.asarray(b)
             d = b-a
             length = np.linalg.norm(d)
-            if length <= TOL:
+            resolution=float(np.max(np.abs(d)/registry.axis_bounds))
+            if resolution <= 1:
                 raise ValueError("Geometry contains a boundary segment below the construction tolerance.")
             delta = vertices-a
             t = delta@d/(length*length)
-            mask = (t > TOL/length) & (t < 1-TOL/length)
-            indices = np.flatnonzero(mask & (np.linalg.norm(delta-t[:,None]*d, axis=1) < TOL))
+            mask = (t > 1/resolution) & (t < 1-1/resolution)
+            indices = np.flatnonzero(mask & np.all(np.abs(delta-t[:,None]*d)<=registry.axis_bounds,axis=1))
             points.append(xyz(a))
             points.extend(xyz(vertices[i]) for i in sorted(indices, key=lambda i: t[i]))
         result.append(Face(face.owner, points, face.part))
@@ -167,6 +241,79 @@ def _node_faces(faces):
     return surviving
 
 
+def _vertical(face):
+    points=np.asarray(face.points)
+    normal=np.sum(np.cross(points-points[0],np.roll(points-points[0],-1,axis=0)),axis=0)
+    length=np.linalg.norm(normal)
+    return length>0 and abs(normal[2])<=arithmetic_bound(points)*length
+
+
+def _remove_redundant_walls(faces):
+    """Dissolve only adjacent coplanar walls with the same interface owner."""
+    matching=defaultdict(list)
+    for i,face in enumerate(faces):matching[tuple(sorted(face.points))].append(i)
+    neighbours={i:tuple(sorted(faces[j].owner for j in matching[tuple(sorted(f.points))] if j!=i))
+                for i,f in enumerate(faces)}
+    eligible={i for i,f in enumerate(faces) if f.part in ('wall','boundary','base_wall') and _vertical(f)}
+    edge_faces=defaultdict(list)
+    for i in eligible:
+        points=faces[i].points
+        for a,b in zip(points,points[1:]+points[:1]):edge_faces[tuple(sorted((a,b)))].append(i)
+    adjacency=defaultdict(set)
+    for uses in edge_faces.values():
+        for i in uses:
+            for j in uses:
+                if i==j or faces[i].owner!=faces[j].owner or neighbours[i]!=neighbours[j]:continue
+                a=np.array(faces[i].points);normal=np.sum(np.cross(a-a[0],np.roll(a-a[0],-1,axis=0)),axis=0)
+                normal/=np.linalg.norm(normal)
+                if np.max(np.abs((np.asarray(faces[j].points)-a[0])@normal))<=arithmetic_bound(a):
+                    adjacency[i].add(j)
+    visited=set();result=[f for i,f in enumerate(faces) if i not in eligible]
+    for start in sorted(eligible):
+        if start in visited:continue
+        group=set();pending=[start]
+        while pending:
+            i=pending.pop()
+            if i not in group:group.add(i);pending.extend(adjacency[i]-group)
+        visited.update(group)
+        uses=defaultdict(list)
+        for i in group:
+            p=faces[i].points
+            for a,b in zip(p,p[1:]+p[:1]):uses[tuple(sorted((a,b)))].append((a,b))
+        boundary=[v[0] for v in uses.values() if len(v)==1]
+        forward={a:b for a,b in boundary}
+        cycle=[];at=boundary[0][0]
+        while at not in cycle and at in forward:
+            cycle.append(at);at=forward[at]
+        if len(forward)==len(boundary)==len(cycle) and at==cycle[0]:
+            result.append(Face(faces[start].owner,cycle,faces[start].part))
+        else:result.extend(faces[i] for i in sorted(group))
+    # A node remains if ANY incident face needs a true corner there. This also
+    # retains old inclined transitions and interface ownership junctions.
+    required=set()
+    for face in result:
+        p=face.points
+        for i,b in enumerate(p):
+            a,c=np.array(p[i-1]),np.array(p[(i+1)%len(p)])
+            d=c-a;length=np.linalg.norm(d)
+            if length==0 or np.linalg.norm(np.cross(np.array(b)-a,d))/length>arithmetic_bound(p):
+                required.add(b)
+    return [Face(f.owner,[p for p in f.points if p in required],f.part) for f in result]
+
+
+def _lift_unchanged_isolated(state, old, new, lo, hi):
+    """Raise candidate cap vertices directly when roof-incident walls are vertical."""
+    lifted={}
+    for owner,polygon in old.items():
+        if owner not in new or not polygon.equals(new[owner]):continue
+        if any(other!=owner and polygon.intersects(g) for other,g in old.items()):continue
+        shell=[f for f in state.faces if f.owner==owner]
+        roof_incident=[f for f in shell if any(p[2]==lo for p in f.points)]
+        if not roof_incident or any(f.part!='top' and (f.part=='transition' or not _vertical(f)) for f in roof_incident):continue
+        lifted[owner]=[Face(owner,[(x,y,hi if z==lo else z) for x,y,z in f.points],f.part) for f in shell]
+    return lifted
+
+
 def realize(faces, origin):
     """Realize checked shells with the existing Euler and sewing operators."""
     from main import ExtrudedCell, ExtrusionModel, validate_model
@@ -174,6 +321,15 @@ def realize(faces, origin):
     from transition_layer import _check_shell, _planned_volume
     from plane_slicing import _face_frame
     faces = _node_faces(faces)
+    raw_groups=defaultdict(list)
+    for face in faces:raw_groups[face.owner].append(face)
+    for owner,shell in raw_groups.items():
+        try:_check_shell(shell)
+        except TransitionShellError as exc:
+            exc.report.update(cell=owner,stage='conforming_boundary')
+            exc.args=(f"Feature {owner}: {exc}",)
+            raise
+    faces = _remove_redundant_walls(faces)
     groups = defaultdict(list)
     for face in faces:
         groups[face.owner].append(face)
@@ -182,11 +338,21 @@ def realize(faces, origin):
             _check_shell(shell)
             _check_vertex_links(shell)
             for face in shell:
+                if face.part=='transition' and len({p[2] for p in face.points})==1:
+                    raise TransitionShellError('An inclined transition facet has only one assigned level.',
+                        'horizontal_transition_facet',stage='facet_levels',cell=owner,points=face.points)
                 _face_frame(face.points)
+            check_face_intersections(shell)
             if _planned_volume(shell) <= TOL*TOL:
                 raise ValueError("non-positive oriented volume")
         except ValueError as exc:
+            if isinstance(exc,TransitionShellError):
+                exc.report['cell']=owner
+                exc.args=(f"Feature {owner}: {exc}",)
+                raise
             raise ValueError(f"Feature {owner}: {exc}") from exc
+    check_interface_pairs(faces)
+    check_face_intersections(faces,across_cells=True)
     saved = _core()
     try:
         dhe.reset_globals()
@@ -266,12 +432,14 @@ def _polygon_patches(owner, source, target, lo, hi):
                 roles = {}
                 for v in vertices:
                     p = Point(v.x,v.y)
-                    s, t = source.boundary.distance(p)<TOL, target.boundary.distance(p)<TOL
+                    bound=arithmetic_bound([*source.exterior.coords,*target.exterior.coords])
+                    s, t = source.boundary.distance(p)<=bound, target.boundary.distance(p)<=bound
                     roles[v] = VertexRole.BOTH if s and t else VertexRole.SOURCE if s else VertexRole.TARGET if t else VertexRole.NEITHER
                 context = SimpleNamespace(source_geometry=source, target_geometry=target, tolerance=TOL,
                                           triangulation=SimpleNamespace(vertex_roles=roles))
                 try:
-                    triangles = _strip(SimpleNamespace(boundary_vertices=vertices, geometry=region, kind=kind), context, lo, hi)
+                    triangles = _strip(SimpleNamespace(boundary_vertices=vertices, geometry=region, kind=kind,
+                                                       region_id=f'{owner}/active/{len(patches)}'), context, lo, hi)
                 except ValueError:
                     pass
             if triangles is None:
@@ -281,7 +449,8 @@ def _polygon_patches(owner, source, target, lo, hi):
                     points = []
                     for p in list(triangle.exterior.coords)[:-1]:
                         ds, dt = source.boundary.distance(Point(p)), target.boundary.distance(Point(p))
-                        fraction = ds/(ds+dt) if ds+dt > TOL else .5
+                        bound=arithmetic_bound([*source.exterior.coords,*target.exterior.coords])
+                        fraction = ds/(ds+dt) if ds+dt > bound else .5
                         points.append((*p, lo+(hi-lo)*fraction))
                     if max(p[2] for p in points)-min(p[2] for p in points) <= TOL:
                         center = triangle.centroid
@@ -294,7 +463,7 @@ def _polygon_patches(owner, source, target, lo, hi):
 
 
 def _collapse_patches(owner, source, target, lo, hi):
-    from transition_targets import _end_extensions, _chain_strip
+    from transition_targets import _end_extensions
     ring = list(orient(source,1).exterior.coords)[:-1]
     if target.geom_type == "Point":
         apex = (target.x,target.y,hi)
@@ -313,9 +482,9 @@ def _collapse_patches(owner, source, target, lo, hi):
         if not region.is_valid:
             raise ValueError("Ridge does not divide the polygon into two valid strips.")
         lower=[(*p,lo) for p in chain]
-        triangles=_chain_strip(lower, upper, region, TOL)
-        if any(Polygon([p[:2] for p in tri]).area <= TOL*TOL for tri in triangles):
-            triangles=_ridge_strip(lower,upper,region)
+        # Validate the same admissible moves at every Z interval; otherwise a
+        # target passing at 0..1 may choose folded moves at a different height.
+        triangles=_ridge_strip(lower,upper,region)
         result.extend(Patch(owner, tri) for tri in triangles)
     return result
 
@@ -353,7 +522,7 @@ def _ridge_strip(lower, upper, region):
 
 def _recipient(patch, sources, selected, lo):
     source = sources[patch.source]
-    lower = [p[:2] for p in patch.points if abs(p[2]-lo)<TOL]
+    lower = [p[:2] for p in patch.points if p[2]==lo]
     boundary = list(source.exterior.coords)
     segments = [LineString([a,b]) for a,b in zip(boundary,boundary[1:])]
     if len(lower) >= 2:
@@ -362,8 +531,20 @@ def _recipient(patch, sources, selected, lo):
         # Same deterministic local boundary ownership as a one-lower-vertex strip.
         at = Point(lower[0]) if lower else patch.geometry.representative_point()
         segment = min(segments, key=lambda e: (e.distance(at), e.distance(patch.geometry.centroid)))
+    def contains_edge(polygon):
+        if polygon.boundary.covers(segment):return True
+        points=np.asarray(segment.coords)
+        if segment.length<=arithmetic_bound(points):return False
+        ring=list(polygon.exterior.coords)
+        for a,b in zip(ring,ring[1:]):
+            av,bv=np.array(a),np.array(b);d=bv-av;length=np.linalg.norm(d)
+            t=(points-av)@d/(length*length)
+            bound=arithmetic_bound([a,b,*points])
+            if t.min()>=-bound/length and t.max()<=1+bound/length and np.max(np.linalg.norm(points-av-t[:,None]*d,axis=1))<=bound:
+                return True
+        return False
     candidates = [owner for owner, polygon in sources.items() if owner != patch.source and owner not in selected
-                  and segment.difference(polygon.boundary.buffer(TOL)).length < TOL]
+                  and contains_edge(polygon)]
     return min(candidates) if candidates else None
 
 
@@ -376,41 +557,53 @@ class Column:
 
 
 def _layer_faces(old, new, patches, lo, hi):
-    from aggregation_layer import _XYNodes
-    xy_nodes = _XYNodes(TOL)
-    for geometry in [*old.values(), *new.values()]:
-        xy_nodes.add_geometry(geometry)
     boundaries = [p.boundary for p in [*old.values(), *new.values()]] + [p.geometry.boundary for p in patches]
-    network = union_all(boundaries, grid_size=1e-8)
+    network = union_all(boundaries)
+    xy_nodes=CoordinateRegistry([p[:2] for patch in patches for p in patch.points]+
+                                [p for g in [*old.values(),*new.values()] for polygon in parts(g)
+                                 for ring in [polygon.exterior,*polygon.interiors] for p in ring.coords],dimension=2)
     domain = unary_union([*old.values(),*new.values()])
     columns = []
     seen_triangles = set()
     faces = []
     for region in polygonize(network):
-        if region.area < 1e-10:
+        if region.area == 0:
             continue
         point = region.representative_point()
         if not domain.covers(point):
             continue
-        before = next((k for k,g in old.items() if g.buffer(TOL).covers(point)),None)
-        after = next((k for k,g in new.items() if g.buffer(TOL).covers(point)),None)
-        matching = [p for p in patches if p.geometry.buffer(TOL).covers(point)]
+        before = next((k for k,g in old.items() if g.covers(point)),None)
+        after = next((k for k,g in new.items() if g.covers(point)),None)
+        matching = [p for p in patches if p.geometry.covers(point)]
+        if not matching:
+            matching=[p for p in patches if p.geometry.distance(point)<=xy_nodes.bound]
         patch = next((p for p in matching if p.source == before), next((p for p in matching if p.source == after), matching[0] if matching else None))
         if before != after and patch is None:
             raise ValueError(f"No transition surface for ownership change {before} → {after}.")
+        if before==after:
+            for ring in [orient(region,1).exterior,*orient(region,1).interiors]:
+                xy=[xy_nodes.canonical(p) for p in list(ring.coords)[:-1]]
+                xy=[p for i,p in enumerate(xy) if p!=xy[i-1]]
+                if len(xy)<3:continue
+                columns.append(Column(xy,before,after,[hi]*len(xy)))
+            continue
         for triangle in constrained_delaunay_triangles(region).geoms:
             if not region.covers(triangle.representative_point()):
                 continue
             xy = [xyz(xy_nodes.canonical(p)) for p in orient(triangle,1).exterior.coords[:-1]]
-            if len(set(xy)) != 3 or Polygon(xy).area < 1e-10:
+            if len(set(xy)) != 3 or Polygon(xy).area == 0:
                 continue
-            if 2*Polygon(xy).area / max(LineString([a,b]).length for a,b in zip(xy,xy[1:]+xy[:1])) < TOL*2:
-                continue
+            span=max(np.linalg.norm(np.subtract(a,b)) for a,b in zip(xy,xy[1:]+xy[:1]))
+            if 2*Polygon(xy).area/span<=xy_nodes.bound:
+                continue  # zero projected area within the arithmetic error bound
             triangle_key = tuple(sorted(xy))
             if triangle_key in seen_triangles:
                 continue
             seen_triangles.add(triangle_key)
-            h = [float(np.clip(patch.height(p),lo,hi)) for p in xy] if before != after else [hi]*3
+            h = [patch.height(p) for p in xy] if before != after else [hi]*3
+            if min(h)<lo-xy_nodes.bound or max(h)>hi+xy_nodes.bound:
+                raise TransitionShellError('A transition facet violates its assigned interval.',
+                                           'invalid_level_assignment',source=patch.source,points=xy,heights=h,interval=(lo,hi))
             column = Column(xy,before,after,h)
             columns.append(column)
             if before != after:
@@ -423,9 +616,10 @@ def _layer_faces(old, new, patches, lo, hi):
     # across a cut; split their crossings before subtracting same-owner intervals.
     edges = defaultdict(list)
     for column in columns:
-        for i in range(3):
-            a,b = column.points[i],column.points[(i+1)%3]
-            za,zb = column.heights[i],column.heights[(i+1)%3]
+        for i in range(len(column.points)):
+            j=(i+1)%len(column.points)
+            a,b = column.points[i],column.points[j]
+            za,zb = column.heights[i],column.heights[j]
             key = tuple(sorted((a,b)))
             edges[key].append((column, (za,zb) if a == key[0] else (zb,za), a == key[0]))
     # CDT preserves boundary vertices, but independently triangulated polygon
@@ -436,11 +630,13 @@ def _layer_faces(old, new, patches, lo, hi):
     for (a,b), uses in edges.items():
         av,bv = np.array(a),np.array(b); d=bv-av; l2=d@d
         ts=(array-av)@d/l2
-        hits=np.flatnonzero((ts>TOL)&(ts<1-TOL)&(np.linalg.norm(array-av-ts[:,None]*d,axis=1)<TOL))
+        bound=xy_nodes.bound
+        length=np.sqrt(l2)
+        hits=np.flatnonzero((ts>bound/length)&(ts<1-bound/length)&(np.linalg.norm(array-av-ts[:,None]*d,axis=1)<bound))
         split=[(0.,a),*sorted([(float(ts[i]),nodes[i]) for i in hits]),(1.,b)]
         for (t,p),(u,q) in zip(split,split[1:]):
             for column,(ha,hb),forward in uses:
-                atomic[p,q].append((column,(ha+t*(hb-ha),ha+u*(hb-ha)),forward))
+                atomic[p,q].append((column,(_lerp(ha,hb,t),_lerp(ha,hb,u)),forward))
     for (a,b), uses in atomic.items():
         if len(uses)>2:
             raise ValueError(f"Transition columns overlap near {a}. Adjust the operation parameters.")
@@ -458,20 +654,21 @@ def _layer_faces(old, new, patches, lo, hi):
             if use is None:
                 return None
             c,h,_=use
-            return c.old if z < h[0]+t*(h[1]-h[0]) else c.new
+            return c.old if z < _lerp(h[0],h[1],t) else c.new
         for ta,tb in zip(cuts,cuts[1:]):
             tm=(ta+tb)/2
-            ordered=sorted(functions,key=lambda f:f[0]+tm*(f[1]-f[0]))
+            ordered=sorted(functions,key=lambda f:_lerp(f[0],f[1],tm))
             for lower,upper in zip(ordered,ordered[1:]):
-                l=lower[0]+tm*(lower[1]-lower[0]); h=upper[0]+tm*(upper[1]-upper[0])
-                if h-l<TOL:
+                l=_lerp(lower[0],lower[1],tm); h=_lerp(upper[0],upper[1],tm)
+                if h-l<=arithmetic_bound([(lo,hi)]):
                     continue
                 ownleft,ownright=label(left,tm,(l+h)/2),label(right,tm,(l+h)/2)
                 if ownleft == ownright:
                     continue
-                p=tuple(a[k]+ta*(b[k]-a[k]) for k in range(2));q=tuple(a[k]+tb*(b[k]-a[k]) for k in range(2))
-                points=[(*p,lower[0]+ta*(lower[1]-lower[0])),(*q,lower[0]+tb*(lower[1]-lower[0])),
-                        (*q,upper[0]+tb*(upper[1]-upper[0])),(*p,upper[0]+ta*(upper[1]-upper[0]))]
+                p=xy_nodes.canonical(tuple(_lerp(a[k],b[k],ta) for k in range(2)))
+                q=xy_nodes.canonical(tuple(_lerp(a[k],b[k],tb) for k in range(2)))
+                points=[(*p,_lerp(lower[0],lower[1],ta)),(*q,_lerp(lower[0],lower[1],tb)),
+                        (*q,_lerp(upper[0],upper[1],tb)),(*p,_lerp(upper[0],upper[1],ta))]
                 if ownleft is not None:
                     faces.append(Face(ownleft,points,"wall"))
                 if ownright is not None:
@@ -486,12 +683,14 @@ class GeneralizationSession:
         if not isfinite(initial_height) or initial_height <= 0:
             raise ValueError("Initial height must be positive and finite.")
         self.data=data
+        self.last_diagnostic=None
         self.origin=tuple(float(v) for v in data.frame.total_bounds[:2])
         features={}
         faces=[]
+        inputs=_conform_input_interfaces({int(row['_index']):row.geometry for _,row in data.frame.iterrows()})
         for _,row in data.frame.iterrows():
             index=int(row["_index"])
-            geometry=set_precision(translate(row.geometry,xoff=-self.origin[0],yoff=-self.origin[1]),1e-8)
+            geometry=translate(inputs[index],xoff=-self.origin[0],yoff=-self.origin[1])
             attrs={k:v for k,v in row.items() if k not in (data.frame.geometry.name,"_index")}
             features[index]=Feature(index,geometry,attrs,(index,),f"Feature {index}")
             faces.extend(_prism(index,geometry,0.,initial_height))
@@ -503,23 +702,25 @@ class GeneralizationSession:
     def state(self):
         return self.history[self.cursor]
 
+    @diagnosed_transition
     def preview(self, operation, selected, *, dz=10., tolerance=1., iterations=1, ratio=.25, winner=None):
         selected=tuple(sorted(set(map(int,selected))))
         state=self.state
         if not selected:
             raise ValueError("Select at least one polygon.")
         if not isfinite(dz) or dz <= TOL:
-            raise ValueError("Height increment must be positive and finite.")
+            raise TransitionShellError(f"Height increment must be finite and greater than {TOL:g} transition units.",
+                                       'unsupported_transition_interval',stage='level_assignment',increment=dz)
         if any(k not in state.features or state.features[k].geometry.geom_type != "Polygon" for k in selected):
             raise ValueError("Only current polygon features can be generalized; collapsed symbols are terminal.")
         lo,hi=state.z,state.z+dz
+        if not isfinite(hi) or hi<=lo:
+            raise TransitionShellError('The requested upper transition level is not representably above the source level.',
+                                       'unresolvable_transition_interval',stage='level_assignment',source_z=lo,target_z=hi)
         sources={k:f.geometry for k,f in state.features.items() if f.geometry.geom_type == "Polygon"}
         # Ownership changes must be split where a neighbour starts or stops along
         # an edge, even if the input ring omits that degree-two boundary node.
-        from aggregation_layer import _XYNodes
-        nodes=_XYNodes(TOL)
-        for geometry in sources.values():nodes.add_geometry(geometry)
-        sources={k:Polygon(nodes.ring(orient(g,1).exterior)) for k,g in sources.items()}
+        sources=_conform_footprints(sources)
         targets,patches,notes={},[],[]
         remap={}
         aggregate=None
@@ -551,7 +752,6 @@ class GeneralizationSession:
                 source=sources[k]
                 if operation in ("simplification","smoothing"):
                     target=polygon_target(state.features[k].geometry,operation,tolerance,iterations,ratio)
-                    target=set_precision(target,1e-8)
                     ps,extended=_polygon_patches(k,source,target,lo,hi)
                     patches.extend(ps)
                     if extended:
@@ -586,10 +786,12 @@ class GeneralizationSession:
             for k,regions in gains.items():
                 new[k]=unary_union([new[k],*regions])
         new.update(explicit)
-        new={k:set_precision(g,1e-8) for k,g in new.items()}
         for k,g in new.items():
             if g.is_empty or g.geom_type != "Polygon" or not g.is_valid or g.interiors:
-                raise ValueError(f"Feature {k}: neighbour update creates an empty, split, invalid or holed footprint. Change the selection or parameters.")
+                raise TransitionShellError(f"Feature {k}: neighbour update creates an empty, split, invalid or holed footprint. Change the selection or parameters.",
+                    'non_simple_neighbour_footprint',stage='neighbour_union',cell=k,geometry_type=g.geom_type,
+                    valid=g.is_valid,component_areas=[p.area for p in parts(g)],proposed_boundary=g.wkt,
+                    original_boundary=sources[k].wkt if k in sources else None,role='neighbour_top_cap')
         for i,(k,g) in enumerate(new.items()):
             for j,h in list(new.items())[:i]:
                 if g.intersection(h).area > TOL*TOL:
@@ -599,9 +801,14 @@ class GeneralizationSession:
         for k,g in sources.items():
             owner=remap.get(k,k)
             old[owner]=unary_union([old.get(owner,Polygon()),g])
+        lifted=_lift_unchanged_isolated(state,old,new,lo,hi) if not remap else {}
+        if lifted:
+            notes.append(f"{len(lifted)} unchanged isolated features: roof lifted without a new wall band.")
         historical=[Face(remap.get(f.owner,f.owner),list(f.points),f.part) for f in state.faces
-                    if not all(abs(p[2]-lo)<TOL for p in f.points)]
-        layer=_layer_faces(old,new,patches,lo,hi)
+                    if f.owner not in lifted and not all(p[2]==lo for p in f.points)]
+        historical.extend(f for shell in lifted.values() for f in shell)
+        layer=_layer_faces({k:g for k,g in old.items() if k not in lifted},
+                           {k:g for k,g in new.items() if k not in lifted},patches,lo,hi)
         saved=_core()
         try:
             model,faces,core=realize([*historical,*layer],self.origin)
@@ -620,7 +827,7 @@ class GeneralizationSession:
                     raise ValueError(f"Feature {k}: realized top is not a supported simple polygon.")
                 # Remove numerical collinear wiggles from the exported ring;
                 # the real DHE face retains every conforming boundary node.
-                new[k]=actual.simplify(TOL, preserve_topology=True)
+                new[k]=actual.simplify(arithmetic_bound(actual.exterior.coords), preserve_topology=True)
             for k,g in contacts.items():
                 actual=final_sections[str(k)]
                 if g.geom_type=="LineString" and actual.geom_type=="MultiLineString":

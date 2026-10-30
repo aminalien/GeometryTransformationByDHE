@@ -297,7 +297,7 @@ def prepare_collapse(model, target, source_id, source_z, target_z, tolerance=1e-
         if _signed_xy([(e.V.x,e.V.y,e.V.z) for e in dhe.face_edges(roofs[owner])]) < 0:
             for plan in shell:
                 plan.points.reverse()
-        _check_shell(shell)
+        _check_shell(shell,context=dict(case=f'polygon_to_{target.kind}',cell=owner,source_z=source_z,target_z=target_z,stage='collapse_boundary'))
     uses = defaultdict(list)
     for owner,shell in plans.items():
         for plan in shell:

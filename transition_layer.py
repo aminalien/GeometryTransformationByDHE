@@ -13,6 +13,7 @@ from shapely.geometry.polygon import orient
 from shapely.ops import polygonize, unary_union
 
 import DHECore as dhe
+from shell_conformity import transactional_dhe_layer
 from DHECore import face_edges
 from active_region_triangulation import VertexRole, validate_triangulation
 from top_face_overlay import AREA_TOLERANCE, RegionKind, cell_volume, face_polygon, roof_faces
@@ -242,19 +243,13 @@ def _xy_key(a, b):
     return tuple(sorted((tuple(a[:2]), tuple(b[:2]))))
 
 
-def _check_shell(plans):
-    edges = defaultdict(list)
-    for plan in plans:
-        for a, b in zip(plan.points, plan.points[1:] + plan.points[:1]):
-            if a == b:
-                raise ValueError("A planned face has a zero-length edge.")
-            edges[tuple(sorted((a, b)))].append((a, b))
-    if any(len(uses) != 2 or uses[0] != tuple(reversed(uses[1]))
-           for uses in edges.values()):
-        raise ValueError("The planned transition shell is not a consistently oriented closed manifold.")
-    vertices = {p for plan in plans for p in plan.points}
-    if len(vertices) - len(edges) + len(plans) != 2:
-        raise ValueError("The planned transition shell does not have genus-zero topology.")
+def _check_shell(plans, *, context=None):
+    from shell_conformity import check_oriented_shell,TransitionShellError
+    try:
+        check_oriented_shell(plans)
+    except TransitionShellError as exc:
+        if context:exc.report.update(context)
+        raise
 
 
 def _preflight(model, target_z):
@@ -384,7 +379,7 @@ def _preflight(model, target_z):
         if _signed_xy(base) * _signed_xy(lower.points) > 0:
             for plan in shell:
                 plan.points.reverse()
-        _check_shell(shell)
+        _check_shell(shell,context=dict(case='polygon_to_polygon',cell=owner,source_z=lo,target_z=hi,stage='upper_boundary'))
     # Check inter-cell incidence before allocating any DHE records.
     ownership = defaultdict(list)
     for owner, shell in plans.items():
@@ -446,11 +441,12 @@ def merge_transition_shells(model, upper_plans, source_z, base_faces=None):
                 continue
             part = "bottom_cap" if all(p[2] == bottom_z for p in points) else "base_wall"
             shell.append(_FacetPlan(points, part, None, part, False))
-        _check_shell(shell)
+        _check_shell(shell,context=dict(cell=owner,source_z=source_z,stage='boundary_merge'))
         plans[owner] = shell
     return plans
 
 
+@transactional_dhe_layer
 def build_transition_layer(model: ExtrusionModel, target_z: float = 10.0, *,
                            target=None, source_id="3000", source_z=5.0) -> TransitionLayer:
     """Union base and upper boundaries into one closed DHE cell per feature."""
@@ -474,6 +470,14 @@ def build_transition_layer(model: ExtrusionModel, target_z: float = 10.0, *,
     # as polygon faces. No hidden second cell or internal horizontal face remains.
     plans = merge_transition_shells(model, upper_plans, overlay.height,
                                     prepared.base_faces if prepared else None)
+    from shell_conformity import check_face_intersections,check_interface_pairs
+    from types import SimpleNamespace
+    for shell in plans.values():
+        check_face_intersections(shell)
+    interfaces=[SimpleNamespace(owner=owner,points=plan.points,part=plan.part)
+                for owner,shell in plans.items() for plan in shell]
+    check_interface_pairs(interfaces)
+    check_face_intersections(interfaces,across_cells=True)
     for owner, shell in plans.items():
         if abs(_planned_volume(shell) - expected[owner]) > max(AREA_TOLERANCE, expected[owner]*1e-9):
             raise ValueError("A merged shell changes its feature volume.")

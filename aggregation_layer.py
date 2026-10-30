@@ -219,8 +219,11 @@ def _plan_shell(preview, bottom_z, source_z, merge_z, top_z):
                       if partition.distance(midpoint) <= preview.tolerance), None)
         plans.append(_FacePlan([(*a, heights[a]), (*b, heights[b]), (*b, top_z), (*a, top_z)], "hull_wall", owner))
     plans.append(_FacePlan([(*p, top_z) for p in hull], "upper_cap", None))
-    _check_shell(plans)
+    _check_shell(plans,context=dict(case='aggregation',cell='aggregate',bottom_z=bottom_z,source_z=source_z,
+                                  merge_z=merge_z,target_z=top_z,stage='growth_boundary'))
     _check_vertex_links(plans)
+    from shell_conformity import check_face_intersections
+    check_face_intersections(plans)
     if abs(_planned_volume(plans)-expected_volume) > max(1e-6, expected_volume*1e-9):
         raise ValueError("Aggregate boundary volume disagrees with its integrated growth surface.")
     return plans, maximum_time, expected_volume

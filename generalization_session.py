@@ -59,6 +59,7 @@ class GeneralizationWindow:
         self.root.geometry("1650x1000")
         self.messages=queue.Queue()
         self.busy=False
+        self.closed=False
         self.session=None
         self.proposal=None
         self.selected=set()
@@ -102,9 +103,10 @@ class GeneralizationWindow:
         self.status=tk.StringVar(value="Load a polygon dataset to begin.")
         ttk.Label(self.root,textvariable=self.status,wraplength=1550,anchor="w").pack(fill="x",padx=8,pady=5)
         self.root.protocol("WM_DELETE_WINDOW",self.close)
-        self.root.after(100,self._poll)
+        self.poll_id=self.root.after(100,self._poll)
+        self.load_id=None
         if autoload:
-            self.root.after(150,self.load)
+            self.load_id=self.root.after(150,self.load)
 
     def _var(self,key,default):
         self.variables[key]=self.tk.StringVar(value=str(default))
@@ -179,6 +181,7 @@ class GeneralizationWindow:
         self.fill=tk.BooleanVar(value=True)
         ttk.Checkbutton(group,text="Fill cells",variable=self.fill,command=self.draw).pack(anchor="w")
         ttk.Button(group,text="Open full DHE inspector",command=self.inspect).pack(fill="x")
+        ttk.Button(group,text="Last transition diagnostics…",command=self.diagnostics).pack(fill="x")
         self._entry(group,"3D Z exaggeration","exaggeration",3)
         ttk.Button(group,text="Update 3D view",command=self.draw).pack(fill="x")
         group=self._group("Cross-section · ↑/↓, wheel, buttons")
@@ -218,6 +221,7 @@ class GeneralizationWindow:
         threading.Thread(target=work,daemon=True,name="DHE generalization worker").start()
 
     def _poll(self):
+        if self.closed:return
         try:
             callback,result,error=self.messages.get_nowait()
         except queue.Empty:
@@ -235,7 +239,7 @@ class GeneralizationWindow:
                     self.status.set(str(exc))
                     from tkinter import messagebox
                     messagebox.showerror("Workspace error",str(exc),parent=self.root)
-        self.root.after(100,self._poll)
+        self.poll_id=self.root.after(100,self._poll)
 
     def load(self):
         if self.busy:return
@@ -560,6 +564,11 @@ class GeneralizationWindow:
             lines.append(f"{f.label}\nType: {f.geometry.geom_type}\nLineage: {f.lineage}\n"+"\n".join(f"{key}: {value}" for key,value in f.attributes.items()))
         self._text_dialog("Attributes and lineage","\n\n".join(lines) or "Select a feature first.")
 
+    def diagnostics(self):
+        import json
+        report=getattr(self.session,'last_diagnostic',None) if self.session else None
+        self._text_dialog('Transition diagnostics',json.dumps(report,indent=2,default=str) if report else 'No failed transition has been recorded in this session.')
+
     def _text_dialog(self,title,text):
         top=self.tk.Toplevel(self.root);top.title(title)
         widget=self.tk.Text(top,width=85,height=24,wrap="word");widget.pack(fill="both",expand=True)
@@ -577,6 +586,10 @@ class GeneralizationWindow:
             except Exception as exc:self.status.set("Export failed: "+str(exc))
 
     def close(self):
+        self.closed=True
+        for identifier in (self.poll_id,self.load_id):
+            if identifier:
+                self.root.after_cancel(identifier)
         self._close_inspector()
         self.root.destroy()
 

@@ -182,7 +182,7 @@ def skeleton_ridge(source):
             line = substring(chord, chord.length*.05, chord.length*.95)
             if _valid_ridge(source, line):
                 return line, "visibility-kernel principal-axis fallback"
-    raise ValueError("No valid simple interior ridge was found. Branched skeleton collapse is unsupported.")
+    raise ValueError("No valid simple interior ridge was found by the current target search. Branched ridge targets are unsupported.")
 
 
 def polygon_target(source, operation, tolerance=1., iterations=1, ratio=.25):

@@ -20,7 +20,7 @@ The loader reports unsupported records explicitly. Initial geometry supports val
 
 ## Generalization operations
 
-All operations start from the **actual current DHE top section**. Geometric rings remove redundant numerical wiggles within a 10⁻⁷ m tolerance; the DHE boundary retains its conforming nodes. Source boundaries are noded again wherever neighbours start or stop along an edge.
+All operations start from the **actual current DHE top section**. Planning preserves unrounded coordinates and removes only arithmetic-equivalent collinear nodes. Source boundaries are conformed wherever neighbours start or stop along an edge. Shared identities are not created by globally rounding coordinates or increasing a modelling tolerance.
 
 | Operation | Behaviour |
 |---|---|
@@ -33,7 +33,7 @@ All operations start from the **actual current DHE top section**. Geometric ring
 
 Simplification, smoothing, and collapse accept several sources in the same interval. Conflicting polygon targets are rejected as a complete batch. **Preview** constructs and validates a candidate DHE model, outlines its targets on the current map, and displays its candidate 3D cells. **Apply** accepts that preview; if none exists, it computes and validates one first. Changes to selection or parameters invalidate the preview. A failed operation leaves the current session unchanged.
 
-The initial extrusion is Z=0–5. Each Apply adds **ΔZ=10** by default, or the positive increment entered by the user. Unaffected polygon features extend vertically to the same new level. Existing neighbours can receive vacated source regions or lose areas entered by a target. Empty space remains exterior; artificial background polygons are not created. Neighbour updates that produce empty, disconnected, holed, overlapping, or invalid footprints are rejected.
+The initial extrusion is Z=0–5. Each Apply advances **ΔZ=10** by default, or the positive increment entered by the user. An unchanged simple cell raises its roof and extends existing walls without adding redundant level rings or wall bands. Shared coplanar walls are combined only when interface ownership permits. Existing neighbours can receive vacated source regions or lose areas entered by a target. Empty space remains exterior; artificial background polygons are not created. Neighbour updates that produce empty, disconnected, holed, overlapping, or invalid footprints are rejected.
 
 Point and line representations are terminal: they remain visible on later 2D maps while their solids end at the collapse height. They are not given a fabricated polygon cap or extruded into new volume.
 
@@ -61,11 +61,11 @@ The integration builds checked, oriented shells before allocating replacement DH
 
 Complex cases can still fail the conforming-shell checks even when the input polygon itself is valid. Such cases are reported as unsupported by this implementation; no substitute geometry is accepted. In particular, branched skeletons, non-star-shaped point collapses, split/holed neighbour results, and incompatible batches require different selections, parameters, or further algorithm development.
 
-The exhaustive local check on the supplied 32-feature dataset accepted 26 simplifications (1 m tolerance), 17 smoothings (one iteration, ratio 0.25), 31 point collapses, and 31 polyline collapses when applied individually to the initial level. Rejections are explicit and transactional. The local `artifacts/generalization/default_dataset_matrix.json` records every feature, outcome, and reason. These counts describe these default parameters, not a guarantee for other selections or later levels. Touching-feature merging, separated-feature aggregation, multi-source batches, and repeated sequences were tested separately.
+The original workspace audit is retained in `artifacts/generalization/default_dataset_matrix.json`. Updated before/after results and all six Feature 3 tolerance cases are produced with `audit_transition_manifolds.py --all-features` under `artifacts/manifold/`. Rejections remain explicit and transactional; outcome counts describe the tested parameters, not a guarantee for other selections or later levels. See `TRANSITION_MANIFOLD_NOTES.md` for the root-cause matrix, the triangulation-helper assessment, and methodological wording.
 
 ## Viewing and exporting
 
-The left map always shows the current top; the large 3D panel shows the actual DHE shell; the lower 2D panel shows the live section. The current half-edge is red and its face remains filled at 50%, including when cell filling is disabled. Face/edge buttons browse actual DHE records. **Open full DHE inspector** opens the existing navigation viewer; it closes when its model is replaced.
+The left map always shows the current top; the large 3D panel shows the actual DHE shell; the lower 2D panel shows the live section. The current half-edge is red and its face remains filled at 50%, including when cell filling is disabled. Face/edge buttons browse actual DHE records. **Open full DHE inspector** opens the existing navigation viewer; it closes when its model is replaced. **Last transition diagnostics…** shows the failed operation's case, parameters, cell, validation class and detailed evidence when available.
 
 Plane controls support Horizontal (Z), Vertical (azimuth/offset), and Inclined (tilt/azimuth/offset). Enter a positive **Step size** to control slider resolution, mouse wheel over the slider or section, ↑/↓, and Lower/Raise consistently. The 3D plane is hidden initially; interacting with the slider/keys/buttons enables it. The checkbox can hide it again. Tilt is measured from horizontal. The **3D Z exaggeration** field changes only display aspect, not coordinates or calculations.
 
