@@ -1,4 +1,4 @@
-"""Preview polygon aggregation or construct Dual Half Edge transitions."""
+"""Inspect DHE methodology stages or interactively generalize a stacked map."""
 
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from top_face_overlay import TopFaceOverlay
     from transition_layer import TransitionLayer
     from paper_stages import StageResult
+    from generalization_model import GeneralizationSession
 
 input_shp = "C:/University/PhD/Papers/Third Journal Paper/QGIS/OSM/BuildingFootprintStep0.shp"
 POLYGON_IDS = [3000, 3001, 3002, 3003, 3004]
@@ -407,15 +408,23 @@ def _run_paper(args):
     return stage.model if stage.model is not None else stage
 
 
-def main(argv=None) -> ExtrusionModel | AggregationPreview | StageResult:
+def main(argv=None) -> ExtrusionModel | AggregationPreview | StageResult | GeneralizationSession | None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--scene", choices=("paper", "aggregation", "aggregation-preview", "transition"), default="paper",
+    parser.add_argument("--scene", choices=("paper", "generalization", "aggregation", "aggregation-preview", "transition"), default="paper",
                         help="Default: paper viewer with transformation and step dropdowns. Legacy scenes remain available.")
     parser.add_argument("--transformation", choices=("polygon", "point", "polyline", "aggregation"), default="aggregation")
     parser.add_argument("--step", default="final", help="Paper step ID, e.g. input, triangulation, inclined, shell, final.")
     parser.add_argument("--figure-dir", type=Path, default=Path("artifacts/paper_figures"))
     parser.add_argument("--export-paper", action="store_true", help="Export clean PNG/SVG and settings JSON for the selected paper step.")
-    parser.add_argument("--input-shp", default=input_shp)
+    parser.add_argument("--input-shp", default=None)
+    parser.add_argument("--generalization-operation", choices=("simplification", "smoothing", "point", "polyline", "merging", "aggregation"))
+    parser.add_argument("--indices", nargs="+", type=int, help="Stable one-based indices in the generalization workspace.")
+    parser.add_argument("--increment", type=float, default=10., help="Generalization interval height.")
+    parser.add_argument("--simplify-tolerance", type=float, default=1.)
+    parser.add_argument("--smoothing-iterations", type=int, default=1)
+    parser.add_argument("--smoothing-ratio", type=float, default=.25)
+    parser.add_argument("--winner-index", type=int)
+    parser.add_argument("--osm-bbox", nargs=4, type=float, metavar=("WEST", "SOUTH", "EAST", "NORTH"), help="Download OSM buildings (headless generalization scene).")
     parser.add_argument("--ids", nargs="+", help="Source IDs; defaults depend on the selected scene.")
     parser.add_argument("--z-down", type=float, default=0.0, help="Base elevation in metres.")
     parser.add_argument("--height", type=float, default=EXTRUSION_HEIGHT, help="Source roof elevation in metres.")
@@ -432,6 +441,41 @@ def main(argv=None) -> ExtrusionModel | AggregationPreview | StageResult:
     parser.add_argument("--no-show", action="store_true", help="Validate without opening a window.")
     parser.add_argument("--preview", type=Path, help="Save a PNG of the interactive viewer.")
     args = parser.parse_args(argv)
+    if args.input_shp is None:
+        if args.scene == "generalization":
+            from generalization_geometry import DEFAULT_DATA
+            args.input_shp = DEFAULT_DATA
+        else:
+            args.input_shp = input_shp
+    if args.scene == "generalization":
+        try:
+            if not args.no_show:
+                if args.osm_bbox or args.generalization_operation:
+                    raise ValueError("Use the workspace controls for interactive operations/downloads, or add --no-show for CLI operation options.")
+                from generalization_session import run
+                return run(args.input_shp,initial_height=args.height)
+            from generalization_geometry import load_shapefile, download_osm
+            from generalization_model import GeneralizationSession
+            data = download_osm(*args.osm_bbox) if args.osm_bbox else load_shapefile(args.input_shp)
+            session = GeneralizationSession(data, initial_height=args.height)
+            if args.generalization_operation:
+                proposal = session.preview(args.generalization_operation, args.indices or (), dz=args.increment,
+                    tolerance=args.simplify_tolerance, iterations=args.smoothing_iterations,
+                    ratio=args.smoothing_ratio, winner=args.winner_index)
+                session.apply(proposal)
+                for note in proposal.notes:
+                    print(note)
+            print(f"Generalization: {len(session.state.features)} current features; {len(session.model.cells)} DHE cells; Z={session.state.z:g}; CRS={data.frame.crs.name}")
+            for warning in data.rejected:
+                print("Unsupported: " + warning)
+            if args.preview:
+                from generalization_session import render_overview
+                args.preview.parent.mkdir(parents=True, exist_ok=True)
+                render_overview(session).savefig(args.preview, dpi=180, bbox_inches="tight")
+                print(f"Preview saved: {args.preview.resolve()}")
+            return session
+        except (ValueError, FileNotFoundError) as exc:
+            parser.error(str(exc))
     if args.scene == "paper":
         try:
             return _run_paper(args)

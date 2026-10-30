@@ -81,6 +81,8 @@ class PaperSession:
                 original = dropdown.callback
                 dropdown.callback = lambda value, callback=original: (self._close_menus(), callback(value))[-1]
             self.menu_connection = self.figure.canvas.mpl_connect("button_press_event", self._close_other_menu)
+            self.generalization_button = Button(self.figure.add_axes([0.015, 0.005, 0.15, 0.03]), "Generalization…")
+            self.generalization_button.on_clicked(lambda event: self.open_generalization())
             self.export_button = Button(self.figure.add_axes([0.18, 0.005, 0.12, 0.03]), "Export figure")
             self.export_section_button = Button(self.figure.add_axes([0.31, 0.005, 0.12, 0.03]), "Export section")
             self.export_section_button.set_active(stage.final)
@@ -207,6 +209,10 @@ class PaperSession:
             self.status.set_text("Export failed: " + str(exc))
             self.figure.canvas.draw_idle()
             return None
+
+    def open_generalization(self):
+        from generalization_session import launch_generalization
+        return launch_generalization()
 
     def show(self):
         plt.show()
