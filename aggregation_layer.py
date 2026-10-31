@@ -16,6 +16,7 @@ from DHECore import face_edges
 from aggregation_geometry import AggregationPreview, SOURCE_COLORS, polygon_parts, validate_aggregation
 from top_face_overlay import cell_volume
 from transition_layer import _check_shell, _planned_volume
+from shell_conformity import TransitionShellError, arithmetic_bound
 
 AGGREGATE_COLOR = (0.28, 0.48, 0.68, 1.0)
 EXTERIOR_COLOR = (0.55, 0.2, 0.75, 1.0)
@@ -57,6 +58,7 @@ class AggregationLayer:
     expected_volume: float
     source_colors: dict
     _face_sources: dict
+    planned_growth: tuple = ()
 
     @property
     def connecting_facets(self):
@@ -76,7 +78,10 @@ class AggregationLayer:
             return self.preview.union
         if z >= self.merge_z or self.maximum_time == 0:
             return self.preview.hull
-        time = (z - self.source_z) / (self.merge_z - self.source_z) * self.maximum_time
+        reference_max=max((_arrival(face,p) for face in self.preview.growth_faces
+            for polygon in polygon_parts(face.geometry) for ring in [polygon.exterior,*polygon.interiors]
+            for p in ring.coords),default=0.)
+        time = (z - self.source_z) / (self.merge_z - self.source_z) * reference_max
         pieces = [self.preview.union]
         for face in self.preview.growth_faces:
             for polygon in polygon_parts(face.geometry):
@@ -98,10 +103,87 @@ class AggregationLayer:
                     pieces.append(polygon.intersection(Polygon(clipped)))
         return union_all(pieces)
 
+    def event_time_section(self,z):
+        """Independent section of the immutable planned event-time field.
+
+        Unlike horizontal_section's ideal edge-plane reference, this uses the
+        backend's shared event times. It never reads live DHE vertices.
+        """
+        if not isfinite(z) or not self.bottom_z<=z<=self.target_z:
+            raise ValueError('Section height must lie within the aggregate.')
+        if z<=self.source_z:return self.preview.union
+        if z>=self.merge_z:return self.preview.hull
+        pieces=[self.preview.union]
+        for triangle in self.planned_growth:
+            clipped=[]
+            for a,b in zip(triangle,triangle[1:]+triangle[:1]):
+                if a[2]<=z:clipped.append(a[:2])
+                if (a[2]<z<b[2]) or (b[2]<z<a[2]):
+                    t=(z-a[2])/(b[2]-a[2]);clipped.append(tuple(a[k]+t*(b[k]-a[k]) for k in (0,1)))
+            if len(clipped)>=3:pieces.append(Polygon(clipped))
+        return union_all(pieces)
+
 
 def _arrival(face, xy):
     a, b = face.source_edge.coords
     return ((b[0]-a[0]) * (xy[1]-a[1]) - (b[1]-a[1]) * (xy[0]-a[0])) / hypot(b[0]-a[0], b[1]-a[1])
+
+
+def _growth_times(preview, nodes):
+    """Use one skeleton-provenance time at a shared node, not one per face.
+
+    Clipped arc endpoints already carry interpolated event times. The backend
+    rounds event times and treats nearly collinear edges specially, so signed
+    edge distances are an independent numerical reference, not competing Zs.
+    """
+    from py_straight_skeleton.constants import DISTANCE_EPSILON, TIME_EPSILON
+    endpoint_times=defaultdict(list)
+    for i,arc in enumerate(preview.skeleton_arcs):
+        for point,time in zip((arc.geometry.coords[0],arc.geometry.coords[-1]),arc.times):
+            endpoint_times[nodes.canonical(point)].append((time,i,arc.provenance))
+    times={};maximum_delta=0.;sources_used=defaultdict(int)
+    for point in nodes.points:
+        p=Point(point)
+        if preview.union.distance(p)<=preview.tolerance:
+            evidence=endpoint_times.get(point,())
+            if any(abs(value[0])>max(DISTANCE_EPSILON,TIME_EPSILON)+arithmetic_bound([point]) for value in evidence):
+                raise TransitionShellError('A source-boundary vertex carries a nonzero skeleton event time.',
+                    'skeleton_time_conflict',stage='source_vertex_time',point=point,
+                    times=[e[0] for e in evidence],arcs=[e[1:] for e in evidence])
+            times[point]=0.;sources_used['source_boundary']+=1;continue
+        faces=[f for f in preview.growth_faces if f.geometry.distance(p)<=preview.tolerance]
+        estimates=[_arrival(f,point) for f in faces]
+        evidence=list(endpoint_times.get(point,()))
+        if not evidence:
+            bound=arithmetic_bound([point])
+            for i,arc in enumerate(preview.skeleton_arcs):
+                if arc.geometry.distance(p)<=bound:
+                    fraction=arc.geometry.project(p)/arc.geometry.length
+                    evidence.append((arc.times[0]+fraction*(arc.times[1]-arc.times[0]),i,arc.provenance))
+        if evidence:
+            candidates=[e[0] for e in evidence]
+            if max(candidates)-min(candidates)>arithmetic_bound([(t,) for t in candidates]):
+                raise TransitionShellError('Skeleton arcs carry conflicting times at one shared vertex.',
+                    'skeleton_time_conflict',stage='growth_vertex_time',point=point,
+                    times=candidates,arcs=[e[1:] for e in evidence])
+            time=candidates[0];sources_used['skeleton_arc']+=1
+        elif estimates and max(estimates)-min(estimates)<=arithmetic_bound([(t,) for t in estimates]):
+            time=estimates[0];sources_used['edge_interior']+=1
+        else:
+            raise TransitionShellError('A growth vertex has no consistent skeleton timing provenance.',
+                'skeleton_time_conflict',stage='growth_vertex_time',point=point,
+                edge_times=estimates,owners=[f.source_id for f in faces])
+        limit=max(DISTANCE_EPSILON,TIME_EPSILON)+arithmetic_bound([point])
+        delta=max((abs(t-time) for t in estimates),default=0.)
+        if not estimates or delta>limit or not isfinite(time) or time<0:
+            raise TransitionShellError('Skeleton event time disagrees with its incident source-edge geometry.',
+                'skeleton_time_conflict',stage='growth_vertex_time',point=point,time=time,
+                edge_times=estimates,owners=[f.source_id for f in faces],backend_time_bound=limit)
+        maximum_delta=max(maximum_delta,delta);times[point]=time
+    preview.timing_diagnostics=dict(maximum_edge_time_difference=maximum_delta,
+        backend_distance_epsilon=DISTANCE_EPSILON,backend_time_epsilon=TIME_EPSILON,
+        timing_sources=dict(sources_used),assignment='shared skeleton event/arc times; exact source zero')
+    return times
 
 
 class _XYNodes:
@@ -173,23 +255,11 @@ def _plan_shell(preview, bottom_z, source_z, merge_z, top_z):
     for geometry in [*preview.sources.values(), preview.union, preview.hull,
                      *[f.geometry for f in preview.growth_faces]]:
         nodes.add_geometry(geometry)
-    maximum_time = max((_arrival(face, point) for face in preview.growth_faces
-                        for polygon in polygon_parts(face.geometry)
-                        for ring in [polygon.exterior, *polygon.interiors]
-                        for point in ring.coords), default=0.0)
+    times=_growth_times(preview,nodes)
+    maximum_time=max(times.values(),default=0.)
     heights = {}
-    for point in nodes.points:
-        if preview.union.distance(Point(point)) <= preview.tolerance:
-            heights[point] = source_z
-            continue
-        times = [_arrival(face, point) for face in preview.growth_faces
-                 if face.geometry.distance(Point(point)) <= preview.tolerance]
-        if not times or maximum_time <= 0:
-            raise ValueError("A growth vertex has no source arrival time.")
-        values = [source_z + (merge_z-source_z)*time/maximum_time for time in times]
-        if max(values)-min(values) > preview.tolerance:
-            raise ValueError("Skeleton faces disagree on a shared vertex elevation.")
-        heights[point] = min(merge_z, max(source_z, sum(values)/len(values)))
+    for point,time in times.items():
+        heights[point]=source_z if time==0 else merge_z if time==maximum_time else source_z+(merge_z-source_z)*time/maximum_time
     plans = []
     for key, source in preview.sources.items():
         plans.append(_FacePlan([(*p, bottom_z) for p in nodes.ring(orient(source, -1).exterior)], "bottom_cap", key))
@@ -275,7 +345,8 @@ def build_aggregation_model(preview, *, bottom_z=0.0, source_z=5.0, merge_z=9.0,
                              for j in (1, 3, 5)) + (1.0,) for i, key in enumerate(preview.sources)}
         face_sources = {tuple(sorted(f.xyz)): f.source_id for f in facets}
         model.aggregation = AggregationLayer(preview, cell, model, bottom_z, source_z, merge_z, top_z,
-                                             maximum_time, facets, expected_volume, colors, face_sources)
+                                             maximum_time, facets, expected_volume, colors, face_sources,
+                                             tuple(tuple(p.points) for p in plans if p.part=='connecting'))
         validate_aggregation_model(model)
         return model
     except Exception:

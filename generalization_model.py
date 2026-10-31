@@ -161,6 +161,7 @@ class OperationRecord:
     winner: int | None = None
     retired: tuple[int, ...] = ()
     parameters: dict = field(default_factory=dict)
+    diagnostics: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -570,7 +571,7 @@ class Column:
     heights: list[float]
 
 
-def _layer_faces(old, new, patches, lo, hi):
+def _layer_faces(old, new, patches, lo, hi, *, diagnostics=None):
     boundaries = [p.boundary for p in [*old.values(), *new.values()]] + [p.geometry.boundary for p in patches]
     network = union_all(boundaries)
     xy_nodes=CoordinateRegistry([p[:2] for patch in patches for p in patch.points]+
@@ -599,6 +600,16 @@ def _layer_faces(old, new, patches, lo, hi):
                 xy=[xy_nodes.canonical(p) for p in list(ring.coords)[:-1]]
                 xy=[p for i,p in enumerate(xy) if p!=xy[i-1]]
                 if len(xy)<3:continue
+                # Arrangement cuts can leave a ring whose opposite edges have
+                # collapsed onto the same supporting line. It is not a column.
+                arr=np.asarray(xy);a=arr[0]
+                b=max(arr,key=lambda p:np.linalg.norm(p-a));d=b-a;length=np.linalg.norm(d)
+                if length==0 or np.max(np.abs((arr[:,0]-a[0])*d[1]-(arr[:,1]-a[1])*d[0]))/length<=xy_nodes.bound:
+                    if diagnostics is not None:
+                        diagnostics.setdefault('collapsed_arrangement_rings',[]).append(dict(
+                            stage='column_construction',owner=before,points=xy,
+                            area=Polygon(xy).area,arithmetic_bound=xy_nodes.bound))
+                    continue
                 columns.append(Column(xy,before,after,[hi]*len(xy)))
             continue
         for triangle in constrained_delaunay_triangles(region).geoms:
@@ -653,7 +664,9 @@ def _layer_faces(old, new, patches, lo, hi):
                 atomic[p,q].append((column,(_lerp(ha,hb,t),_lerp(ha,hb,u)),forward))
     for (a,b), uses in atomic.items():
         if len(uses)>2:
-            raise ValueError(f"Transition columns overlap near {a}. Adjust the operation parameters.")
+            raise TransitionShellError(f"Transition columns overlap near {a}. Adjust the operation parameters.",
+                'transition_column_incidence',stage='column_pairing',edge=(a,b),incidence=len(uses),
+                columns=[dict(old=c.old,new=c.new,points=c.points,heights=c.heights,forward=forward) for c,h,forward in uses])
         left=next((u for u in uses if u[2]),None)
         right=next((u for u in uses if not u[2]),None)
         functions=[(lo,lo),(hi,hi)]+[u[1] for u in uses]
@@ -736,6 +749,7 @@ class GeneralizationSession:
         # an edge, even if the input ring omits that degree-two boundary node.
         sources=_conform_footprints(sources)
         targets,patches,notes={},[],[]
+        planning_diagnostics={}
         remap={}
         aggregate=None
         if operation in ("merging","aggregation"):
@@ -759,6 +773,7 @@ class GeneralizationSession:
                 from aggregation_layer import _plan_shell
                 preview=build_aggregation_preview({str(k):sources[k] for k in selected},tolerance=TOL)
                 plans,_,_=_plan_shell(preview,lo-1,lo,lo+.8*dz,hi)
+                planning_diagnostics['skeleton_timing']=dict(preview.timing_diagnostics)
                 patches=[Patch(aggregate,p.points) for p in plans if p.part == "connecting"]
                 target=preview.hull
                 notes.append("Straight-skeleton growth completes at 80% of the new interval; hull cap at the top.")
@@ -826,7 +841,7 @@ class GeneralizationSession:
                     if f.owner not in lifted and not all(p[2]==lo for p in f.points)]
         historical.extend(f for shell in lifted.values() for f in shell)
         layer=_layer_faces({k:g for k,g in old.items() if k not in lifted},
-                           {k:g for k,g in new.items() if k not in lifted},patches,lo,hi)
+                           {k:g for k,g in new.items() if k not in lifted},patches,lo,hi,diagnostics=planning_diagnostics)
         saved=_core()
         try:
             model,faces,core=realize([*historical,*layer],self.origin)
@@ -871,7 +886,7 @@ class GeneralizationSession:
         record=OperationRecord(operation,selected,affected,
             self.history[self.cursor-1].z if self.cursor else min(p[2] for f in state.faces for p in f.points),
             lo,hi,aggregate,tuple(k for k in selected if k not in features),
-            dict(dz=dz,tolerance=tolerance,iterations=iterations,ratio=ratio))
+            dict(dz=dz,tolerance=tolerance,iterations=iterations,ratio=ratio),planning_diagnostics)
         next_state=State(features,faces,hi,f"{operation}: {', '.join(map(str,selected))}; Z={lo:g}–{hi:g}",affected,record)
         return Proposal(state,next_state,model,core,targets,affected,notes)
 

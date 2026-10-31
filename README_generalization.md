@@ -78,9 +78,14 @@ Plane controls support Horizontal (Z), Vertical (azimuth/offset), and Inclined (
 - **Features:** latest affected features (selected sources, changed neighbours, and contributing earlier owners) or all features. Hide individual features using the list, or restore them with **Show all eligible features**.
 - **Vertical extent:** latest interval **Zb–Zt**, including the actual preceding band below **Zs**, or **Total history**. For the first operation Zb is the initial bottom; for later operations it defaults to the previous operation's source level. An editable Zb may lie between the initial bottom and Zs. Earlier inclined geometry is preserved.
 - **Figure:** a large 3D view with a live section, a standalone 3D figure, a 2D section grid, or a 3D slicing grid. Rotate/zoom with Matplotlib; explicit camera, opacity, exaggeration and outline settings affect only the illustration.
+- **Fill cells in 3D:** turn this off for coloured wireframe boundaries, including unfilled display cut caps. Extracted sections and the purple slicing plane retain their own colours.
 - **Slicing:** horizontal Z, vertical azimuth/offset, and inclined tilt/azimuth/offset; the step field controls the slider, wheel, arrows and Lower/Raise. The plane starts hidden. The section remains visible in the linked view. Purple planes and optional closing surfaces at display cuts are visualization aids, not new DHE facets.
 
 The **6** and **9** slice options produce 2×3 and 3×3 panels, sampled evenly from Zs to Zt including both endpoints. Actual point, polyline and retired-cell contacts remain lower-dimensional at the top. Colours, extents and camera are consistent across a grid. Use the three export buttons for a clean 3D figure, a 2D grid or a 3D grid; select **Also export individual slice panels** when needed.
+
+**Show slice X/Y numbers** is off by default. Grid figures omit X/Y coordinate numbers and names; the linked live section hides the numbers but retains its coordinate names. Panel letters, Z levels and 3D Z-axis values remain visible. Turn the checkbox on to restore coordinate numbers.
+
+**Horizontal grid gap** and **Vertical grid gap** default to 0.05 and 0.10, expressed as fractions of subplot width/height. Click **Update slice grid spacing** after editing them. Zero is supported; there is no forced minimum gap. These grid-specific values override the generic publication-layout spacing for slice figures and are saved in the export's `view` settings (`slice_wspace`, `slice_hspace`). Equal geometric aspect ratios are retained; adjust overall width/height as well for unusually narrow or wide shapes. `fill_cells` and `slice_xy_numbers` are also available through `ViewSettings` for headless exports.
 
 The viewer balances the displayed Z length against the XY domain because Z is a transition coordinate. **Z display factor** scales that display length; it never changes vertex coordinates. Use **Update view / camera** after editing the camera, Zb or zoom fields. Mouse-adjusted 3D axis limits and camera are preserved during slicing and export; changing the operation, feature scope or vertical extent fits the new domain again.
 
@@ -124,6 +129,9 @@ Tests:
 $env:DHE_GUI_TESTS='1'
 .\.venv\Scripts\python.exe -m unittest test_generalization_ui -v
 .\.venv\Scripts\python.exe -m unittest test_generalization_visualization -v
+.\.venv\Scripts\python.exe -m unittest test_aggregation_conformity -v
 ```
 
 The real-dataset test runs when the local default Shapefile exists; portable tests use synthetic geometries with the production builders. Live Overpass availability is separate from parser/geometry correctness.
+
+See [Aggregation conformity notes](AGGREGATION_CONFORMITY_NOTES.md) for shared skeleton-event timing, the two reported aggregation selections, numerical column artifacts and the independent reference-section checks.

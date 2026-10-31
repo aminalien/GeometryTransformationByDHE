@@ -43,6 +43,8 @@ class TransitionVisualizationWindow:
         self.feature_list.pack(fill='x');ttk.Button(self.controls,text='Hide selected features',command=self.hide_selected).pack(fill='x')
         ttk.Button(self.controls,text='Show all eligible features',command=self.show_all).pack(fill='x')
         self.opacity=self.entry('Face opacity (0–1)','opacity',.4)
+        self.fill_cells=tk.BooleanVar(value=True)
+        ttk.Checkbutton(self.controls,text='Fill cells in 3D',variable=self.fill_cells,command=self.redraw).pack(anchor='w')
         for title,key,default in [('Elevation','elevation',25),('Azimuth','azimuth',-60),('Zoom','zoom',1),('Z display factor','exaggeration',1)]:self.entry(title,key,default)
         self.outlines=tk.BooleanVar(value=True);self.legend=tk.BooleanVar(value=True);self.caps=tk.BooleanVar(value=True)
         for title,var in [('Source / target outlines',self.outlines),('Legend',self.legend),('Close display cuts (illustration)',self.caps)]:
@@ -66,6 +68,11 @@ class TransitionVisualizationWindow:
         ttk.Checkbutton(self.controls,text='Show plane in 3D',variable=self.show_plane,command=self.redraw).pack(anchor='w')
         self.presentation=self.combo('Figure',('3D + live section','3D figure','2D slice grid','3D slice grid'),'3D + live section',lambda e:self.redraw())
         self.count=self.combo('Slice count',('6','9'),'9',lambda e:self.redraw())
+        self.slice_xy_numbers=tk.BooleanVar(value=False)
+        ttk.Checkbutton(self.controls,text='Show slice X/Y numbers',variable=self.slice_xy_numbers,command=self.redraw).pack(anchor='w')
+        self.entry('Horizontal grid gap','slice_wspace',.05)
+        self.entry('Vertical grid gap','slice_hspace',.10)
+        ttk.Button(self.controls,text='Update slice grid spacing',command=self.redraw).pack(fill='x')
         ttk.Label(self.controls,text='Exports: SVG + PDF + PNG',font=('TkDefaultFont',10,'bold')).pack(anchor='w',pady=(8,0))
         for title,key,default in [('Width (inches)','width',10),('Height (inches)','height',8),('DPI (300, 600, 1200, …)','dpi',600),
                                   ('Pixel width (blank = physical)','pixels_w',''),('Pixel height (optional)','pixels_h','')]:self.entry(title,key,default)
@@ -111,6 +118,8 @@ class TransitionVisualizationWindow:
         return ViewSettings(scope='all' if self.scope.get()=='All features' else 'affected',
             extent='history' if self.extent.get()=='Total history' else 'interval',
             z_b=float(self.variables['zb'].get()),hidden=tuple(sorted(self.hidden)),opacity=float(self.opacity.get()),
+            fill_cells=self.fill_cells.get(),slice_xy_numbers=self.slice_xy_numbers.get(),
+            slice_wspace=float(self.variables['slice_wspace'].get()),slice_hspace=float(self.variables['slice_hspace'].get()),
             elevation=elevation,azimuth=azimuth,zoom=float(self.variables['zoom'].get()),
             exaggeration=float(self.variables['exaggeration'].get()),outlines=self.outlines.get(),legend=self.legend.get(),
             axis_limits=axis_limits,

@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import xml.etree.ElementTree as ET
+from dataclasses import replace
 
 import matplotlib
 matplotlib.use('Agg')
@@ -161,6 +162,26 @@ class PublicationViewTests(unittest.TestCase):
                 fig=render_slices(snapshot,6,'2d');self.assertEqual(len(fig.axes),6);fig.clear()
                 fig=render_slices(snapshot,9,'3d');self.assertEqual(len(fig.axes),9);fig.clear()
 
+    def test_wireframe_coordinate_numbers_and_zero_grid_gaps(self):
+        from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+        options=ViewSettings(fill_cells=False,outlines=False,slice_wspace=0,slice_hspace=0)
+        figure=render_transition(self.snapshot,options);figure.canvas.draw()
+        collections=[c for c in figure.axes[0].collections if isinstance(c,Poly3DCollection)]
+        self.assertTrue(collections)
+        for c in collections:
+            self.assertEqual(len(c.get_facecolor()),0)
+            self.assertTrue(any(color[3]>0 for color in c.get_edgecolor()))
+        figure.clear()
+        for kind in ('2d','3d'):
+            figure=render_slices(self.snapshot,6,kind,options)
+            self.assertEqual(figure.subplotpars.wspace,0);self.assertEqual(figure.subplotpars.hspace,0)
+            for ax in figure.axes:
+                self.assertFalse(any(t.get_text() for t in [*ax.get_xticklabels(),*ax.get_yticklabels()]))
+            figure.clear()
+        figure=render_slices(self.snapshot,6,'2d',replace(options,slice_xy_numbers=True))
+        self.assertTrue(any(t.get_text() for ax in figure.axes for t in ax.get_xticklabels()))
+        figure.clear()
+
 
 @unittest.skipUnless(os.environ.get('DHE_GUI_TESTS')=='1','Set DHE_GUI_TESTS=1 for native Tk controls')
 class TransitionViewerControlTests(unittest.TestCase):
@@ -173,6 +194,11 @@ class TransitionViewerControlTests(unittest.TestCase):
         try:
             window=TransitionVisualizationWindow(root,s,proposal);root.update()
             self.assertFalse(window.show_plane.get())
+            self.assertFalse(window.slice_xy_numbers.get())
+            window.fill_cells.set(False);window.redraw();root.update()
+            self.assertFalse(window.options().fill_cells)
+            window.variables['slice_wspace'].set('0');window.variables['slice_hspace'].set('0')
+            self.assertEqual(window.options().slice_hspace,0)
             window.step.set('.5');window.move(1);root.update()
             self.assertEqual(window.value.get(),15.5);self.assertTrue(window.show_plane.get())
             window.move(-1);self.assertEqual(window.value.get(),15)

@@ -204,7 +204,8 @@ class ActualAggregationLayerTests(unittest.TestCase):
         self.assertEqual(len(layer.connecting_facets), 68)
         self.assertEqual(len(layer.facets), 121)
         self.assertEqual(sum(f.part == "bottom_cap" for f in layer.facets), 6)
-        self.assertAlmostEqual(cell_volume(layer.cell), 8520.712540787, places=5)
+        # Shared backend event times replace independent edge-plane estimates.
+        self.assertAlmostEqual(cell_volume(layer.cell), 8520.712553838, places=5)
         self.assertEqual((layer.bottom_z, layer.source_z, layer.merge_z, layer.target_z), (0, 5, 9, 10))
         for source in layer.preview.sources.values():
             vertices = {(e.V.x, e.V.y, e.V.z) for e in model.active_edges()}
@@ -213,7 +214,9 @@ class ActualAggregationLayerTests(unittest.TestCase):
         slicer = PlaneSlicer(model)
         for z in (0, 2.5, 5, 5.01, 5.5, 6, 7, 8, 8.9, 9, 9.5, 10):
             section = slicer.sections(SlicePlane.horizontal(z))["aggregate"]
-            self.assertLess(section.symmetric_difference(layer.horizontal_section(z)).area, 1e-7)
+            self.assertLess(section.symmetric_difference(layer.event_time_section(z)).area, 1e-7)
+            reference_error=section.symmetric_difference(layer.horizontal_section(z)).area
+            self.assertLess(reference_error,layer.preview.hull.length*layer.preview.timing_diagnostics['backend_distance_epsilon']*4)
         for facet in layer.facets:
             _face_frame(facet.xyz)
             for edge in face_edges(facet.seed):

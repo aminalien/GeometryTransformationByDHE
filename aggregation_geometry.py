@@ -7,7 +7,7 @@ Frame faces are discarded only after verifying they do not reach the hull.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import combinations
 from math import isfinite
 from typing import Mapping
@@ -32,6 +32,8 @@ class SkeletonArc:
     geometry: LineString
     source_ids: tuple[str, ...]
     times: tuple[float, float]
+    provenance: tuple[int, int, int] | None = None
+    fractions: tuple[float, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -56,6 +58,7 @@ class AggregationPreview:
     tolerance: float
     frame_margin: float = 0.0
     frame_stability_error: float = 0.0
+    timing_diagnostics: dict = field(default_factory=dict)
 
     @property
     def gap(self) -> BaseGeometry:
@@ -130,7 +133,7 @@ def _skeleton_at_margin(sources, source_union, hull, margin, tolerance):
                        for point in list(ring.coords)[:-1]]
     growth_faces, arcs = [], []
     frame_area = 0.0
-    for component in sorted(polygon_parts(domain), key=lambda p: p.bounds):
+    for component_index, component in enumerate(sorted(polygon_parts(domain), key=lambda p: p.bounds)):
         component = orient(component, sign=1.0)
         exterior = _ring_coordinates(component.exterior, source_vertices, tolerance)
         holes = [_ring_coordinates(ring, source_vertices, tolerance)
@@ -164,7 +167,8 @@ def _skeleton_at_margin(sources, source_union, hull, margin, tolerance):
                 fractions = [line.project(Point(p)) / line.length
                              for p in (clipped.coords[0], clipped.coords[-1])]
                 times = tuple(a.time + fraction * (b.time - a.time) for fraction in fractions)
-                arcs.append(SkeletonArc(clipped, owners, times))
+                arcs.append(SkeletonArc(clipped, owners, times,
+                    (component_index,node_ids[id(a)],node_ids[id(b)]),tuple(fractions)))
     area_tolerance = tolerance * max(hull.length, 1.0)
     if frame_area > area_tolerance:
         raise ValueError(f"Temporary frame influences the hull ({frame_area:g} square metres).")

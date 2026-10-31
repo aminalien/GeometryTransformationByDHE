@@ -70,6 +70,10 @@ class ViewSettings:
     z_b: float | None = None
     hidden: tuple[int, ...] = ()
     opacity: float = .40
+    fill_cells: bool = True
+    slice_xy_numbers: bool = False
+    slice_wspace: float = .05
+    slice_hspace: float = .10
     elevation: float = 25.
     azimuth: float = -60.
     zoom: float = 1.
@@ -98,6 +102,8 @@ class ViewSettings:
         if self.axis_limits is not None:
             if len(self.axis_limits)!=3 or any(len(pair)!=2 or not all(math.isfinite(x) for x in pair) or pair[0]>=pair[1] for pair in self.axis_limits):
                 raise ValueError('Axis limits must be three finite increasing pairs.')
+        if any(not math.isfinite(v) or v<0 for v in (self.slice_wspace,self.slice_hspace)):
+            raise ValueError('Slice grid gaps must be finite and nonnegative.')
 
 
 def polygon_parts(geometry):
@@ -160,7 +166,7 @@ def clip_ring(points, lower, upper):
     return result
 
 
-def draw_geometry(ax, geometry, color, *, plane=None, alpha=.4, linewidth=1.3):
+def draw_geometry(ax, geometry, color, *, plane=None, alpha=.4, linewidth=1.3, fill=True):
     """Render holes, components and true lower-dimensional terminal contacts."""
     if geometry.is_empty:return
     kind=geometry.geom_type
@@ -171,12 +177,13 @@ def draw_geometry(ax, geometry, color, *, plane=None, alpha=.4, linewidth=1.3):
             for ring in [polygon.exterior,*polygon.interiors]:
                 xy=list(ring.coords)
                 vertices.extend(xy);codes.extend([MplPath.MOVETO]+[MplPath.LINETO]*(len(xy)-2)+[MplPath.CLOSEPOLY])
-            ax.add_patch(PathPatch(MplPath(vertices,codes),facecolor=color,edgecolor=color,alpha=alpha,lw=linewidth))
+            ax.add_patch(PathPatch(MplPath(vertices,codes),facecolor=color if fill else 'none',edgecolor=color,alpha=alpha,lw=linewidth))
         else:
             # Triangulate only a display polygon with holes, never the DHE model.
             pieces=list(constrained_delaunay_triangles(polygon).geoms) if polygon.interiors else [polygon]
-            ax.add_collection3d(Poly3DCollection([plane.lift(np.array(p.exterior.coords[:-1])) for p in pieces],
-                facecolors=color,edgecolors='none',alpha=alpha))
+            if fill:
+                ax.add_collection3d(Poly3DCollection([plane.lift(np.array(p.exterior.coords[:-1])) for p in pieces],
+                    facecolors=color,edgecolors='none',alpha=alpha))
             for ring in [polygon.exterior,*polygon.interiors]:
                 xyz=plane.lift(np.array(ring.coords));ax.plot(*xyz.T,color=color,lw=linewidth)
     elif kind in ('LineString','LinearRing','Point'):
@@ -184,7 +191,7 @@ def draw_geometry(ax, geometry, color, *, plane=None, alpha=.4, linewidth=1.3):
         if plane is not None:xy=plane.lift(xy)
         ax.plot(*xy.T,color=color,lw=linewidth,marker='o' if kind=='Point' else None,ms=5)
     elif hasattr(geometry,'geoms'):
-        for child in geometry.geoms:draw_geometry(ax,child,color,plane=plane,alpha=alpha,linewidth=linewidth)
+        for child in geometry.geoms:draw_geometry(ax,child,color,plane=plane,alpha=alpha,linewidth=linewidth,fill=fill)
 
 
 def selected_sections(slicer, plane, owners):
@@ -204,15 +211,15 @@ def render_scene(ax,snapshot,slicer,options,settings,*,plane=None):
                     horizontal.setdefault((f.owner,level),[]).append(Polygon([p[:2] for p in ring]))
     if not points:raise ValueError('No visible geometry in this interval. Show at least one contributing feature.')
     for owner,rings in by_owner.items():
-        ax.add_collection3d(Poly3DCollection(rings,facecolors=feature_color(owner),edgecolors=feature_color(owner),
-            alpha=options.opacity,linewidths=.5))
+        ax.add_collection3d(Poly3DCollection(rings,facecolors=feature_color(owner) if options.fill_cells else 'none',
+            edgecolors=feature_color(owner),alpha=options.opacity if options.fill_cells else None,linewidths=.5))
     if options.cut_caps:
         for level in (lower,upper):
             cut=SlicePlane.horizontal(level)
             for owner,geometry in selected_sections(slicer,cut,owners).items():
                 actual=unary_union(horizontal.get((owner,level),[]))
                 remainder=geometry.difference(actual)
-                draw_geometry(ax,remainder,feature_color(owner),plane=cut,alpha=options.opacity)
+                draw_geometry(ax,remainder,feature_color(owner),plane=cut,alpha=options.opacity,fill=options.fill_cells)
     if options.outlines:
         for level in (snapshot.operation['z_s'],upper):
             cut=SlicePlane.horizontal(level)
@@ -289,7 +296,7 @@ def default_publication_settings():
     return PublicationSettings({'view':{'legend_loc':'lower center'},'layout':{'top_in':.6,'bottom_in':.8,'hspace':.4}})
 
 
-def apply_layout(fig,settings,*,grid=False):
+def apply_layout(fig,settings,*,grid=False,options=None):
     height=fig.get_figheight()
     top_in=settings['layout']['top_in']
     if settings['view']['legend_loc'].startswith('upper'):top_in=max(top_in,1.)
@@ -297,7 +304,8 @@ def apply_layout(fig,settings,*,grid=False):
         raise ValueError('Canvas height is too small for the configured top/bottom margins. Increase height or pixel dimensions, lower DPI, or reduce the margins.')
     fig.subplots_adjust(left=settings['layout']['left'],right=settings['layout']['right'],
         top=1-top_in/height,bottom=settings['layout']['bottom_in']/height,
-        wspace=settings['layout']['wspace'],hspace=max(.3,settings['layout']['hspace']) if grid else settings['layout']['hspace'])
+        wspace=options.slice_wspace if grid else settings['layout']['wspace'],
+        hspace=options.slice_hspace if grid else settings['layout']['hspace'])
 
 
 def render_transition(snapshot,options=None,settings=None,*,with_section=False,slicer=None):
@@ -316,6 +324,8 @@ def render_transition(snapshot,options=None,settings=None,*,with_section=False,s
             section.autoscale_view();section.set_aspect('equal');section.set_title('Cross-section',fontsize=settings['fonts']['panel_title'])
             section.set(xlabel='Local X' if options.orientation=='Horizontal' else 'Plane u',ylabel='Local Y' if options.orientation=='Horizontal' else 'Plane v')
             section.ticklabel_format(useOffset=False)
+            if not options.slice_xy_numbers:
+                section.tick_params(axis='both',labelbottom=False,labelleft=False)
         add_legend(fig,snapshot,options,settings)
         apply_layout(fig,settings)
         return fig
@@ -351,11 +361,14 @@ def render_slices(snapshot,count=9,kind='2d',options=None,settings=None,*,levels
                 from matplotlib.ticker import MaxNLocator
                 ax.xaxis.set_major_locator(MaxNLocator(nbins=2));ax.yaxis.set_major_locator(MaxNLocator(nbins=4))
                 if len(levels)>1:ax.label_outer()
+            if not options.slice_xy_numbers:
+                ax.set_xticklabels([]);ax.set_yticklabels([])
+                ax.set_xlabel('');ax.set_ylabel('')
             letter=i if len(levels)>1 else int(np.argmin(np.abs(np.linspace(zs,zt,count)-z)))
             ax.set_title(f'({chr(97+letter)}) Z = {z:g}',fontsize=settings['fonts']['panel_title'])
         if settings['layout']['show_title']:fig.suptitle(snapshot.label,fontsize=settings['fonts']['title'])
         add_legend(fig,snapshot,options,settings)
-        apply_layout(fig,settings,grid=True)
+        apply_layout(fig,settings,grid=True,options=options)
         return fig
 
 
