@@ -122,7 +122,9 @@ class StackTests(unittest.TestCase):
         self.assertEqual(s.state.features[2].attributes['osm_id'],'osm-1')
         self.assertEqual(s.state.features[2].lineage,(1,2))
         self.assertAlmostEqual(s.state.features[2].geometry.area,200)
-        self.assertEqual(len(s.model.cells),3)
+        # The losing cell remains in the historical solid, below the inclined
+        # interface; it is retired only from the active top map.
+        self.assertEqual(len(s.model.cells),4)
         s.apply(s.preview("smoothing",[2]));self.assertEqual(s.state.z,25)
 
     def test_aggregation_is_actual_hull_and_can_be_generalized(self):

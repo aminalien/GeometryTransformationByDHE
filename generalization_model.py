@@ -151,12 +151,26 @@ class Patch:
 
 
 @dataclass
+class OperationRecord:
+    name: str
+    selected: tuple[int, ...]
+    affected: tuple[int, ...]
+    z_b: float
+    z_s: float
+    z_t: float
+    winner: int | None = None
+    retired: tuple[int, ...] = ()
+    parameters: dict = field(default_factory=dict)
+
+
+@dataclass
 class State:
     features: dict[int, Feature]
     faces: list[Face]
     z: float
     description: str
     changes: tuple[int, ...] = ()
+    operation: OperationRecord | None = None
 
 
 @dataclass
@@ -735,7 +749,10 @@ class GeneralizationSession:
                 if union.geom_type != "Polygon" or union.interiors:
                     raise ValueError("Merge requires an edge-connected, hole-free union. Use aggregation for separated polygons.")
                 target=union
-                notes.append("Merge dissolves selected internal boundaries; earlier ownership remains in history.")
+                patches,extended=_polygon_patches(aggregate,sources[aggregate],target,lo,hi)
+                notes.append("Winner grows by P2P facets; losing cells shrink below the shared interfaces and retire at the target level. Historical ownership is preserved.")
+                if extended:
+                    notes.append(f"{extended} nested/complex active regions use the existing conforming boundary-distance lift.")
             else:
                 aggregate=max([*state.features,*[f for s in self.history for f in s.features]])+1
                 from aggregation_geometry import build_aggregation_preview
@@ -746,7 +763,8 @@ class GeneralizationSession:
                 target=preview.hull
                 notes.append("Straight-skeleton growth completes at 80% of the new interval; hull cap at the top.")
             targets[aggregate]=target
-            remap={k:aggregate for k in selected}
+            if operation == "aggregation":
+                remap={k:aggregate for k in selected}
         else:
             for k in selected:
                 source=sources[k]
@@ -850,7 +868,11 @@ class GeneralizationSession:
                 features[k]=Feature(k,new[k] if g.geom_type == "Polygon" else g,dict(f.attributes),f.lineage,f.label)
         affected=tuple(sorted(k for k,g in new.items() if k not in sources or sources[k].symmetric_difference(g).area>TOL*TOL))
         affected=tuple(sorted(set(affected)|set(selected)))
-        next_state=State(features,faces,hi,f"{operation}: {', '.join(map(str,selected))}; Z={lo:g}–{hi:g}",affected)
+        record=OperationRecord(operation,selected,affected,
+            self.history[self.cursor-1].z if self.cursor else min(p[2] for f in state.faces for p in f.points),
+            lo,hi,aggregate,tuple(k for k in selected if k not in features),
+            dict(dz=dz,tolerance=tolerance,iterations=iterations,ratio=ratio))
+        next_state=State(features,faces,hi,f"{operation}: {', '.join(map(str,selected))}; Z={lo:g}–{hi:g}",affected,record)
         return Proposal(state,next_state,model,core,targets,affected,notes)
 
     @staticmethod

@@ -122,17 +122,33 @@ class PlaneSlicer:
     """Compile face frames once for live control updates on a fixed DHE model."""
 
     def __init__(self, model):
+        records=[]
+        for cell in model.all_cells:
+            for seed in dhe.get_UniqueFace_in_cell(cell.seed):
+                records.append((cell.logical_feature_id,
+                    [(e.V.x,e.V.y,e.V.z) for e in dhe.face_edges(seed)]))
+        self._compile(records)
+
+    @classmethod
+    def from_face_records(cls, records):
+        """Slice immutable realized boundaries without allocating/restoring DHE.
+
+        records is an iterable of (owner, oriented XYZ ring) pairs, normally
+        captured from generalization history's validated face records.
+        """
+        result=cls.__new__(cls)
+        result._compile(records)
+        return result
+
+    def _compile(self, records):
         self.faces = {}
         face_owners = defaultdict(set)
         vertices = set()
-        for cell in model.all_cells:
-            faces = []
-            for seed in dhe.get_UniqueFace_in_cell(cell.seed):
-                points = [(e.V.x, e.V.y, e.V.z) for e in dhe.face_edges(seed)]
-                vertices.update(points)
-                faces.append(_face_frame(points))
-                face_owners[tuple(sorted(points))].add(cell.logical_feature_id)
-            self.faces.setdefault(cell.logical_feature_id, []).extend(faces)
+        for owner, points in records:
+            points=[tuple(p) for p in points]
+            vertices.update(points)
+            self.faces.setdefault(str(owner), []).append(_face_frame(points))
+            face_owners[tuple(sorted(points))].add(str(owner))
         self.vertices = np.array(sorted(vertices), dtype=float)
         if len(self.vertices) == 0:
             raise ValueError("Cannot slice an empty model.")

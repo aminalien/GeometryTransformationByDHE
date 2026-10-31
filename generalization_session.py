@@ -64,6 +64,7 @@ class GeneralizationWindow:
         self.proposal=None
         self.selected=set()
         self.inspector=None
+        self.visualizations=[]
         self.slicer=None
         self.face_index=0
         self.edge_index=0
@@ -181,6 +182,7 @@ class GeneralizationWindow:
         self.fill=tk.BooleanVar(value=True)
         ttk.Checkbutton(group,text="Fill cells",variable=self.fill,command=self.draw).pack(anchor="w")
         ttk.Button(group,text="Open full DHE inspector",command=self.inspect).pack(fill="x")
+        ttk.Button(group,text="Open transition visualization…",command=self.visualize_transition).pack(fill="x")
         ttk.Button(group,text="Last transition diagnostics…",command=self.diagnostics).pack(fill="x")
         self._entry(group,"3D Z exaggeration","exaggeration",3)
         ttk.Button(group,text="Update 3D view",command=self.draw).pack(fill="x")
@@ -556,6 +558,16 @@ class GeneralizationWindow:
             import matplotlib.pyplot as plt
             plt.close(self.inspector.fig);self.inspector=None
 
+    def visualize_transition(self):
+        if not self.session or self.busy:return
+        from generalization_viewer import TransitionVisualizationWindow
+        try:
+            self.visualizations=[window for window in self.visualizations if not window.closed]
+            window=TransitionVisualizationWindow(self.root,self.session,self.proposal)
+            self.visualizations.append(window)
+            return window
+        except (ValueError,RuntimeError) as exc:self.status.set(str(exc))
+
     def attributes(self):
         if not self.session:return
         lines=[]
@@ -587,6 +599,7 @@ class GeneralizationWindow:
 
     def close(self):
         self.closed=True
+        for window in self.visualizations:window.close()
         for identifier in (self.poll_id,self.load_id):
             if identifier:
                 self.root.after_cancel(identifier)
