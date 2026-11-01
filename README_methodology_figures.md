@@ -32,6 +32,24 @@ never reveals original identifiers. Vertex/edge labels are a legible subset of
 stable local names, rather than internal DHE identifiers. The Matplotlib toolbar
 supports navigation; the plot area can be scrolled for taller combined figures.
 
+All 3D panels use white backgrounds and white panes without background grid
+lines. **Show axes** (on by default) displays X/Y/Z names and numeric transition
+Z levels; X/Y numeric ticks are hidden. **Show Z transition guide** (off by
+default) adds a separate vertical numeric guide and source-to-target arrow,
+which can remain visible with axes off. These options apply only to 3D panels;
+2D rendering is unchanged. The examples' actual synthetic construction levels
+are 0, 1 and 2, with aggregation's growth-completion level 1.8. These numeric
+values replace the former symbolic Z-axis annotations.
+When the guide is enabled, it carries numeric Z labels instead of duplicating
+them on the native Z axis. Axis lines and tick marks remain independently
+controlled by **Show axes**.
+
+Headless `ViewOptions(show_axes=False, show_z_transition=True)` selects the same
+style. Export manifests retain both flags. Guide labels remain editable through
+the text editor; the `z_level` font setting controls the native numeric Z ticks
+and guide labels, and `z_axis` controls the Z-axis name. Existing font and vector
+export settings continue to apply.
+
 Export current view preserves its toggles, selected panel and camera preset.
 Export All uses the documented default style for every combined and individual
 panel. Files have deterministic names such as
@@ -79,9 +97,9 @@ the original aspect ratio determines the other. CLI inch and pixel overrides
 cannot be combined. Pixel dimensions do not change when DPI changes in pixel
 mode; physical size and the relative size of text do change.
 
-Figure text uses **Times New Roman**. The four transition-level labels `z_s`,
-`z_t`, `z_m`, and `z_b` use the same mathematical font as the z-axis symbol and
-default to **10 pt**, matching the X/Y tick labels. Saved offsets are preserved.
+Figure text uses **Times New Roman**. Numeric transition-level ticks and guide
+labels default to **10 pt**. Other scientific annotations retain the existing
+Times New Roman mathematical font. Saved guide-label offsets are preserved.
 The regular, italic, bold and bold-italic faces must be installed; the renderer
 reports missing fonts and does not substitute another family. SVG retains text
 elements and references Times New Roman; the viewer needs that font for
@@ -108,8 +126,11 @@ headings or explanatory text when placing the figure in the manuscript.
 View settings expose `zoom`, `projection` (`persp` or `ortho`),
 `focal_length`, `aspect`, `axis_pad`, `z_offset_points`, `legend_loc` and
 `legend_columns`. Zoom changes display scale; it does not alter coordinates.
-Z labels are projected callouts attached to their actual transition levels;
-their offsets persist when the camera changes.
+The optional Z guide is attached to the panel's screen coordinates, with its
+level spacing calculated from the actual transition values. Its label offsets
+persist when the camera changes. Native Z-axis ticks follow the axis normally.
+The legacy `z_offset_points` setting is retained for old configurations; guide
+labels use editable annotation offsets instead.
 
 For individual subplot control, use the Panels tab. Keys are
 `view-key/panel-key`; view keys and panel keys are present in the manifest and
@@ -140,7 +161,7 @@ The Annotations tab also permits precise adjustments without dragging:
 
 ```json
 {
-  "stage5_p2pt_realized_dhe/realized_dhe/z_level:$z_s$": {
+  "stage5_p2pt_realized_dhe/realized_dhe/z_level:1": {
     "offset": [20, 4], "ha": "left", "va": "center", "rotation": 0
   }
 }

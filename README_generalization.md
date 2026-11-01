@@ -71,6 +71,8 @@ Plane controls support Horizontal (Z), Vertical (azimuth/offset), and Inclined (
 
 **Export current figure…** writes PNG, SVG, or PDF at a requested DPI. Pan/zoom and camera controls are available through Matplotlib. Exports and external datasets should remain outside Git commits.
 
+All 3D panels have white backgrounds and panes, with background coordinate grids disabled. **Show axes** controls X/Y/Z lines, names and Z-level numbers (default on). X/Y numbers are always hidden in 3D. **Show Z transition guide** displays a separate vertical numeric guide and source-to-target arrow (default off), independently of axis visibility. Only recorded levels are used, including aggregation's recorded Zm; the guide is disabled for initial extrusion, where no target transition is defined. These controls are also available in the full DHE inspector. Export current figure writes a `.json` sidecar with the displayed axes/guide settings, levels and camera.
+
 ### Focused transition viewer and paper figures
 
 **Open transition visualization…** opens a separate read-only window for a validated preview or an applied operation. The operation dropdown browses captured history without changing the active DHE session. Initial extrusion alone has no transition to display.
@@ -83,7 +85,7 @@ Plane controls support Horizontal (Z), Vertical (azimuth/offset), and Inclined (
 
 The **6** and **9** slice options produce 2×3 and 3×3 panels, sampled evenly from Zs to Zt including both endpoints. Actual point, polyline and retired-cell contacts remain lower-dimensional at the top. Colours, extents and camera are consistent across a grid. Use the three export buttons for a clean 3D figure, a 2D grid or a 3D grid; select **Also export individual slice panels** when needed.
 
-**Show slice X/Y numbers** is off by default. Grid figures omit X/Y coordinate numbers and names; the linked live section hides the numbers but retains its coordinate names. Panel letters, Z levels and 3D Z-axis values remain visible. Turn the checkbox on to restore coordinate numbers.
+**Show 2D slice X/Y numbers** is off by default. 2D grid figures omit X/Y coordinate numbers and names; the linked live section hides the numbers but retains its coordinate names. The checkbox restores numbers in 2D sections only. 3D panels show X/Y/Z names and only transition Z numbers when axes are on. Panel letters and section-level titles remain visible when axes are off.
 
 **Horizontal grid gap** and **Vertical grid gap** default to 0.05 and 0.10, expressed as fractions of subplot width/height. Click **Update slice grid spacing** after editing them. Zero is supported; there is no forced minimum gap. These grid-specific values override the generic publication-layout spacing for slice figures and are saved in the export's `view` settings (`slice_wspace`, `slice_hspace`). Equal geometric aspect ratios are retained; adjust overall width/height as well for unusually narrow or wide shapes. `fill_cells` and `slice_xy_numbers` are also available through `ViewSettings` for headless exports.
 
@@ -92,6 +94,10 @@ The viewer balances the displayed Z length against the XY domain because Z is a 
 Every export writes **SVG, PDF and PNG**, plus JSON containing operation levels, visible owners, camera, publication settings and export outcomes. SVG keeps text editable and PDF embeds TrueType fonts; geometry stays vector. Times New Roman is required, and its absence is reported. Width/height in inches and DPI are editable; pixel width/height override physical sizing when entered. DPI has no arbitrary low maximum: 300, 600, 1200 and larger values are accepted, with raster-memory/backend safeguards. If a PNG is too large, SVG/PDF remain available and the reason is reported.
 
 **Fonts / publication settings…** exposes the existing validated publication JSON. Adjust independent title, panel-title, axis-label, tick and legend font sizes, layout spacing, margins and raster-memory budget there. Set physical size/DPI/pixel dimensions in the main controls or in that dialog. Exports preserve the chosen scene camera and visibility. Generated assets belong under ignored `artifacts/` or an external output folder.
+
+For headless 3D rendering, `ViewSettings(show_axes=False, show_z_transition=True)` keeps the numeric Z guide while hiding coordinate axes. Both flags and the actual levels are retained in export metadata. `render_overview` accepts the same keyword flags. The guide does not add geometry or allocate DHE records.
+
+With the guide enabled, numeric Z values appear on the guide rather than being duplicated beside the native Z axis. Closely spaced levels use offset labels with leaders; native axis lines and tick marks remain available through **Show axes**.
 
 Headless publication export from an existing session:
 

@@ -38,6 +38,7 @@ from DHECore import (    make_vertex, reset_globals,ComplexSplice,KillComplexEdg
 # import trimesh
 from shapely.ops import triangulate
 from top_face_overlay import RegionKind
+from three_d_style import style_3d,levels_from_layer,guide_available
 REGION_COLORS = {
     RegionKind.ACTIVE_SOURCE_ONLY: (1.0, 0.55, 0.12, 1.0),
     RegionKind.ACTIVE_TARGET_ONLY: (0.20, 0.67, 0.35, 1.0),
@@ -52,7 +53,8 @@ VERT_SIZE = 30
 
 
 class DHEInteractivePlot:
-    def __init__(self, seed_edge, loop_edges=None ,unique_duals=None, SlicingAnalyses=False, ExteraInfo=None, figure=None):
+    def __init__(self, seed_edge, loop_edges=None ,unique_duals=None, SlicingAnalyses=False, ExteraInfo=None, figure=None,
+                 *,levels=None,show_axes=True,show_z_transition=False):
 
         if seed_edge is None:
             raise ValueError("Need a starting half-edge")
@@ -74,6 +76,9 @@ class DHEInteractivePlot:
         self.hi_line = None
         self.loop_edges = loop_edges or []
         self.unique_duals = unique_duals or []
+        self.show_axes=show_axes;self.show_z_transition=show_z_transition
+        self.z_levels=levels or {'z_b':min(e.V.z for e in (self.loop_edges or [seed_edge])),
+                                'z_s':max(e.V.z for e in (self.loop_edges or [seed_edge]))}
         self.TextlabelList=list()
         self.LoDIndex=0
         self.ExteraInfo=ExteraInfo
@@ -100,7 +105,7 @@ class DHEInteractivePlot:
         # self.ax.set_zticks([0, 20, 40, 60,80 ,100])
         # # self.ax.tick_params(axis='z', colors='k')
         # self.ax.set_zticklabels(['      Source', '      LoD 0.2', '     LoD 0.4', '     LoD 0.6', '     LoD 0.8', '  Target'])
-        self.ax.set_axis_off()
+        if not self.any3d:self.ax.set_axis_off()
         # --- checkboxes and state ---
         self.dual_vertex_artists = []
         self.dual_edge_artists = []
@@ -132,8 +137,8 @@ class DHEInteractivePlot:
 
         # --- create UI checkboxes (place them on left side of the figure) ---
         check_ax = self.fig.add_axes([0.02, 0.78, 0.22, 0.15])
-        labels = ['Show Dual Vertices', 'Show Dual Half-Edges', 'Show LoD labels']
-        actives = [self.show_dual_vertices, self.show_dual_edges, self.show_lod_labels]
+        labels = ['Show Dual Vertices', 'Show Dual Half-Edges', 'Show LoD labels','Show axes','Show Z transition guide']
+        actives = [self.show_dual_vertices, self.show_dual_edges, self.show_lod_labels,self.show_axes,self.show_z_transition]
         self.checkbox = CheckButtons(check_ax, labels, actives)
         for label in self.checkbox.labels:
             label.set_fontsize(8)
@@ -327,11 +332,24 @@ class DHEInteractivePlot:
         self.fig.patch.set_facecolor('white')
         self.ax.set_facecolor('white')
         if self.any3d:
-            self.ax.xaxis.pane.fill = False
-            self.ax.yaxis.pane.fill = False
-            self.ax.zaxis.pane.fill = False
+            self.set_3d_options()
         # self.ax = self.fig.add_axes([0.05, 0.05, 0.9, 0.9], projection='3d')
     # ---------- visualization helpers ----------
+    def set_3d_options(self,*,levels=None,show_axes=None,show_z_transition=None):
+        if levels is not None:self.z_levels=levels
+        if show_axes is not None:self.show_axes=bool(show_axes)
+        if show_z_transition is not None:self.show_z_transition=bool(show_z_transition)
+        available=self.any3d and guide_available(self.z_levels)
+        if not available:self.show_z_transition=False
+        for index,state in ((3,self.show_axes),(4,self.show_z_transition)):
+            if self.checkbox.get_status()[index]!=state:
+                self.checkbox.eventson=False
+                try:self.checkbox.set_active(index)
+                finally:self.checkbox.eventson=True
+        self.checkbox.labels[4].set_color('black' if available else '0.7')
+        if self.any3d:
+            style_3d(self.ax,self.z_levels,show_axes=self.show_axes,show_z_transition=self.show_z_transition)
+
     ###Fill-Cell :
 
     def _get_edges_in_same_cell(self, e):
@@ -828,6 +846,10 @@ class DHEInteractivePlot:
 
     def _toggle_dual_visuals(self, label):
         """Handle checkbox toggles for dual vertices and dual edges."""
+        if label in ('Show axes','Show Z transition guide'):
+            self.set_3d_options(show_axes=self.checkbox.get_status()[3],
+                                show_z_transition=self.checkbox.get_status()[4])
+            self.fig.canvas.draw_idle();return
         if label == 'Show Dual Vertices':
             self.show_dual_vertices = not self.show_dual_vertices
             if self.show_dual_vertices:
@@ -1779,7 +1801,8 @@ class _RoofOverlayPanel:
 def interactive_plot_dhe(seed_edge, loop_edges=None):
     viewer = DHEInteractivePlot(seed_edge, loop_edges=loop_edges)
     viewer.show()
-def interactive_plot_from_lists(dhe_List, Kill_List=None, pick='first', SlicingAnalyses=False, ExteraInfo=None, *, show=True, highlight_cells=False, overlay=None, transition=None, aggregation=None, figure=None):
+def interactive_plot_from_lists(dhe_List, Kill_List=None, pick='first', SlicingAnalyses=False, ExteraInfo=None, *, show=True, highlight_cells=False, overlay=None, transition=None, aggregation=None, figure=None,
+                                levels=None,show_axes=True,show_z_transition=False):
     """
     Visualize all half-edges in dhe_List except those in Kill_List.
     Highlight and start from a chosen CurrentEdge.
@@ -1824,7 +1847,9 @@ def interactive_plot_from_lists(dhe_List, Kill_List=None, pick='first', SlicingA
     baseline = {(event, cid) for event, callbacks in figure.canvas.callbacks.callbacks.items()
                 for cid in callbacks}
     viewer = DHEInteractivePlot(seed_edge, loop_edges=active_edges , unique_duals=unique_duals,
-                                SlicingAnalyses=SlicingAnalyses, ExteraInfo=ExteraInfo, figure=figure)
+                                SlicingAnalyses=SlicingAnalyses, ExteraInfo=ExteraInfo, figure=figure,
+                                levels=levels or levels_from_layer(aggregation or transition),show_axes=show_axes,
+                                show_z_transition=show_z_transition)
     viewer.baseline_connections = baseline
     if aggregation is not None:
         viewer.face_color_resolver = aggregation.face_color
@@ -1859,6 +1884,7 @@ def interactive_plot_from_lists(dhe_List, Kill_List=None, pick='first', SlicingA
         viewer.overlay_panel = AggregationProjectionPanel(viewer, aggregation)
         viewer.plane_controls = PlaneSlicingPanel(viewer, aggregation.model)
         viewer.transition_panel = viewer.plane_controls
+    if viewer.any3d:viewer.set_3d_options()
     if show:
         viewer.show()
     return viewer

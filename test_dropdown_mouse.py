@@ -123,12 +123,15 @@ class SessionMouseTests(unittest.TestCase):
 
     def test_target_and_orientation_choices_use_real_press_release_events(self):
         session = self.session
+        session.viewer.set_3d_options(show_axes=False,show_z_transition=True)
         with patch.object(self.fig.canvas, "draw_idle"):
             session.viewer.plane_controls.set_position(6.2, user_initiated=False)
             for target in ("Point", "Polygon", "Polyline", "Point"):
                 old_menu = session.target_dropdown
                 choose(old_menu, target)
                 self.assertEqual(session.model.transition.target_kind, target.lower())
+                self.assertFalse(session.viewer.ax._axis3don)
+                self.assertTrue(session.viewer.ax._dhe_z_guide)
                 self.assertIsNone(self.fig.canvas.mouse_grabber)
                 self.assertFalse(old_menu.is_open)
                 self.assertFalse(any(b.active or b.eventson for b in old_menu.menu))

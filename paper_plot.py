@@ -38,7 +38,7 @@ def surface(ax, points, color, alpha=0.4, edges=True):
     return artist
 
 
-def frame_axes(ax, bounds):
+def frame_axes(ax, bounds,*,levels=None,show_axes=True,show_z_transition=False):
     xmin, ymin, zmin, xmax, ymax, zmax = bounds
     pad = max(xmax-xmin, ymax-ymin, 1)*0.06
     ax.set_xlim(xmin-pad, xmax+pad)
@@ -46,7 +46,14 @@ def frame_axes(ax, bounds):
     ax.set_zlim(zmin, zmax)
     ax.set_box_aspect((xmax-xmin+2*pad, ymax-ymin+2*pad, zmax-zmin))
     ax.set_autoscale_on(False)
-    ax.set_axis_off()
+    from three_d_style import style_3d
+    style_3d(ax,levels or {'z_b':zmin,'z_t':zmax},show_axes=show_axes,show_z_transition=show_z_transition)
+
+
+def stage_levels(stage):
+    from three_d_style import clean_levels
+    return clean_levels({'z_b':stage.bounds[2],'z_s':stage.metadata.get('source_z'),
+        'z_t':stage.metadata.get('target_z'),'z_m':stage.metadata.get('merge_z') if stage.transformation=='aggregation' else None})
 
 
 def draw_stage_geometry(ax, stage):
@@ -258,7 +265,7 @@ class PaperProjectionPanel:
 def mount_paper_view(stage, figure):
     if stage.model is not None:
         viewer = interactive_plot_from_lists(stage.model.active_edges(), dhe.Getdhe()[1], show=False,
-                                             highlight_cells=True, figure=figure)
+                                             highlight_cells=True, figure=figure,levels=stage_levels(stage))
         def resolve(edge):
             if edge.D.V is stage.model.exterior:
                 return stage.model.exterior.color
@@ -277,6 +284,25 @@ def mount_paper_view(stage, figure):
         viewer.navigation_hint = figure.text(0.18, 0.045, "Drag 3D: rotate | Planned geometry; DHE navigation is unavailable", fontsize=8)
         figure.text(0.02, 0.60, "Geometry preview\nNo DHE half-edges\nallocated for these\nplanned surfaces", fontsize=10, color="#5f6872")
         draw_stage_geometry(viewer.ax, stage)
+        from matplotlib.widgets import CheckButtons
+        viewer.show_axes=True;viewer.show_z_transition=False
+        viewer.style_check=CheckButtons(figure.add_axes([.005,.73,.14,.10]),
+            ['Show axes','Show Z transition guide'],[True,False])
+        def set_style(*,levels=None,show_axes=None,show_z_transition=None):
+            from three_d_style import style_3d
+            if show_axes is not None:viewer.show_axes=bool(show_axes)
+            if show_z_transition is not None:viewer.show_z_transition=bool(show_z_transition)
+            for i,value in enumerate((viewer.show_axes,viewer.show_z_transition)):
+                if viewer.style_check.get_status()[i]!=value:
+                    viewer.style_check.eventson=False
+                    try:viewer.style_check.set_active(i)
+                    finally:viewer.style_check.eventson=True
+            style_3d(viewer.ax,stage_levels(stage),show_axes=viewer.show_axes,show_z_transition=viewer.show_z_transition)
+        viewer.set_3d_options=set_style
+        def toggle_style(label):
+            set_style(show_axes=viewer.style_check.get_status()[0],show_z_transition=viewer.style_check.get_status()[1])
+            figure.canvas.draw_idle()
+        viewer.style_check.on_clicked(toggle_style)
     figure.set_size_inches(21, 10)
     viewer.ax.set_position([0.155, 0.35, 0.29, 0.52])
     frame_axes(viewer.ax, stage.bounds)
@@ -314,4 +340,5 @@ def mount_paper_view(stage, figure):
     figure.suptitle(f"{TRANSFORMATIONS[stage.transformation]} | {stage.spec.title}", fontsize=15, y=0.985)
     figure.canvas.manager.set_window_title("DHE paper — transformation stages")
     figure.text(0.5, 0.885, stage.kind, fontsize=10, ha="center", color="#566575")
+    viewer.set_3d_options(levels=stage_levels(stage))
     return viewer

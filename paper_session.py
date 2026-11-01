@@ -33,6 +33,7 @@ class PaperSession:
         self.last_steps = {key: "final" for key in STAGES}
         self.last_steps[self.stage.transformation] = self.stage.spec.id
         self.cameras, self.planes = {}, {}
+        self.appearance={}
         self.connections = set()
         self.busy = False
         self.last_error = ""
@@ -94,6 +95,7 @@ class PaperSession:
             self.error_text = self.figure.text(0.50, 0.905, "", ha="center", fontsize=8, color="firebrick")
             if stage.transformation in self.cameras:
                 restore_camera(self.viewer.ax, self.cameras[stage.transformation])
+            self.viewer.set_3d_options(**self.appearance.get(stage.transformation,{}))
             if stage.final and stage.transformation in self.planes:
                 self.viewer.plane_controls.restore_state(self.planes[stage.transformation])
             if hasattr(self.viewer, "_store_view_state"):
@@ -127,6 +129,7 @@ class PaperSession:
         return self.switch_stage(STAGES[self.stage.transformation][index].id)
 
     def _remember(self):
+        self.appearance[self.stage.transformation]=dict(show_axes=self.viewer.show_axes,show_z_transition=self.viewer.show_z_transition)
         self.cameras[self.stage.transformation] = camera_state(self.viewer.ax)
         controls = getattr(self.viewer, "plane_controls", None)
         if controls:

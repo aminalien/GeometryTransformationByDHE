@@ -345,6 +345,7 @@ def render_items(items,stage,key,title,footer,options,settings,axes_views,draw_p
                     label=annotate(ax,(0,0,0),text,settings,"axis_label",offset=(-8,-42) if name=="xaxis" else (24,-30))
                     fig._publication_artists.pop(label.publication_id)
                     label._publication_axis3d=name[0]
+                    label.set_visible(options.show_axes)
                 register_text(fig,label,key+"/"+item.key+"/"+name+"_label",settings)
             if options.legend and legends and not shared_legend:
                 columns=override.get("legend_columns",settings["view"]["legend_columns"]) or (2 if len(legends)>3 and bbox.width*w>2.8 else 1)

@@ -38,10 +38,10 @@ class ViewerSession:
             self._mount(model, figure)
         figure.canvas.draw_idle()
 
-    def _mount(self, model, figure=None):
+    def _mount(self, model, figure=None,appearance=None):
         viewer = interactive_plot_from_lists(
             model.active_edges(), dhe.Getdhe()[1], show=False, highlight_cells=True,
-            overlay=model.overlay, transition=model.transition, figure=figure)
+            overlay=model.overlay, transition=model.transition, figure=figure,**(appearance or {}))
         viewer.session = self
         viewer.fig.text(0.02, 0.655, "Target geometry", fontsize=9)
         self.target_dropdown = OrientationDropdown(
@@ -70,6 +70,7 @@ class ViewerSession:
         self.busy = True
         old_core = _core_state()
         old_viewer = self.viewer
+        appearance=dict(show_axes=old_viewer.show_axes,show_z_transition=old_viewer.show_z_transition)
         canvas = old_viewer.fig.canvas
         self.target_dropdown.close(draw=False)
         old_viewer.plane_controls.orientation_dropdown.close(draw=False)
@@ -98,7 +99,7 @@ class ViewerSession:
             canvas.mpl_connect("scroll_event", callback)
         try:
             with _batch_draw(canvas):
-                self._mount(replacement, old_viewer.fig)
+                self._mount(replacement, old_viewer.fig,appearance)
                 self.viewer.plane_controls.restore_state(state)
                 self.viewer._view_state = camera
                 self.viewer._restore_view_state()
@@ -114,7 +115,7 @@ class ViewerSession:
                     if (event, cid) not in baseline:
                         canvas.mpl_disconnect(cid)
             self._mount(self.model if self.model is not replacement else old_viewer.plane_controls.model,
-                        old_viewer.fig)
+                        old_viewer.fig,appearance)
             self.viewer.plane_controls.restore_state(state)
             self.viewer._view_state = camera
             self.viewer._restore_view_state()

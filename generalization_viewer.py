@@ -6,6 +6,7 @@ import math
 from generalization_visualization import (TransitionSnapshot, ViewSettings, current_plane,
     default_publication_settings,export_transition, render_slices, render_transition, view_bounds, visible_owners)
 from methodology_publication import PublicationSettings,scoped_canvas
+from three_d_style import guide_available,levels_from_record
 
 
 class TransitionVisualizationWindow:
@@ -45,6 +46,10 @@ class TransitionVisualizationWindow:
         self.opacity=self.entry('Face opacity (0–1)','opacity',.4)
         self.fill_cells=tk.BooleanVar(value=True)
         ttk.Checkbutton(self.controls,text='Fill cells in 3D',variable=self.fill_cells,command=self.redraw).pack(anchor='w')
+        self.show_axes=tk.BooleanVar(value=True);self.show_z_transition=tk.BooleanVar(value=False)
+        ttk.Checkbutton(self.controls,text='Show axes',variable=self.show_axes,command=self.redraw).pack(anchor='w')
+        self.z_guide_check=ttk.Checkbutton(self.controls,text='Show Z transition guide',variable=self.show_z_transition,command=self.redraw)
+        self.z_guide_check.pack(anchor='w')
         for title,key,default in [('Elevation','elevation',25),('Azimuth','azimuth',-60),('Zoom','zoom',1),('Z display factor','exaggeration',1)]:self.entry(title,key,default)
         self.outlines=tk.BooleanVar(value=True);self.legend=tk.BooleanVar(value=True);self.caps=tk.BooleanVar(value=True)
         for title,var in [('Source / target outlines',self.outlines),('Legend',self.legend),('Close display cuts (illustration)',self.caps)]:
@@ -69,7 +74,7 @@ class TransitionVisualizationWindow:
         self.presentation=self.combo('Figure',('3D + live section','3D figure','2D slice grid','3D slice grid'),'3D + live section',lambda e:self.redraw())
         self.count=self.combo('Slice count',('6','9'),'9',lambda e:self.redraw())
         self.slice_xy_numbers=tk.BooleanVar(value=False)
-        ttk.Checkbutton(self.controls,text='Show slice X/Y numbers',variable=self.slice_xy_numbers,command=self.redraw).pack(anchor='w')
+        ttk.Checkbutton(self.controls,text='Show 2D slice X/Y numbers',variable=self.slice_xy_numbers,command=self.redraw).pack(anchor='w')
         self.entry('Horizontal grid gap','slice_wspace',.05)
         self.entry('Vertical grid gap','slice_hspace',.10)
         ttk.Button(self.controls,text='Update slice grid spacing',command=self.redraw).pack(fill='x')
@@ -119,6 +124,7 @@ class TransitionVisualizationWindow:
             extent='history' if self.extent.get()=='Total history' else 'interval',
             z_b=float(self.variables['zb'].get()),hidden=tuple(sorted(self.hidden)),opacity=float(self.opacity.get()),
             fill_cells=self.fill_cells.get(),slice_xy_numbers=self.slice_xy_numbers.get(),
+            show_axes=self.show_axes.get(),show_z_transition=self.show_z_transition.get(),
             slice_wspace=float(self.variables['slice_wspace'].get()),slice_hspace=float(self.variables['slice_hspace'].get()),
             elevation=elevation,azimuth=azimuth,zoom=float(self.variables['zoom'].get()),
             exaggeration=float(self.variables['exaggeration'].get()),outlines=self.outlines.get(),legend=self.legend.get(),
@@ -212,6 +218,7 @@ class TransitionVisualizationWindow:
         try:
             from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg,NavigationToolbar2Tk
             options=self.options(camera=camera,limits=not fit);settings=self.publication_settings()
+            self.z_guide_check.configure(state='normal' if guide_available(levels_from_record(self.snapshot.operation)) else 'disabled')
             # Preview dimensions stay usable; requested pixel sizing is for exports.
             settings['export']['size_mode']='physical'
             presentation=self.presentation.get()

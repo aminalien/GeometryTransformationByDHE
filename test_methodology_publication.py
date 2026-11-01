@@ -13,7 +13,7 @@ from matplotlib.mathtext import MathTextParser
 from matplotlib.text import Text
 from PIL import Image
 
-from methodology_figure_generator import Repository, render, render_main, export_view, export_main, MethodologyApp
+from methodology_figure_generator import Repository, render, render_main, export_view, export_main, MethodologyApp,ViewOptions
 from methodology_publication import (
     PublicationSettings, MAIN_CAPTIONS, main_items, require_times_new_roman, style,
     TextEditor, raster_spec, capture_views,
@@ -46,10 +46,10 @@ class PublicationTests(unittest.TestCase):
         with matplotlib.rc_context(style(PublicationSettings())):
             glyphs=MathTextParser("path").parse(r"$z_s\quad z_t\quad z_m\quad z_b$",dpi=100).glyphs
             self.assertEqual({g[0].family_name for g in glyphs},{"Times New Roman"})
-        fig=render_main(self.repo,3)
+        fig=render_main(self.repo,3,options=ViewOptions(show_z_transition=True))
         with matplotlib.rc_context(style(PublicationSettings())):
             labels=[a for key,a in fig._publication_artists.items() if "/z_level:" in key]
-            self.assertEqual({a.get_text() for a in labels},{"$z_s$","$z_t$","$z_m$","$z_b$"})
+            self.assertEqual({a.get_text() for a in labels},{'0','1','1.8','2'})
             for label in labels:
                 glyphs=MathTextParser("path").parse(label.get_text(),dpi=100,prop=label.get_fontproperties()).glyphs
                 self.assertEqual({g[0].family_name for g in glyphs},{"Times New Roman"})
@@ -57,7 +57,7 @@ class PublicationTests(unittest.TestCase):
                                  if key.endswith("/z_axis") and a.axes is label.axes)
                 self.assertEqual(label.get_fontfamily(),axis_symbol.get_fontfamily())
                 self.assertEqual(label.get_math_fontfamily(),axis_symbol.get_math_fontfamily())
-                self.assertEqual(label.get_fontsize(),label.axes.get_xticklabels()[0].get_fontsize())
+                self.assertEqual(label.get_fontsize(),label.axes.zaxis.get_major_ticks()[0].label1.get_fontsize())
                 self.assertEqual(label.get_fontsize(),10)
         fig.clear()
         require_times_new_roman.cache_clear()
@@ -117,12 +117,13 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual(fig.axes[0].elev,37); self.assertEqual(fig.axes[0].azim,23)
         self.assertEqual(tuple(fig.axes[0].get_xlim()),(0,5))
         self.assertEqual(fig._publication_artists[fig._publication_key+"/title"].get_fontsize(),17)
-        self.assertEqual({a.get_fontsize() for k,a in fig._publication_artists.items() if "/z_level:" in k},{23})
+        self.assertEqual({a.get_fontsize() for a in fig.axes[0].get_zticklabels()},{23})
         fig.clear()
 
     def test_drag_3d_label_offsets_and_axes_labels_survive_export(self):
         settings=PublicationSettings()
-        fig=render(self.repo.get("p2pt"),5,"realized_dhe",settings=settings); fig.canvas.draw()
+        options=ViewOptions(show_z_transition=True)
+        fig=render(self.repo.get("p2pt"),5,"realized_dhe",settings=settings,options=options); fig.canvas.draw()
         editor=TextEditor(fig,settings); editor.set_enabled(True)
         key=next(k for k in fig._publication_artists if "/z_level:" in k)
         artist=fig._publication_artists[key]
@@ -137,11 +138,11 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual(tuple(artist.get_position()),saved)
         editor.disconnect()
         views=capture_views(fig); fig.clear()
-        clone=render(self.repo.get("p2pt"),5,"realized_dhe",settings=settings,axes_views=views)
+        clone=render(self.repo.get("p2pt"),5,"realized_dhe",settings=settings,axes_views=views,options=options)
         self.assertEqual(tuple(clone._publication_artists[key].get_position()),saved)
         clone.clear()
         with tempfile.TemporaryDirectory() as folder:
-            export_view(self.repo.get("p2pt"),5,"realized_dhe",folder,dpi=300,settings=settings,axes_views=views)
+            export_view(self.repo.get("p2pt"),5,"realized_dhe",folder,dpi=300,settings=settings,axes_views=views,options=options)
             record=json.loads(Path(folder,"figure_manifest.json").read_text(encoding="utf-8"))[0]
             self.assertEqual(tuple(record["publication_settings"]["annotations"][key]["offset"]),saved)
 

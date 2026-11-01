@@ -11,6 +11,7 @@ import threading
 
 from generalization_geometry import DEFAULT_DATA, load_shapefile, download_osm
 from generalization_model import GeneralizationSession
+from three_d_style import style_3d,levels_from_record,guide_available
 
 OPERATIONS = {"Simplification":"simplification", "Smoothing":"smoothing", "Collapse to point":"point",
               "Collapse to polyline":"polyline", "Merging":"merging", "Aggregation":"aggregation"}
@@ -181,6 +182,10 @@ class GeneralizationWindow:
         self.edge_label=ttk.Label(group,text="",wraplength=280);self.edge_label.pack(fill="x")
         self.fill=tk.BooleanVar(value=True)
         ttk.Checkbutton(group,text="Fill cells",variable=self.fill,command=self.draw).pack(anchor="w")
+        self.show_axes=tk.BooleanVar(value=True);self.show_z_transition=tk.BooleanVar(value=False)
+        ttk.Checkbutton(group,text='Show axes',variable=self.show_axes,command=self.draw).pack(anchor='w')
+        self.z_guide_check=ttk.Checkbutton(group,text='Show Z transition guide',variable=self.show_z_transition,command=self.draw)
+        self.z_guide_check.pack(anchor='w')
         ttk.Button(group,text="Open full DHE inspector",command=self.inspect).pack(fill="x")
         ttk.Button(group,text="Open transition visualization…",command=self.visualize_transition).pack(fill="x")
         ttk.Button(group,text="Last transition diagnostics…",command=self.diagnostics).pack(fill="x")
@@ -452,8 +457,9 @@ class GeneralizationWindow:
             if not 0<exaggeration<1000:raise ValueError()
         except ValueError:exaggeration=3.
         self.ax.set_box_aspect((max(high[0]-low[0],1),max(high[1]-low[1],1),max(high[2],1)*exaggeration))
-        from matplotlib.ticker import MaxNLocator
-        self.ax.zaxis.set_major_locator(MaxNLocator(nbins=4))
+        levels=self._display_levels()
+        self.z_guide_check.configure(state='normal' if guide_available(levels) else 'disabled')
+        style_3d(self.ax,levels,show_axes=self.show_axes.get(),show_z_transition=self.show_z_transition.get())
         self.ax.view_init(elev=camera[0],azim=camera[1])
         self._highlight()
         self._slice(draw=False)
@@ -550,8 +556,16 @@ class GeneralizationWindow:
         import DHECore as dhe
         from plot_dhe_interactive import interactive_plot_from_lists
         self._close_inspector()
-        self.inspector=interactive_plot_from_lists(self.session.model.active_edges(),dhe.Getdhe()[1],show=False,highlight_cells=True)
+        self.inspector=interactive_plot_from_lists(self.session.model.active_edges(),dhe.Getdhe()[1],show=False,highlight_cells=True,
+            levels=self._display_levels(),show_axes=self.show_axes.get(),show_z_transition=self.show_z_transition.get())
         self.inspector.fig.show()
+
+    def _display_levels(self):
+        state=self.proposal.state if self.proposal else self.session.state
+        bottom=min(p[2] for f in state.faces for p in f.points)
+        levels=levels_from_record(state.operation,bottom=bottom)
+        if state.operation is None:levels['z_s']=state.z
+        return levels
 
     def _close_inspector(self):
         if self.inspector:
@@ -594,6 +608,10 @@ class GeneralizationWindow:
         if dpi:
             try:
                 self.figure.savefig(path,dpi=dpi,bbox_inches="tight")
+                import json
+                Path(path+'.json').write_text(json.dumps(dict(show_axes=self.show_axes.get(),
+                    show_z_transition=self.show_z_transition.get(),z_levels=self._display_levels(),
+                    camera=dict(elev=self.ax.elev,azim=self.ax.azim)),indent=2),encoding='utf-8')
                 self.status.set("Saved "+path)
             except Exception as exc:self.status.set("Export failed: "+str(exc))
 
@@ -615,7 +633,7 @@ def run(path=DEFAULT_DATA,initial_height=5.):
     return window.session
 
 
-def render_overview(session):
+def render_overview(session,*,show_axes=True,show_z_transition=False):
     """Headless export of actual current top geometries and realized DHE faces."""
     from matplotlib.figure import Figure
     from matplotlib.backends.backend_agg import FigureCanvasAgg
@@ -639,8 +657,9 @@ def render_overview(session):
     vertices=np.array([p for f in session.state.faces for p in f.points]);lo,hi=vertices.min(axis=0),vertices.max(axis=0)
     ax3.set(xlim=(lo[0]-1,hi[0]+1),ylim=(lo[1]-1,hi[1]+1),zlim=(0,hi[2]+1),xlabel="X (m)",ylabel="Y (m)",zlabel="Z (m)")
     ax3.set_box_aspect((max(hi[0]-lo[0],1),max(hi[1]-lo[1],1),max(hi[2],1)*3))
-    from matplotlib.ticker import MaxNLocator
-    ax3.zaxis.set_major_locator(MaxNLocator(nbins=4))
+    levels=levels_from_record(session.state.operation,bottom=lo[2])
+    if session.state.operation is None:levels['z_s']=session.state.z
+    style_3d(ax3,levels,show_axes=show_axes,show_z_transition=show_z_transition)
     ax2.set_aspect("equal");ax2.set(title=f"Top map · Z={session.state.z:g} m",xlabel="Local X (m)",ylabel="Local Y (m)")
     figure.suptitle(session.state.description)
     return figure

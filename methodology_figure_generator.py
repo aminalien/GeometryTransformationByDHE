@@ -33,6 +33,7 @@ from methodology_figure_data import (
     BLUE, CASES, COLORS, GREEN, MAGENTA, OVERLAY_NOTE, PURPLE, STAGES,
     CaseData, Panel, build_case,
 )
+from three_d_style import style_3d
 
 CAMERAS = {"Oblique": (26, -55), "Front": (14, -90), "Side": (15, 0), "Top": (90, -90)}
 
@@ -49,6 +50,8 @@ class ViewOptions:
     dual: bool = True
     ownership: bool = True
     camera: str = "Oblique"
+    show_axes: bool = True
+    show_z_transition: bool = False
 
 
 def _parts(geometry):
@@ -84,6 +87,8 @@ def capabilities(panels):
         "dual": any(l.group == "dual" for p in panels for l in p.lines),
         "ownership": any(p.facets and len({f.provenance or f.owner for f in p.facets}) > 1 for p in panels),
         "camera": any("3D" in p.dimensions for p in panels),
+        "show_axes": any("3D" in p.dimensions for p in panels),
+        "show_z_transition": any("3D" in p.dimensions for p in panels),
     }
 
 
@@ -267,22 +272,16 @@ def _draw_panel(ax, panel, data, options, three, settings=None):
     if three:
         ax.set_zlim(-.08,2.15)
         ax.set_box_aspect((max(xmax-xmin,1),max(ymax-ymin,1),span*.72))
-        ticks = [0,1,1.8,2] if data.case == "agg" else [0,1,2]
-        ax.set_zticks(ticks, [""]*len(ticks))
-        symbols=["$z_b$","$z_s$","$z_m$","$z_t$"] if data.case=="agg" else ["$z_b$","$z_s$","$z_t$"]
-        for z,symbol in zip(ticks,symbols):
-            label=annotate(ax,(xmax,ymin,z),symbol,settings,"z_level",offset=(settings["view"]["z_offset_points"],
-                           4 if z==2 and data.case=="agg" else -4 if z==1.8 else 0))
-            label._publication_zlevel=z
-            label.set_bbox(None)
-        ax.set_zlabel("")
-        register_text(ax.figure,ax.text2D(.97,.92,"$z$",transform=ax.transAxes,fontsize=settings["fonts"]["z_axis"]),
-                      ax.figure._publication_key+"/"+ax.methodology_panel_key+"/z_axis",settings)
+        levels=dict(z_b=0.,z_s=1.,z_t=2.)
+        if data.case=='agg':levels['z_m']=1.8
+        labels=style_3d(ax,levels,show_axes=options.show_axes,show_z_transition=options.show_z_transition,
+            tick_size=settings['fonts']['z_level'],guide_size=settings['fonts']['z_level'])
+        for label in labels:
+            register_text(ax.figure,label,ax.figure._publication_key+'/'+ax.methodology_panel_key+f'/z_level:{label._dhe_z_value:g}',settings)
+        register_text(ax.figure,ax.zaxis.label,ax.figure._publication_key+'/'+ax.methodology_panel_key+'/z_axis',settings)
+        ax.zaxis.label.set_fontsize(settings['fonts']['z_axis'])
         ax.tick_params(axis="z",pad=1)
         ax.view_init(*CAMERAS[options.camera])
-        for axis in (ax.xaxis,ax.yaxis,ax.zaxis):
-            axis.pane.fill = False
-        ax.grid(False)
     else:
         ax.set_aspect("equal",adjustable="box")
         ax.spines[["top","right"]].set_visible(False)
@@ -488,7 +487,7 @@ class MethodologyApp:
         self.camera = tk.StringVar(value="Oblique")
         self.dpi = tk.StringVar(value=str(self.settings["export"]["dpi"]))
         self.vars = {name:tk.BooleanVar(value=getattr(ViewOptions(),name)) for name in
-                     ("legend","outlines","labels","vertex_ids","edge_ids","primal","dual","ownership")}
+                     ("legend","outlines","labels","vertex_ids","edge_ids","primal","dual","ownership","show_axes","show_z_transition")}
         controls = ttk.Frame(root,padding=8)
         controls.pack(side="top",fill="x")
         self.case_box = self._combo(controls,"Case",self.case_var,list(CASES.values()),26,0)
@@ -502,7 +501,8 @@ class MethodologyApp:
         toggles.pack(fill="x")
         labels = {"legend":"Legend","outlines":"Source/target outlines","labels":"Publication-safe labels",
                   "vertex_ids":"Local vertex IDs","edge_ids":"Local edge IDs","primal":"Primal DHE edges",
-                  "dual":"Actual dual relations","ownership":"Ownership/provenance"}
+                  "dual":"Actual dual relations","ownership":"Ownership/provenance",
+                  "show_axes":"Show axes","show_z_transition":"Show Z transition guide"}
         for i,(key,label) in enumerate(labels.items()):
             widget = ttk.Checkbutton(toggles,text=label,variable=self.vars[key],command=self.refresh)
             widget.grid(row=i//4,column=i%4,sticky="w",padx=9,pady=3)
@@ -580,6 +580,7 @@ class MethodologyApp:
             caps = capabilities(panels)
             for name,widget in self.widgets.items():
                 applicable = caps.get(name,True) and (name not in {"vertex_ids","edge_ids"} or self.vars["labels"].get())
+                if name in ('show_axes','show_z_transition') and self.dimension.get()=='2D':applicable=False
                 widget.configure(state="normal" if applicable else "disabled")
             self.dimension_box.configure(state="readonly" if caps["dimension"] else "disabled")
             self.camera_box.configure(state="readonly" if caps["camera"] and self.dimension.get() != "2D" else "disabled")

@@ -27,6 +27,7 @@ from generalization_geometry import feature_color
 from methodology_publication import PublicationSettings, save_formats, style
 from plane_slicing import PlaneSlicer, SlicePlane, _face_frame
 from shell_conformity import arithmetic_bound
+from three_d_style import style_3d,levels_from_record
 
 
 @dataclass(frozen=True)
@@ -71,6 +72,8 @@ class ViewSettings:
     hidden: tuple[int, ...] = ()
     opacity: float = .40
     fill_cells: bool = True
+    show_axes: bool = True
+    show_z_transition: bool = False
     slice_xy_numbers: bool = False
     slice_wspace: float = .05
     slice_hspace: float = .10
@@ -244,9 +247,8 @@ def render_scene(ax,snapshot,slicer,options,settings,*,plane=None):
     from matplotlib.ticker import MaxNLocator
     ax.xaxis.set_major_locator(MaxNLocator(nbins=2));ax.yaxis.set_major_locator(MaxNLocator(nbins=3))
     for axis in (ax.xaxis,ax.yaxis):axis.get_major_formatter().set_useOffset(False)
-    levels=sorted({lower,snapshot.operation['z_s'],upper})
-    ax.set_zticks(levels)
-    ax.set_zticklabels([f'{z:g}' for z in levels],fontsize=settings['fonts']['tick'])
+    style_3d(ax,levels_from_record(snapshot.operation,bottom=lower),show_axes=options.show_axes,
+        show_z_transition=options.show_z_transition,tick_size=settings['fonts']['tick'],guide_size=settings['fonts']['z_level'])
     if plane is not None:
         # Outline is fitted to the visible domain, not unrelated distant cells.
         visible=object.__new__(PlaneSlicer);visible.minimum=lo;visible.maximum=hi
@@ -350,10 +352,6 @@ def render_slices(snapshot,count=9,kind='2d',options=None,settings=None,*,levels
             ax=fig.add_subplot(rows,columns,i+1,projection='3d' if kind=='3d' else None)
             if kind=='3d':
                 render_scene(ax,snapshot,slicer,options,settings,plane=plane)
-                if len(levels)>1:
-                    if i//columns!=rows-1:ax.set_xlabel('');ax.set_xticklabels([])
-                    if i%columns!=0:ax.set_ylabel('');ax.set_yticklabels([])
-                    if i%columns!=columns-1:ax.set_zlabel('');ax.set_zticklabels([])
             else:
                 for owner,g in selected_sections(slicer,plane,owners).items():draw_geometry(ax,g,feature_color(owner))
                 ax.set(xlim=(lo[0]-padding[0],hi[0]+padding[0]),ylim=(lo[1]-padding[1],hi[1]+padding[1]),xlabel='Local X',ylabel='Local Y')
@@ -361,7 +359,7 @@ def render_slices(snapshot,count=9,kind='2d',options=None,settings=None,*,levels
                 from matplotlib.ticker import MaxNLocator
                 ax.xaxis.set_major_locator(MaxNLocator(nbins=2));ax.yaxis.set_major_locator(MaxNLocator(nbins=4))
                 if len(levels)>1:ax.label_outer()
-            if not options.slice_xy_numbers:
+            if kind=='2d' and not options.slice_xy_numbers:
                 ax.set_xticklabels([]);ax.set_yticklabels([])
                 ax.set_xlabel('');ax.set_ylabel('')
             letter=i if len(levels)>1 else int(np.argmin(np.abs(np.linspace(zs,zt,count)-z)))

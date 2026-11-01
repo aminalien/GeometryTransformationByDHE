@@ -162,6 +162,7 @@ class OperationRecord:
     retired: tuple[int, ...] = ()
     parameters: dict = field(default_factory=dict)
     diagnostics: dict = field(default_factory=dict)
+    z_m: float | None = None
 
 
 @dataclass
@@ -752,6 +753,7 @@ class GeneralizationSession:
         planning_diagnostics={}
         remap={}
         aggregate=None
+        aggregation_merge_z=None
         if operation in ("merging","aggregation"):
             if len(selected)<2:
                 raise ValueError("Select at least two polygons for merging or aggregation.")
@@ -772,7 +774,8 @@ class GeneralizationSession:
                 from aggregation_geometry import build_aggregation_preview
                 from aggregation_layer import _plan_shell
                 preview=build_aggregation_preview({str(k):sources[k] for k in selected},tolerance=TOL)
-                plans,_,_=_plan_shell(preview,lo-1,lo,lo+.8*dz,hi)
+                aggregation_merge_z=lo+.8*dz
+                plans,_,_=_plan_shell(preview,lo-1,lo,aggregation_merge_z,hi)
                 planning_diagnostics['skeleton_timing']=dict(preview.timing_diagnostics)
                 patches=[Patch(aggregate,p.points) for p in plans if p.part == "connecting"]
                 target=preview.hull
@@ -886,7 +889,7 @@ class GeneralizationSession:
         record=OperationRecord(operation,selected,affected,
             self.history[self.cursor-1].z if self.cursor else min(p[2] for f in state.faces for p in f.points),
             lo,hi,aggregate,tuple(k for k in selected if k not in features),
-            dict(dz=dz,tolerance=tolerance,iterations=iterations,ratio=ratio),planning_diagnostics)
+            dict(dz=dz,tolerance=tolerance,iterations=iterations,ratio=ratio),planning_diagnostics,z_m=aggregation_merge_z)
         next_state=State(features,faces,hi,f"{operation}: {', '.join(map(str,selected))}; Z={lo:g}–{hi:g}",affected,record)
         return Proposal(state,next_state,model,core,targets,affected,notes)
 

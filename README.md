@@ -20,6 +20,27 @@ transforms to the target at Z=10. The model contains **five merged DHE cells**.
 The shapefiles are read only. Geometry is projected to **EPSG:32633**, shifted
 by a common XY origin, and measured in metres.
 
+## 3D appearance
+
+All 3D views and exports use white backgrounds/panes and no background coordinate
+grid. **Show axes** defaults to on: X/Y/Z axis lines and names are visible, X/Y
+coordinate numbers are hidden, and only the available transition Z levels are
+numbered. Six/nine-panel slice layouts are retained; “no grid” refers to the
+background coordinate lines.
+
+**Show Z transition guide** adds a separate vertical numeric level guide with an
+arrow from the source level to the target level. It defaults to off and remains
+visible when axes are hidden. Aggregation includes its recorded merge level.
+When the guide is shown, it carries the numeric Z labels without duplicating
+them beside the native Z axis; axis lines and tick marks can remain visible.
+The guide is disabled when source/target metadata is unavailable; arbitrary
+vertex elevations are not treated as representation levels. Controls are
+available in the full DHE inspector, paper previews, generalization workspace,
+transition visualization window and Methodology Figure Generator. Paper stage
+and target navigation retain these choices. Exports retain the displayed style
+and record it in their settings JSON. Fonts, camera, colours and topology are
+unchanged by these options.
+
 ## Paper viewer and implementation steps
 
 The transformation dropdown switches between polygon → polygon, polygon → point,

@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from DHECore import face_edges
-from paper_plot import draw_stage_geometry, draw_stage_lines, draw_xy, frame_axes, highlight_xy, highlight_region, surface
+from paper_plot import draw_stage_geometry, draw_stage_lines, draw_xy, frame_axes, highlight_xy, highlight_region, surface,stage_levels
 from paper_session import camera_state, restore_camera
 from paper_stages import TRANSFORMATIONS
 
@@ -103,6 +103,8 @@ def export_paper_figure(session, *, directory="artifacts/paper_figures", section
                     points, _, color = viewer.overlay_panel.selection
                     surface(ax, points, color, 0.5)
             restore_camera(ax, camera)
+            from three_d_style import style_3d
+            style_3d(ax,stage_levels(stage),show_axes=viewer.show_axes,show_z_transition=viewer.show_z_transition)
             draw_xy(xy, stage)
             if viewer.overlay_panel.selection:
                 points, edge, color = viewer.overlay_panel.selection
@@ -119,7 +121,8 @@ def export_paper_figure(session, *, directory="artifacts/paper_figures", section
         data = dict(stage.metadata, transformation=stage.transformation, stage_id=stage.spec.id,
                     stage_title=stage.spec.title, kind=stage.kind, bounds=list(stage.bounds),
                     camera=camera, slicing=controls.snapshot_state() if controls else None,
-                    section_only=section, revision=_revision(), colors=stage.colors)
+                    section_only=section, revision=_revision(), colors=stage.colors,
+                    show_axes=viewer.show_axes,show_z_transition=viewer.show_z_transition,z_levels=stage_levels(stage))
         if viewer.overlay_panel.selection:
             points, edge, color = viewer.overlay_panel.selection
             data["projection_selection"] = dict(points=points, edge_index=edge, color=color)
