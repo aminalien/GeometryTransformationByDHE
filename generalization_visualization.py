@@ -77,6 +77,8 @@ class ViewSettings:
     slice_xy_numbers: bool = False
     slice_wspace: float = .05
     slice_hspace: float = .10
+    slice_z_start: float | None = None
+    slice_z_end: float | None = None
     elevation: float = 25.
     azimuth: float = -60.
     zoom: float = 1.
@@ -100,8 +102,8 @@ class ViewSettings:
             raise ValueError('Opacity must be 0–1, zoom/exaggeration positive and tilt 0–90.')
         if self.orientation not in ('Horizontal','Vertical','Inclined'):
             raise ValueError('Unknown plane orientation.')
-        if any(v is not None and not math.isfinite(v) for v in (self.z_b,self.value)):
-            raise ValueError('Plane level and Zb must be finite.')
+        if any(v is not None and not math.isfinite(v) for v in (self.z_b,self.value,self.slice_z_start,self.slice_z_end)):
+            raise ValueError('Plane level, Zb and slice-range endpoints must be finite.')
         if self.axis_limits is not None:
             if len(self.axis_limits)!=3 or any(len(pair)!=2 or not all(math.isfinite(x) for x in pair) or pair[0]>=pair[1] for pair in self.axis_limits):
                 raise ValueError('Axis limits must be three finite increasing pairs.')
@@ -130,6 +132,17 @@ def visible_owners(snapshot, options):
     present={f.owner for f in snapshot.faces}
     owners=present if options.scope=='all' else present.intersection(snapshot.affected)
     return owners-set(options.hidden)
+
+
+def resolve_slice_levels(snapshot, options, count):
+    """One source of truth for grid previews, panels and export metadata."""
+    if count not in (6,9):raise ValueError('Choose six or nine slice levels.')
+    lower,upper=view_bounds(snapshot,options)
+    start=snapshot.operation['z_s'] if options.slice_z_start is None else options.slice_z_start
+    end=snapshot.operation['z_t'] if options.slice_z_end is None else options.slice_z_end
+    if not lower<=start<end<=upper:
+        raise ValueError(f'Slice range must satisfy {lower:g} ≤ Start Z < End Z ≤ {upper:g}. Select Total history for earlier levels, or reset to Zs–Zt.')
+    return [float(z) for z in np.linspace(start,end,count)]
 
 
 def clip_ring(points, lower, upper):
@@ -338,8 +351,10 @@ def render_slices(snapshot,count=9,kind='2d',options=None,settings=None,*,levels
     if kind not in ('2d','3d'):raise ValueError('Choose 2d or 3d slices.')
     options=options or ViewSettings();settings=settings or default_publication_settings();slicer=slicer or snapshot.slicer()
     view_bounds(snapshot,options)
-    zs,zt=snapshot.operation['z_s'],snapshot.operation['z_t']
-    levels=list(np.linspace(zs,zt,count)) if levels is None else list(levels)
+    configured=resolve_slice_levels(snapshot,options,count)
+    levels=configured if levels is None else list(levels)
+    if not levels or len(levels)>count or any(not math.isfinite(z) or not configured[0]<=z<=configured[-1] for z in levels) or any(b<=a for a,b in zip(levels,levels[1:])):
+        raise ValueError('Explicit slice levels must be finite, increasing and inside the configured slice range.')
     owners=visible_owners(snapshot,options)
     points=np.array([p for f in snapshot.faces if f.owner in owners for p in f.points])
     if not len(points):raise ValueError('No visible features.')
@@ -362,7 +377,7 @@ def render_slices(snapshot,count=9,kind='2d',options=None,settings=None,*,levels
             if kind=='2d' and not options.slice_xy_numbers:
                 ax.set_xticklabels([]);ax.set_yticklabels([])
                 ax.set_xlabel('');ax.set_ylabel('')
-            letter=i if len(levels)>1 else int(np.argmin(np.abs(np.linspace(zs,zt,count)-z)))
+            letter=i if len(levels)>1 else int(np.argmin(np.abs(np.array(configured)-z)))
             ax.set_title(f'({chr(97+letter)}) Z = {z:g}',fontsize=settings['fonts']['panel_title'])
         if settings['layout']['show_title']:fig.suptitle(snapshot.label,fontsize=settings['fonts']['title'])
         add_legend(fig,snapshot,options,settings)
@@ -376,9 +391,11 @@ def export_transition(snapshot,output,*,options=None,settings=None,count=9,kind=
     lower,upper=view_bounds(snapshot,options)
     if content not in ('scene','slices'):raise ValueError('Export content must be scene or slices.')
     if content=='slices' and count not in (6,9):raise ValueError('Choose six or nine slice levels.')
-    levels=[float(z) for z in np.linspace(snapshot.operation['z_s'],upper,count)] if content=='slices' else []
+    levels=resolve_slice_levels(snapshot,options,count) if content=='slices' else []
     output=Path(output);output.mkdir(parents=True,exist_ok=True)
     stem=f"{snapshot.operation['name']}_zs{snapshot.operation['z_s']:g}_zt{upper:g}_{options.scope}_{options.extent}"
+    if levels and (levels[0]!=snapshot.operation['z_s'] or levels[-1]!=snapshot.operation['z_t']):
+        stem+=f'_range{levels[0]:.17g}_{levels[-1]:.17g}'
     results=[];paths=[]
     def save(figure,key):
         try:
@@ -395,6 +412,7 @@ def export_transition(snapshot,output,*,options=None,settings=None,count=9,kind=
                 save(render_slices(snapshot,count,kind,options,settings,levels=[z],slicer=slicer),stem+f'_{kind}_slice{i+1:02d}')
     record=dict(description=snapshot.label,operation=snapshot.operation,affected=snapshot.affected,
         visible_owners=sorted(visible_owners(snapshot,options)),display_interval=[lower,upper],slice_levels=levels,
+        slice_range=[levels[0],levels[-1]] if levels else None,
         geometry_source='Validated realized face records; sections from the complete shell.',
         display_caps='Clipped-boundary closing surfaces are visualization only.',
         view=asdict(options),publication=settings.values,exports=results)

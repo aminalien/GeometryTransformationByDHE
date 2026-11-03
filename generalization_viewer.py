@@ -73,6 +73,10 @@ class TransitionVisualizationWindow:
         ttk.Checkbutton(self.controls,text='Show plane in 3D',variable=self.show_plane,command=self.redraw).pack(anchor='w')
         self.presentation=self.combo('Figure',('3D + live section','3D figure','2D slice grid','3D slice grid'),'3D + live section',lambda e:self.redraw())
         self.count=self.combo('Slice count',('6','9'),'9',lambda e:self.redraw())
+        self.entry('Start Z','slice_z_start',self.snapshot.operation['z_s'])
+        self.entry('End Z','slice_z_end',self.snapshot.operation['z_t'])
+        ttk.Button(self.controls,text='Use Zs–Zt',command=self.reset_slice_range).pack(fill='x')
+        ttk.Button(self.controls,text='Update slice grid',command=self.redraw).pack(fill='x')
         self.slice_xy_numbers=tk.BooleanVar(value=False)
         ttk.Checkbutton(self.controls,text='Show 2D slice X/Y numbers',variable=self.slice_xy_numbers,command=self.redraw).pack(anchor='w')
         self.entry('Horizontal grid gap','slice_wspace',.05)
@@ -126,6 +130,8 @@ class TransitionVisualizationWindow:
             fill_cells=self.fill_cells.get(),slice_xy_numbers=self.slice_xy_numbers.get(),
             show_axes=self.show_axes.get(),show_z_transition=self.show_z_transition.get(),
             slice_wspace=float(self.variables['slice_wspace'].get()),slice_hspace=float(self.variables['slice_hspace'].get()),
+            slice_z_start=float(self.variables['slice_z_start'].get()) if self.variables['slice_z_start'].get().strip() else None,
+            slice_z_end=float(self.variables['slice_z_end'].get()) if self.variables['slice_z_end'].get().strip() else None,
             elevation=elevation,azimuth=azimuth,zoom=float(self.variables['zoom'].get()),
             exaggeration=float(self.variables['exaggeration'].get()),outlines=self.outlines.get(),legend=self.legend.get(),
             axis_limits=axis_limits,
@@ -143,8 +149,14 @@ class TransitionVisualizationWindow:
 
     def _change_operation(self,event=None):
         self.hidden.clear();self.variables['zb'].set(str(self.snapshot.operation['z_b']))
+        self.reset_slice_range(draw=False)
         self.value.set(self.snapshot.operation['z_s'] if self.orientation.get()=='Horizontal' else 0.)
         self._update_feature_list();self._range();self.redraw(fit=True)
+
+    def reset_slice_range(self,*,draw=True):
+        self.variables['slice_z_start'].set(str(self.snapshot.operation['z_s']))
+        self.variables['slice_z_end'].set(str(self.snapshot.operation['z_t']))
+        if draw:self.redraw()
 
     def _scope_changed(self,event=None):
         self.hidden.clear();self._update_feature_list();self._range();self.redraw(fit=True)

@@ -62,6 +62,57 @@ class ReportedAggregationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):cls.data=load_shapefile()
 
+    def test_six_feature_angular_approximation_and_strict_rejection(self):
+        selection=(17,5,7,10,27,30)
+        for source_z in (5.,15.,25.):
+            s=GeneralizationSession(self.data,initial_height=source_z)
+            old=s.state;core=_core()
+            source=unary_union([old.features[k].geometry for k in selection]);hull=source.convex_hull
+            for dz in (1.,10.,20.):
+                with self.subTest(zs=source_z,dz=dz):
+                    p=s.preview('aggregation',selection,dz=dz)
+                    self.assertIs(s.state,old);self.assertEqual(_core(),core)
+                    timing=p.state.operation.diagnostics['skeleton_timing']
+                    self.assertEqual(timing['backend_time_epsilon'],1e-5)
+                    self.assertGreater(len(timing['explained_vertices']),0)
+                    for vertex in timing['explained_vertices']:
+                        residual=max(abs(t-vertex['time']) for t in vertex['edge_times'])
+                        self.assertGreater(residual,vertex['backend_time_bound'])
+                        self.assertLessEqual(residual,vertex['effective_time_bound'])
+                        self.assertTrue(vertex['approximation_sources'])
+                    for seed in timing['approximation_sources'].values():
+                        from math import cos,radians
+                        self.assertLessEqual(seed['angle_degrees'],seed['aligned_degrees'])
+                        self.assertAlmostEqual(seed['delta'],seed['normal_travel']*(1-cos(radians(seed['angle_degrees']))),places=12)
+                    slicer=PlaneSlicer(p.model);owner=str(p.state.operation.winner);last=source
+                    for fraction in (0.,.25,.5,.75,.8,1.):
+                        section=slicer.sections(SlicePlane.horizontal(source_z+fraction*dz))[owner]
+                        self.assertLess(last.difference(section).area,1e-6)
+                        self.assertLess(source.difference(section).area,1e-6)
+                        self.assertLess(section.difference(hull).area,1e-6)
+                        if fraction>=.8:self.assertLess(section.symmetric_difference(hull).area,1e-6)
+                        last=section
+                    self.assertTrue(all(cell_volume(c)>0 for c in p.model.cells))
+        preview=build_aggregation_preview({str(k):old.features[k].geometry for k in selection},tolerance=1e-7)
+        saved=tuple((a.geometry.wkb,a.times,a.provenance,a.fractions) for a in preview.skeleton_arcs)
+        # No provenance allowance means the original strict rejection remains.
+        with self.assertRaises(TransitionShellError):_plan_shell(replace(preview,timing_graphs=()),0,15,23,25)
+        _plan_shell(preview,0,15,23,25)
+        model=build_aggregation_model(preview,source_z=15,merge_z=23,top_z=25)
+        slicer=PlaneSlicer(model)
+        for z in (15,17,19,21,23,25):
+            actual=slicer.sections(SlicePlane.horizontal(z))['aggregate']
+            self.assertLess(actual.symmetric_difference(model.aggregation.event_time_section(z)).area,1e-7)
+        point=preview.timing_diagnostics['explained_vertices'][0]['point']
+        from aggregation_layer import _arrival
+        def corrupted(face,p):
+            value=_arrival(face,p)
+            return value+.01 if Point(point).distance(Point(p))<1e-9 else value
+        with patch('aggregation_layer._arrival',side_effect=corrupted):
+            with self.assertRaises(TransitionShellError) as caught:_plan_shell(preview,0,15,23,25)
+        self.assertEqual(caught.exception.report['classification'],'skeleton_time_conflict')
+        self.assertEqual(saved,tuple((a.geometry.wkb,a.times,a.provenance,a.fractions) for a in preview.skeleton_arcs))
+
     def test_reported_selections_levels_and_increments(self):
         for selection in ((17,27,30),(1,26,29,32)):
             for source_z in (5.,25.):

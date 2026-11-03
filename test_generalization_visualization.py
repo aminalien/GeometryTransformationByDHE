@@ -17,7 +17,7 @@ from shapely.ops import unary_union
 import DHECore as dhe
 from generalization_model import _core
 from generalization_visualization import (TransitionSnapshot,ViewSettings,clip_ring,export_transition,
-    render_slices,render_transition,view_bounds,visible_owners)
+    render_slices,render_transition,view_bounds,visible_owners,resolve_slice_levels)
 from methodology_publication import PublicationSettings
 from plane_slicing import PlaneSlicer,SlicePlane
 from test_generalization import session
@@ -85,6 +85,43 @@ class PublicationViewTests(unittest.TestCase):
         cls.session=session()
         cls.proposal=cls.session.preview('merging',[1,2],winner=1)
         cls.snapshot=TransitionSnapshot.capture(cls.proposal.state,[cls.session.state])
+
+    def test_custom_slice_ranges_validation_and_display_extent(self):
+        self.assertEqual(resolve_slice_levels(self.snapshot,ViewSettings(),6),list(np.linspace(5,15,6)))
+        for count in (6,9):
+            options=ViewSettings(slice_z_start=2.,slice_z_end=12.)
+            levels=resolve_slice_levels(self.snapshot,options,count)
+            np.testing.assert_allclose(levels,np.linspace(2,12,count))
+            for kind in ('2d','3d'):
+                figure=render_slices(self.snapshot,count,kind,options)
+                self.assertEqual([a.get_title() for a in figure.axes],
+                    [f'({chr(97+i)}) Z = {z:g}' for i,z in enumerate(levels)])
+                figure.clear()
+        for start,end in ((-1,10),(5,16),(7,7),(9,8),(float('nan'),10),(5,float('inf'))):
+            with self.subTest(start=start,end=end),self.assertRaises(ValueError):
+                resolve_slice_levels(self.snapshot,ViewSettings(slice_z_start=start,slice_z_end=end),6)
+        s=session();s.apply(s.preview('smoothing',[3]))
+        p=s.preview('merging',[1,2],winner=1);snap=TransitionSnapshot.capture(p.state,s.history)
+        options=ViewSettings(slice_z_start=2,slice_z_end=20)
+        with self.assertRaisesRegex(ValueError,'Total history'):resolve_slice_levels(snap,options,6)
+        self.assertEqual(resolve_slice_levels(snap,replace(options,extent='history'),6)[0],2)
+        # Grid limits do not change the live section or scene-only render.
+        figure=render_transition(snap,replace(options,value=17));figure.clear()
+
+    def test_custom_range_exports_and_individual_letters(self):
+        settings=PublicationSettings({'layout':{'width_in':4,'height_in':3},'export':{'dpi':100}})
+        options=ViewSettings(slice_z_start=2,slice_z_end=12)
+        with tempfile.TemporaryDirectory(dir='artifacts') as output:
+            paths,record=export_transition(self.snapshot,output,options=options,count=6,
+                content='slices',kind='2d',individual=True,settings=settings)
+            self.assertEqual(record['slice_range'],[2,12])
+            self.assertEqual(record['slice_levels'],list(np.linspace(2,12,6)))
+            self.assertEqual(record['view']['slice_z_start'],2)
+            self.assertTrue(all('range2_12' in p.name for p in paths))
+            last=next(p for p in paths if p.name.endswith('slice06.svg'))
+            self.assertIn('(f) Z = 12',''.join(ET.parse(last).getroot().itertext()))
+            metadata=json.loads(next(Path(output).glob('*6slices.json')).read_text())
+            self.assertEqual(metadata['slice_range'],[2,12])
 
     def test_snapshot_slicing_matches_live_dhe_without_mutation(self):
         core=_core();before=self.session.state
@@ -195,6 +232,22 @@ class TransitionViewerControlTests(unittest.TestCase):
             window=TransitionVisualizationWindow(root,s,proposal);root.update()
             self.assertFalse(window.show_plane.get())
             self.assertFalse(window.slice_xy_numbers.get())
+            window.variables['slice_z_start'].set('7');window.variables['slice_z_end'].set('22')
+            self.assertEqual(window.options().slice_z_start,7)
+            window.presentation.set('2D slice grid');window.redraw();root.update()
+            self.assertIn('Z = 7',window.figure.axes[0].get_title())
+            figure=window.figure;current=window.value.get()
+            window.variables['slice_z_start'].set('2');window.redraw();root.update()
+            self.assertIs(window.figure,figure)
+            self.assertIn('Total history',window.status.get())
+            self.assertEqual(window.value.get(),current)
+            window.extent.set('Total history');window._extent_changed();root.update()
+            self.assertIn('Z = 2',window.figure.axes[0].get_title())
+            current=window.value.get();window.reset_slice_range();root.update()
+            self.assertEqual(window.value.get(),current)
+            self.assertEqual(window.options().slice_z_start,15)
+            window.presentation.set('3D + live section')
+            window.extent.set('Latest interval Zb–Zt');window._extent_changed();root.update()
             window.fill_cells.set(False);window.redraw();root.update()
             self.assertFalse(window.options().fill_cells)
             window.variables['slice_wspace'].set('0');window.variables['slice_hspace'].set('0')
@@ -204,6 +257,8 @@ class TransitionViewerControlTests(unittest.TestCase):
             window.move(-1);self.assertEqual(window.value.get(),15)
             window.operation_menu.current(0);window._change_operation();root.update()
             self.assertEqual(window.snapshot.operation['name'],'smoothing')
+            self.assertEqual(window.options().slice_z_start,5)
+            self.assertEqual(window.options().slice_z_end,15)
             window.operation_menu.current(1);window._change_operation();root.update()
             for orientation in ('Vertical','Inclined','Horizontal'):
                 window.orientation.set(orientation);window._orientation_changed();root.update()

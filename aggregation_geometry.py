@@ -16,6 +16,7 @@ from shapely import union_all
 from shapely.geometry import LineString, Point, Polygon, box
 from shapely.geometry.base import BaseGeometry
 from shapely.geometry.polygon import orient
+from skeleton_timing import TimingNode,TimingFace,TimingArc,TimingGraph
 
 SOURCE_COLORS = ("#277db4", "#ed8a23", "#26996b", "#b85769", "#20a8b5", "#c2a514")
 
@@ -59,6 +60,7 @@ class AggregationPreview:
     frame_margin: float = 0.0
     frame_stability_error: float = 0.0
     timing_diagnostics: dict = field(default_factory=dict)
+    timing_graphs: tuple[TimingGraph,...] = ()
 
     @property
     def gap(self) -> BaseGeometry:
@@ -131,7 +133,7 @@ def _skeleton_at_margin(sources, source_union, hull, margin, tolerance):
     source_vertices = [point for source in sources.values()
                        for ring in [source.exterior, *source.interiors]
                        for point in list(ring.coords)[:-1]]
-    growth_faces, arcs = [], []
+    growth_faces, arcs, graphs = [], [], []
     frame_area = 0.0
     for component_index, component in enumerate(sorted(polygon_parts(domain), key=lambda p: p.bounds)):
         component = orient(component, sign=1.0)
@@ -139,13 +141,15 @@ def _skeleton_at_margin(sources, source_union, hull, margin, tolerance):
         holes = [_ring_coordinates(ring, source_vertices, tolerance)
                  for ring in component.interiors]
         skeleton = compute_skeleton(exterior=exterior, holes=holes)
-        arc_owners = {}
-        for face in skeleton.get_faces():
+        arc_owners = {};arc_faces={};timing_faces=[]
+        for face_id,face in enumerate(skeleton.get_faces()):
             coords = [(skeleton.nodes[i].position.x, skeleton.nodes[i].position.y) for i in face]
             source_edge = LineString(coords[:2])
             owner = _edge_owner(source_edge, sources, frame.boundary, tolerance)
+            timing_faces.append(TimingFace(tuple(source_edge.coords),tuple(face),owner))
             for a, b in zip(face, face[1:] + face[:1]):
                 arc_owners.setdefault(tuple(sorted((a, b))), set()).add(owner)
+                arc_faces.setdefault(tuple(sorted((a,b))),set()).add(face_id)
             polygon = Polygon(coords)
             if not polygon.is_valid:
                 raise ValueError("Straight skeleton produced an invalid face.")
@@ -155,7 +159,10 @@ def _skeleton_at_margin(sources, source_union, hull, margin, tolerance):
             elif not clipped.is_empty:
                 growth_faces.append(GrowthFace(owner, source_edge, clipped))
         node_ids = {id(node): i for i, node in enumerate(skeleton.nodes)}
+        timing_arcs=[]
         for a, b in skeleton.arc_iterator():
+            key = tuple(sorted((node_ids[id(a)], node_ids[id(b)])))
+            timing_arcs.append(TimingArc(node_ids[id(a)],node_ids[id(b)],tuple(sorted(arc_faces.get(key,())))))
             line = LineString([(a.position.x, a.position.y), (b.position.x, b.position.y)])
             if line.length <= tolerance:
                 continue
@@ -169,12 +176,15 @@ def _skeleton_at_margin(sources, source_union, hull, margin, tolerance):
                 times = tuple(a.time + fraction * (b.time - a.time) for fraction in fractions)
                 arcs.append(SkeletonArc(clipped, owners, times,
                     (component_index,node_ids[id(a)],node_ids[id(b)]),tuple(fractions)))
+        from py_straight_skeleton.constants import TIGHT_COLLINEARITY_EPSILON_DEGS
+        graphs.append(TimingGraph(component_index,tuple(TimingNode((n.position.x,n.position.y),n.time) for n in skeleton.nodes),
+            tuple(timing_faces),tuple(timing_arcs),TIGHT_COLLINEARITY_EPSILON_DEGS))
     area_tolerance = tolerance * max(hull.length, 1.0)
     if frame_area > area_tolerance:
         raise ValueError(f"Temporary frame influences the hull ({frame_area:g} square metres).")
     partitions = {key: union_all([source, *(face.geometry for face in growth_faces if face.source_id == key)])
                   for key, source in sources.items()}
-    return growth_faces, arcs, partitions
+    return growth_faces, arcs, partitions,tuple(graphs)
 
 
 def validate_aggregation(preview: AggregationPreview) -> dict[str, float]:
@@ -242,8 +252,9 @@ def build_aggregation_preview(
     for attempt in range(6):
         margin = span * 2 ** (attempt + 1)
         try:
-            faces, arcs, partitions = _skeleton_at_margin(sources, source_union, hull, margin, tolerance)
+            faces, arcs, partitions,graphs = _skeleton_at_margin(sources, source_union, hull, margin, tolerance)
             preview.growth_faces, preview.skeleton_arcs, preview.partitions = faces, arcs, partitions
+            preview.timing_graphs=graphs
             validate_aggregation(preview)
             if previous is not None:
                 error = sum(partitions[key].symmetric_difference(previous[key]).area for key in sources)

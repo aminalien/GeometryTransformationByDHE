@@ -137,11 +137,14 @@ def _growth_times(preview, nodes):
     edge distances are an independent numerical reference, not competing Zs.
     """
     from py_straight_skeleton.constants import DISTANCE_EPSILON, TIME_EPSILON
+    from skeleton_timing import TimingEnvelope
+    envelope=TimingEnvelope(preview.timing_graphs)
     endpoint_times=defaultdict(list)
     for i,arc in enumerate(preview.skeleton_arcs):
-        for point,time in zip((arc.geometry.coords[0],arc.geometry.coords[-1]),arc.times):
-            endpoint_times[nodes.canonical(point)].append((time,i,arc.provenance))
-    times={};maximum_delta=0.;sources_used=defaultdict(int)
+        fractions=arc.fractions or (None,None)
+        for point,time,fraction in zip((arc.geometry.coords[0],arc.geometry.coords[-1]),arc.times,fractions):
+            endpoint_times[nodes.canonical(point)].append((time,i,arc.provenance,fraction))
+    times={};maximum_delta=0.;maximum_extra=0.;sources_used=defaultdict(int);explained=[];used_seeds=set()
     for point in nodes.points:
         p=Point(point)
         if preview.union.distance(p)<=preview.tolerance:
@@ -159,7 +162,9 @@ def _growth_times(preview, nodes):
             for i,arc in enumerate(preview.skeleton_arcs):
                 if arc.geometry.distance(p)<=bound:
                     fraction=arc.geometry.project(p)/arc.geometry.length
-                    evidence.append((arc.times[0]+fraction*(arc.times[1]-arc.times[0]),i,arc.provenance))
+                    full_fraction=arc.fractions[0]+fraction*(arc.fractions[1]-arc.fractions[0]) if arc.fractions else None
+                    evidence.append((arc.times[0]+fraction*(arc.times[1]-arc.times[0]),i,arc.provenance,full_fraction))
+        samples=[]
         if evidence:
             candidates=[e[0] for e in evidence]
             if max(candidates)-min(candidates)>arithmetic_bound([(t,) for t in candidates]):
@@ -167,22 +172,41 @@ def _growth_times(preview, nodes):
                     'skeleton_time_conflict',stage='growth_vertex_time',point=point,
                     times=candidates,arcs=[e[1:] for e in evidence])
             time=candidates[0];sources_used['skeleton_arc']+=1
+            for candidate,index,provenance,fraction in evidence:
+                expected,weights=envelope.sample(provenance,fraction) if envelope.graphs else (None,{})
+                if expected is not None and abs(expected-candidate)>arithmetic_bound([(expected,),(candidate,)]):
+                    raise TransitionShellError('Clipped arc time disagrees with its recorded event nodes.',
+                        'skeleton_time_conflict',stage='timing_provenance',point=point,arc=provenance,
+                        fraction=fraction,time=candidate,expected_time=expected)
+                samples.append(weights)
         elif estimates and max(estimates)-min(estimates)<=arithmetic_bound([(t,) for t in estimates]):
             time=estimates[0];sources_used['edge_interior']+=1
         else:
             raise TransitionShellError('A growth vertex has no consistent skeleton timing provenance.',
                 'skeleton_time_conflict',stage='growth_vertex_time',point=point,
                 edge_times=estimates,owners=[f.source_id for f in faces])
-        limit=max(DISTANCE_EPSILON,TIME_EPSILON)+arithmetic_bound([point])
+        base_limit=max(DISTANCE_EPSILON,TIME_EPSILON)+arithmetic_bound([point])
+        weights=min(samples,key=lambda w:sum(w.values())) if samples else {}
+        extra=sum(weights.values());limit=base_limit+extra
         delta=max((abs(t-time) for t in estimates),default=0.)
-        if not estimates or delta>limit or not isfinite(time) or time<0:
+        true_event=any(e[3] in (0.,1.) for e in evidence) and bool(envelope.graphs)
+        anchored=not true_event or any(abs(t-time)<=base_limit for t in estimates)
+        if not estimates or delta>limit or not isfinite(time) or time<0 or not anchored:
             raise TransitionShellError('Skeleton event time disagrees with its incident source-edge geometry.',
                 'skeleton_time_conflict',stage='growth_vertex_time',point=point,time=time,
-                edge_times=estimates,owners=[f.source_id for f in faces],backend_time_bound=limit)
+                edge_times=estimates,owners=[f.source_id for f in faces],backend_time_bound=base_limit,
+                approximation_bound=extra,effective_time_bound=limit,approximation_sources=list(weights),event_time_anchored=anchored)
+        if delta>base_limit:
+            explained.append(dict(point=point,time=time,edge_times=estimates,owners=[f.source_id for f in faces],
+                backend_time_bound=base_limit,approximation_bound=extra,effective_time_bound=limit,
+                approximation_sources=list(weights)))
+        used_seeds.update(weights);maximum_extra=max(maximum_extra,extra)
         maximum_delta=max(maximum_delta,delta);times[point]=time
     preview.timing_diagnostics=dict(maximum_edge_time_difference=maximum_delta,
         backend_distance_epsilon=DISTANCE_EPSILON,backend_time_epsilon=TIME_EPSILON,
-        timing_sources=dict(sources_used),assignment='shared skeleton event/arc times; exact source zero')
+        timing_sources=dict(sources_used),assignment='shared skeleton event/arc times; exact source zero',
+        maximum_propagated_approximation_bound=maximum_extra,explained_vertices=explained,
+        approximation_sources={k:envelope.seeds[k] for k in sorted(used_seeds)})
     return times
 
 
