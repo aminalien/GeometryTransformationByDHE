@@ -32,7 +32,7 @@ The candidate shell is checked before and after wall coalescing. Topological che
 
 Intersection parameters at declared vertex/edge junctions are evaluated from those known constraints. This avoids interpreting a numerically clipped tangency as a new crossing. Contact along an explicitly shared edge is checked in its common one-dimensional parameter interval, rather than by expanding a geometric buffer.
 
-Validated faces are realized with the existing sequence `MEVVFS`, `MEV`, `MEF`, followed by `Sew` within each cell and `JoinByFace` for matched interfaces between distinct cells. The standalone aggregate still constructs one aggregate cell; the change does not turn it into generic pairwise `JoinByFace` merging. `DHECore.py` is unchanged.
+Validated faces are realized with the existing sequence `MEVVFS`, `MEV`, `MEF`, followed by `Sew` within each cell and `JoinByFace` for matched interfaces between distinct cells. Aggregation now retains separate lower source cells and one upper aggregate, connecting their source-level faces with `JoinByFace` while preserving distinct dual vertices. Historical source faces are not relabelled or dissolved. `DHECore.py` is unchanged.
 
 The legacy layer builder also snapshots its existing topology records, mutable containers, ledger contents, counters and model metadata. Allocation or postvalidation exceptions restore that state. Regression tests inject both failures for polygon, point and polyline cases; the existing aggregate allocation-rollback tests remain applicable.
 

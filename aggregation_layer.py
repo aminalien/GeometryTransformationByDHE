@@ -1,9 +1,9 @@
-"""A closed, single-cell DHE aggregate built from exterior skeleton growth."""
+"""Many-to-one DHE aggregation with retained lower source cells."""
 
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass,field
 from itertools import product
 from math import hypot, isfinite
 
@@ -27,6 +27,9 @@ class AggregationFacet:
     seed: dhe.DualHalfEdge
     part: str
     source_id: str | None
+
+    @property
+    def cell_id(self):return str(self.seed.D.V.logical_feature_id)
 
     @property
     def xyz(self):
@@ -59,6 +62,8 @@ class AggregationLayer:
     source_colors: dict
     _face_sources: dict
     planned_growth: tuple = ()
+    source_cells: dict = field(default_factory=dict)
+    expected_upper_volume: float = 0.
 
     @property
     def connecting_facets(self):
@@ -331,46 +336,73 @@ def _boundary_owner(edge, preview):
     return owners[0]
 
 
-def build_aggregation_model(preview, *, bottom_z=0.0, source_z=5.0, merge_z=9.0, top_z=10.0):
-    """Preflight a single closed shell, then allocate and sew its DHE boundary."""
-    from main import ExtrudedCell, ExtrusionModel
+def plan_aggregation_cells(preview,bottom_z,source_z,merge_z,top_z):
+    """Coordinate-only plans for every retained source and the upper cell."""
+    from generalization_model import Face,_prism,_conform_input_interfaces
     if not all(isfinite(v) for v in (bottom_z, source_z, merge_z, top_z)) or not bottom_z < source_z < merge_z < top_z:
         raise ValueError("Aggregation requires finite z-down < height < merge-z < target-z.")
     plans, maximum_time, expected_volume = _plan_shell(preview, bottom_z, source_z, merge_z, top_z)
+    owners={key:i for i,key in enumerate(preview.sources,1)};upper=len(owners)+1
+    faces=[];metadata={}
+    conformed=_conform_input_interfaces(preview.sources)
+    for key,owner in owners.items():
+        for f in _prism(owner,conformed[key],bottom_z,source_z):
+            part='source_roof' if f.part=='top' else 'bottom_cap' if f.part=='bottom' else 'base_wall'
+            faces.append(f);metadata[owner,tuple(sorted(f.points))]=(part,key)
+    for plan in plans:
+        if plan.part=='base_wall':continue
+        pts=[(x,y,source_z if plan.part=='bottom_cap' else z) for x,y,z in plan.points]
+        part='source_interface' if plan.part=='bottom_cap' else plan.part
+        f=Face(upper,pts,'bottom' if part=='source_interface' else 'top' if part=='upper_cap' else 'transition' if part=='connecting' else 'wall')
+        faces.append(f);metadata[upper,tuple(sorted(pts))]=(part,plan.source_id)
+    return faces,metadata,owners,upper,maximum_time,expected_volume,plans
+
+
+def build_aggregation_model(preview, *, bottom_z=0.0, source_z=5.0, merge_z=9.0, top_z=10.0):
+    """Retain lower prisms and sew their roofs to a separate upper aggregate."""
+    from generalization_model import realize
+    faces,metadata,owners,upper,maximum_time,expected_volume,plans=plan_aggregation_cells(preview,bottom_z,source_z,merge_z,top_z)
     saved = dhe.dhe, dhe.killdhe, dhe.Vertex.cntId, dhe.DualHalfEdge.cntId
     try:
-        dhe.reset_globals()
-        xmin, ymin, xmax, ymax = preview.hull.bounds
-        exterior = dhe.make_vertex(xmax+5, ymax+5, top_z+5, ch="VINF", clr=EXTERIOR_COLOR)
-        exterior.logical_feature_id = "VINF"
-        center = preview.hull.representative_point()
-        dual = dhe.make_vertex(center.x, center.y, (merge_z+top_z)/2, ch="aggregate", clr=AGGREGATE_COLOR)
-        vertices, edge_pairs, facets = {}, defaultdict(list), []
-        for plan in plans:
-            vs = []
-            for point in plan.points:
-                if point not in vertices:
-                    vertices[point] = dhe.make_vertex(*point)
-                vs.append(vertices[point])
-            first = dhe.MEVVFS(vs[0], vs[1], dual, exterior)
-            cursor = first
-            for vertex in vs[2:]:
-                cursor = dhe.MEV(vertex, cursor.S)
-            seed = dhe.MEF(first, cursor.S).S
-            facets.append(AggregationFacet(seed, plan.part, plan.source_id))
-            for edge in face_edges(seed):
-                edge_pairs[frozenset((edge.V, edge.S.V))].append(edge)
-        for a, b in edge_pairs.values():
-            dhe.Sew(a, b.S)
-        cell = ExtrudedCell("aggregate", facets[0].seed, dual)
+        model,_,_=realize(faces,preview.origin)
+        source_cells={}
+        for c in model.cells:
+            owner=int(c.feature_id)
+            key=next((k for k,v in owners.items() if v==owner),None)
+            label='aggregate' if owner==upper else 'source:aggregate' if key=='aggregate' else key
+            c.feature_id=c.logical_feature_id=str(label)
+            c.dual_vertex.i=str(label);c.dual_vertex.logical_feature_id=str(label)
+            if owner==upper:cell=c
+            else:source_cells[key]=c
+        model.exterior.color=EXTERIOR_COLOR
+        facets=[]
+        for f,seed in model.generalization_face_records:
+            part,source=metadata.get((f.owner,tuple(sorted(f.points))),(None,None))
+            if part is None:
+                from plane_slicing import _face_frame
+                import numpy as np
+                frame=_face_frame(f.points);matches=[];pieces=[]
+                for candidate in faces:
+                    if candidate.owner!=f.owner:continue
+                    arr=np.asarray(candidate.points)-frame.points[0]
+                    if np.max(np.abs(arr@frame.normal))>arithmetic_bound([*f.points,*candidate.points]):continue
+                    projected=Polygon(np.column_stack((arr@frame.u,arr@frame.v)))
+                    if projected.intersection(frame.polygon).area>arithmetic_bound(f.points)**2:
+                        matches.append(metadata[candidate.owner,tuple(sorted(candidate.points))]);pieces.append(projected)
+                if matches and frame.polygon.difference(union_all(pieces).buffer(arithmetic_bound(f.points)*8)).area<=frame.polygon.length*2e-8:
+                    parts={p for p,s in matches};sources={s for p,s in matches}
+                    part=next(iter(parts)) if len(parts)==1 else 'boundary'
+                    source=next(iter(sources)) if len(sources)==1 else None
+            if part is None:raise ValueError('Unresolved aggregation facet provenance.')
+            facets.append(AggregationFacet(seed,part,source))
         cell.source_ids = tuple(preview.sources)
-        model = ExtrusionModel([cell], exterior, preview.origin, [])
         colors = {key: tuple(int(SOURCE_COLORS[i % len(SOURCE_COLORS)][j:j+2], 16)/255
                              for j in (1, 3, 5)) + (1.0,) for i, key in enumerate(preview.sources)}
         face_sources = {tuple(sorted(f.xyz)): f.source_id for f in facets}
         model.aggregation = AggregationLayer(preview, cell, model, bottom_z, source_z, merge_z, top_z,
                                              maximum_time, facets, expected_volume, colors, face_sources,
-                                             tuple(tuple(p.points) for p in plans if p.part=='connecting'))
+                                             tuple(tuple(p.points) for p in plans if p.part=='connecting'),source_cells,
+                                             expected_volume-preview.union.area*(source_z-bottom_z))
         validate_aggregation_model(model)
         return model
     except Exception:
@@ -383,12 +415,12 @@ def validate_aggregation_model(model):
     from plane_slicing import _face_frame
     summaries = validate_model(model)
     layer = model.aggregation
-    if len(model.cells) != 1 or layer.cell is not model.cells[0] or model.shared_walls:
-        raise ValueError("Aggregation must have one cell without internal shared walls.")
-    plans = [_FacePlan(f.xyz, f.part, f.source_id) for f in layer.facets]
-    _check_shell(plans)
-    _check_vertex_links(plans)
-    if len(dhe.get_UniqueFace_in_cell(layer.cell.seed)) != len(layer.facets):
+    if len(model.cells)!=len(layer.preview.sources)+1 or set(layer.source_cells)!=set(layer.preview.sources):
+        raise ValueError('Aggregation must retain each lower source and a separate upper cell.')
+    for cell in model.cells:
+        plans=[_FacePlan(f.xyz,f.part,f.source_id) for f in layer.facets if f.seed.D.V is cell.dual_vertex]
+        _check_shell(plans);_check_vertex_links(plans)
+    if sum(len(dhe.get_UniqueFace_in_cell(c.seed)) for c in model.cells) != len(layer.facets):
         raise ValueError("Aggregation facet metadata does not match its live DHE faces.")
     if sum(f.part == "upper_cap" for f in layer.facets) != 1:
         raise ValueError("Aggregate must have exactly one polygon top face.")
@@ -410,9 +442,19 @@ def validate_aggregation_model(model):
             raise ValueError("Aggregate top cap has the wrong elevation.")
         if face.part == "connecting" and (len(heights) != 3 or min(heights) < layer.source_z or max(heights) > layer.merge_z):
             raise ValueError("An aggregate growth facet is outside its elevation interval.")
-        if max(heights)-min(heights) <= 1e-10 and face.part not in ("bottom_cap", "upper_cap"):
+        if max(heights)-min(heights) <= 1e-10 and face.part not in ("bottom_cap", "upper_cap",'source_roof','source_interface'):
             raise ValueError("Aggregate contains an internal horizontal face.")
-    volume = cell_volume(layer.cell)
+    for key,source in layer.source_cells.items():
+        interfaces=[(a,b) for a,b in model.shared_walls if {a.D.V,b.D.V}=={source.dual_vertex,layer.cell.dual_vertex}]
+        if len(interfaces)!=1:raise ValueError(f'Source {key} lacks exactly one aggregate interface.')
+        a,b=interfaces[0]
+        if any(z!=layer.source_z for _,_,z in [(e.V.x,e.V.y,e.V.z) for e in face_edges(a)]):
+            raise ValueError('Source-aggregate interface is not at the source level.')
+        if abs(cell_volume(source)-layer.preview.sources[key].area*(layer.source_z-layer.bottom_z))>1e-6:
+            raise ValueError('A lower source cell changed its occupied geometry.')
+    if abs(cell_volume(layer.cell)-layer.expected_upper_volume)>max(1e-6,layer.expected_volume*1e-9):
+        raise ValueError('Upper aggregate volume disagrees with its planned volume.')
+    volume = sum(cell_volume(c) for c in model.cells)
     if volume <= 0 or abs(volume-layer.expected_volume) > max(1e-6, layer.expected_volume*1e-9):
         raise ValueError("Aggregate DHE volume does not match its planned volume.")
     return summaries

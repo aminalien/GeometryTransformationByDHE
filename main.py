@@ -356,7 +356,7 @@ def _run_aggregation_preview(args):
     print(f"Partition validation: overlap={metrics['overlap_area']:.9g}, "
           f"missing={metrics['missing_area']:.9g}, excess={metrics['excess_area']:.9g} m2; "
           f"frame stability error={preview.frame_stability_error:.9g} m2")
-    print("Geometry preview only; use --scene aggregation for the single-cell 3D model.")
+    print('Geometry preview only; use --scene aggregation for the many-to-one 3D model.')
     if not args.no_show or args.preview:
         if args.no_show:
             import matplotlib

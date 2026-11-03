@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 from matplotlib import colors
 import numpy as np
 from shapely.geometry import Polygon, box
+from shapely.ops import unary_union
 
 import DHECore as dhe
 from DHECore import face_edges
@@ -35,21 +36,25 @@ def make_viewer(model):
                                        highlight_cells=True, aggregation=model.aggregation)
 
 
+def aggregate_section(model,z):
+    return unary_union(list(PlaneSlicer(model).sections(SlicePlane.horizontal(z)).values()))
+
+
 class AggregationLayerTests(unittest.TestCase):
-    def test_one_closed_cell_and_analytical_sections(self):
+    def test_many_to_one_cells_and_analytical_sections(self):
         model = make_model()
         layer = model.aggregation
         validate_aggregation_model(model)
-        self.assertEqual(len(model.cells), 1)
-        self.assertEqual(model.cells[0].source_ids, ("left", "right"))
-        self.assertAlmostEqual(cell_volume(layer.cell), 104, places=8)
+        self.assertEqual(len(model.cells), 3)
+        self.assertEqual(layer.cell.source_ids, ("left", "right"))
+        self.assertAlmostEqual(sum(cell_volume(c) for c in model.cells), 104, places=8)
         self.assertEqual(sum(f.part == "upper_cap" for f in layer.facets), 1)
         self.assertEqual(sum(f.part == "bottom_cap" for f in layer.facets), 2)
         slicer = PlaneSlicer(model)
         previous = None
         for z in (0, 2.5, 5, 5.5, 6, 7, 8, 8.99, 9, 9.5, 10):
             with self.subTest(z=z):
-                section = slicer.sections(SlicePlane.horizontal(z))["aggregate"]
+                section = aggregate_section(model,z)
                 expected = layer.horizontal_section(z)
                 self.assertLess(section.symmetric_difference(expected).area, 1e-8)
                 if previous is not None:
@@ -63,19 +68,20 @@ class AggregationLayerTests(unittest.TestCase):
                            bottom_z=-2, source_z=3, merge_z=7, top_z=8)
         layer = model.aggregation
         self.assertEqual(layer.connecting_facets, [])
-        self.assertAlmostEqual(cell_volume(layer.cell), 80)
+        self.assertAlmostEqual(sum(cell_volume(c) for c in model.cells), 80)
         self.assertTrue(layer.horizontal_section(5).equals(layer.preview.hull))
         with self.assertRaisesRegex(ValueError, "height"):
             layer.horizontal_section(9)
 
-    def test_shared_source_edges_are_removed_and_all_faces_are_planar(self):
+    def test_shared_lower_source_interfaces_are_retained_and_planar(self):
         model = make_model({"a": box(0, 0, 2, 2), "b": box(2, 0, 4, 2), "c": box(7, 1, 9, 3)})
         layer = model.aggregation
+        self.assertTrue(any(f.part=='base_wall' and all(abs(p[0]-2)<1e-8 for p in f.xyz) for f in layer.facets))
         for facet in layer.facets:
             _face_frame(facet.xyz)
             if facet.part == "base_wall":
                 xs = [p[0] for p in facet.xyz]
-                self.assertFalse(all(abs(x-2) < 1e-8 for x in xs))
+                self.assertIsNot(facet.seed.D.V,layer.cell.dual_vertex)
             if facet.part == "connecting":
                 heights = [p[2] for p in facet.xyz]
                 self.assertGreater(max(heights)-min(heights), 1e-8)
@@ -89,7 +95,7 @@ class AggregationLayerTests(unittest.TestCase):
         model = make_model(sources)
         slicer = PlaneSlicer(model)
         for z in (0, 5, 5.5, 6.5, 8, 9, 10):
-            section = slicer.sections(SlicePlane.horizontal(z))["aggregate"]
+            section = aggregate_section(model,z)
             self.assertLess(section.symmetric_difference(model.aggregation.horizontal_section(z)).area, 1e-7)
         self.assertTrue(any(p.interiors for p in model.aggregation.preview.gap_regions))
 
@@ -200,12 +206,15 @@ class ActualAggregationLayerTests(unittest.TestCase):
         with redirect_stdout(io.StringIO()):
             model = app.main(["--no-show"])
         layer = model.aggregation
-        self.assertEqual(app.validate_model(model)[0]["id"], "aggregate")
+        self.assertIn('aggregate',[r['id'] for r in app.validate_model(model)])
+        self.assertEqual(len(model.cells),7)
         self.assertEqual(len(layer.connecting_facets), 68)
-        self.assertEqual(len(layer.facets), 121)
+        self.assertGreater(len(layer.facets),121)
+        self.assertEqual(sum(f.part=='source_roof' for f in layer.facets),6)
+        self.assertEqual(sum(f.part=='source_interface' for f in layer.facets),6)
         self.assertEqual(sum(f.part == "bottom_cap" for f in layer.facets), 6)
         # Shared backend event times replace independent edge-plane estimates.
-        self.assertAlmostEqual(cell_volume(layer.cell), 8520.712553838, places=5)
+        self.assertAlmostEqual(sum(cell_volume(c) for c in model.cells), 8520.712553838, places=5)
         self.assertEqual((layer.bottom_z, layer.source_z, layer.merge_z, layer.target_z), (0, 5, 9, 10))
         for source in layer.preview.sources.values():
             vertices = {(e.V.x, e.V.y, e.V.z) for e in model.active_edges()}
@@ -213,14 +222,14 @@ class ActualAggregationLayerTests(unittest.TestCase):
                 self.assertIn((x, y, 0.0), vertices)
         slicer = PlaneSlicer(model)
         for z in (0, 2.5, 5, 5.01, 5.5, 6, 7, 8, 8.9, 9, 9.5, 10):
-            section = slicer.sections(SlicePlane.horizontal(z))["aggregate"]
+            section = aggregate_section(model,z)
             self.assertLess(section.symmetric_difference(layer.event_time_section(z)).area, 1e-7)
             reference_error=section.symmetric_difference(layer.horizontal_section(z)).area
             self.assertLess(reference_error,layer.preview.hull.length*layer.preview.timing_diagnostics['backend_distance_epsilon']*4)
         for facet in layer.facets:
             _face_frame(facet.xyz)
             for edge in face_edges(facet.seed):
-                self.assertIs(edge.Adjacent().D.V, model.exterior)
+                self.assertIs(edge.Adjacent().Adjacent().D.V,edge.D.V)
 
     def test_cli_export_and_custom_growth_heights(self):
         with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()):

@@ -110,7 +110,7 @@ class AggregationPreviewPlot:
                       fontsize=10, color="#364152")
         self.fig.text(0.045, 0.035,
                       "Top partitions cover CH without area overlaps. Only selected features participate; "
-                      "use --scene aggregation to inspect the single-cell 3D model.", fontsize=9, color="#596270")
+                      'use --scene aggregation to inspect the many-to-one 3D model.', fontsize=9, color="#596270")
         self.checkbox = CheckButtons(self.fig.add_axes([0.79, 0.055, 0.18, 0.045]), ["Merged outline"], [False])
         self.checkbox.on_clicked(self._toggle_merged)
         self.fig.canvas.draw_idle()

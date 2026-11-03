@@ -8,7 +8,7 @@ Run `main.py` in PyCharm, or:
 
 On the **paper** branch, the default scene is a single paper viewer with
 **Transformation** and **Implementation step** dropdowns. It starts at
-**Aggregation → Final single-cell DHE**, using features **8, 9, 17, 18, 21, 1123**.
+**Aggregation → Final many-to-one DHE**, using features **8, 9, 17, 18, 21, 1123**.
 Use `--scene aggregation` for the original aggregate-only viewer.
 Use `--scene aggregation-preview` for the geometry-only preview.
 Use `--scene transition` for the existing 3D polygon, point and polyline workflow.
@@ -68,7 +68,7 @@ distinct stages. Point/polyline flat fan/strip views are geometric projections
 of their production plans, not new DHE roof subdivisions. Polyline extensions
 and chain regions come directly from collapse preparation. Aggregate skeleton
 faces, top ownership partitions, lifted faces, and complete shell plans are
-shown before the actual one-cell DHE construction.
+shown before the many-to-one DHE construction with retained lower source cells.
 
 Final models retain the horizontal/vertical/inclined slicing controls. Their
 settings are remembered when leaving a final stage and restored on return.
@@ -105,36 +105,44 @@ including controls, which is useful for checking its layout.
 the other family group retains its historical default IDs. The original source,
 target, line and height flags remain available. Legacy stage flags such as
 `--no-triangulation` require `--scene transition`; the paper viewer uses `--step`.
-Paper-viewer code changes are published on **origin/paper**; **main** is unchanged.
+Completed code changes follow the project workflow and are published to **origin/main**.
 
 ## 3D aggregation
 
-The six sources form **one closed DHE cell**, identified as `aggregate`.
+The six sources retain **six distinct closed lower cells** and their dual vertices.
+One separate upper cell, identified as `aggregate`, is joined to every preserved
+source roof at Z=5 with opposite interface orientations and reciprocal dual links.
 The original footprints remain unchanged from **Z=0 to 5**. Between **Z=5 and 9**,
 their boundaries grow at equal normal speed according to the straight skeleton,
 clipped to the fixed convex hull. From **Z=9 to 10** the complete hull continues
 vertically to one flat polygon top. The upper band gives the joins positive
 thickness instead of having separate volumes merely touch on the top plane.
 
-For each skeleton face, arrival time `t` is the signed perpendicular distance
-from its originating source edge. The lower growth surface uses
+For each skeleton face, arrival time `t` comes from shared backend event/arc
+provenance, checked against its originating edge planes and verified local
+near-collinear approximation bounds. The lower growth surface uses
 `Z = sourceZ + (mergeZ − sourceZ) × t / T`, where `T` is the largest arrival time
 inside the hull. Neighboring faces share canonical XYZ vertices. Only inclined
 growth faces are triangulated; the six polygon bottoms and single hull top are
-not triangulated. There are no internal walls between touching sources and no
-internal horizontal caps at Z=5 or Z=9.
+not triangulated. Existing lower interfaces between touching sources remain.
+Horizontal source/aggregate interfaces at Z=5 are preserved; there is no internal
+horizontal partition at Z=9.
 
-For the supplied data, the result has **100 vertices, 219 edges, 121 faces**,
-including **68 inclined triangles**, and volume **8520.712541 m³**. Source IDs
+For the supplied data, the retained complex has **90 unique primal vertices,
+201 edges, 119 unique faces, and 7 bounded cells**, including **68 inclined
+growth triangles**. Total occupied volume is **8520.712553838 m² × transition-Z**;
+the upper aggregate volume is **5324.563453329 m² × transition-Z**. These are
+transition coordinates, not physical building volumes. Source IDs
 remain attached to their derived faces. Those faces retain the six preview
 colors; the merged top uses the aggregate color and the exterior is purple.
 The linked XY panel shows source partitions, targets, and current face selection.
 The independent current-face fill remains at **50% opacity**, including after
 `x`; `l` suppresses it until the next selection.
 
-All slicing controls below work for the aggregate. Sections belong to one cell
-and can contain disconnected polygons or holes. At Z=5 they equal the source
-union; from Z=9 through Z=10 they equal the convex hull. Startup shows the 2D
+All slicing controls below work for the complete complex. Below Z=5 sections
+retain source ownership; above it sections belong to the upper aggregate and
+can contain disconnected polygons or holes. At Z=5 their union equals the source
+union; from Z=9 through Z=10 the aggregate equals the convex hull. Startup shows the 2D
 section at Z=7.5, with 3D slicing hidden until a slicing control is used.
 
 ```powershell

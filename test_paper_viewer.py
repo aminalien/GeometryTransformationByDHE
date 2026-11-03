@@ -64,7 +64,7 @@ class PaperStageTests(unittest.TestCase):
                     if stage.model:
                         app.validate_model(stage.model)
                         self.assertFalse(set(stage.model.active_edges()) & dhe.Getdhe()[1])
-                        self.assertEqual(len(stage.model.cells), 1 if family == "aggregation" and stage.final else 6 if family == "aggregation" else 5)
+                        self.assertEqual(len(stage.model.cells), 7 if family == "aggregation" and stage.final else 6 if family == "aggregation" else 5)
                     if spec.id == "triangulation" and family != "polygon":
                         self.assertTrue(all(p[2] == 5 for f in stage.facets for p in f.points))
                     if spec.id == "inclined":
@@ -166,7 +166,7 @@ class PaperSessionTests(unittest.TestCase):
                 self.assertFalse(session.switch_stage("inclined"))
             self.assertIs(session.stage, old_stage)
             self.assertIs(dhe.dhe, old_core[0])
-            self.assertEqual(session.step_dropdown.value, "7. Final single-cell DHE")
+            self.assertEqual(session.step_dropdown.value, '7. Final many-to-one DHE')
             self.assertEqual(session.transformation_dropdown.value, "Aggregation")
             self.assertFalse(session.busy)
             self.assertIsNone(session.figure.canvas.mouse_grabber)
@@ -249,7 +249,7 @@ class PaperSessionTests(unittest.TestCase):
             self.assertEqual(stage.kind, "Geometry preview")
             self.assertEqual(len(stage.regions), 2)
             model = app.main(["--no-show", "--scene", "aggregation"])
-            self.assertEqual(len(model.cells), 1)
+            self.assertEqual(len(model.cells), 7)
 
 
 if __name__ == "__main__":

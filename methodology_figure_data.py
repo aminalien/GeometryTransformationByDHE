@@ -18,7 +18,7 @@ import DHECore as dhe
 import main as app
 from active_region_triangulation import classify_region, triangulate_active_regions
 from aggregation_geometry import build_aggregation_preview
-from aggregation_layer import _plan_shell, build_aggregation_model, validate_aggregation_model
+from aggregation_layer import _plan_shell,plan_aggregation_cells, build_aggregation_model, validate_aggregation_model
 from plane_slicing import PlaneSlicer, SlicePlane
 from top_face_overlay import RegionKind, face_polygon, overlay_top_faces, roof_faces
 from transition_layer import _preflight, build_transition_layer, validate_transition_layer
@@ -192,16 +192,16 @@ class OperatorTrace:
             return
         caller = frame.f_back
         if caller.f_globals.get("__name__") not in {
-            "top_face_overlay", "active_region_triangulation", "transition_layer", "aggregation_layer"
+            "top_face_overlay", "active_region_triangulation", "transition_layer", "aggregation_layer",'generalization_model'
         }:
             return
         if event == "call":
             self.counts[name] += 1
             loc, outer = frame.f_locals, caller.f_locals
-            plan = outer.get("plan")
+            plan = outer.get("plan") or outer.get('face')
             selected = False
             owner = self.labels.get(str(outer.get("owner", "aggregate")), "Aggregate A")
-            if plan is not None and getattr(plan, "part", None) == "connecting":
+            if plan is not None and getattr(plan, "part", None) in ('connecting','transition'):
                 key = (owner, tuple(tuple(p) for p in plan.points))
                 if self.selected is None:
                     self.selected = key
@@ -316,11 +316,11 @@ def _dual_panel(model, labels):
                     pairs.add(tuple(sorted((a, b))))
     lines = tuple(Line((vertices[a], vertices[b]), PURPLE, f"{a} ↔ {b}", "dual", "--")
                   for a, b in sorted(pairs))
-    shapes = tuple(Shape(Point(p[:2]), PURPLE, "d_" + label.replace("Source ", "").replace("Aggregate A", "A"),
+    shapes = tuple(Shape(Point(p[:2]), PURPLE, 'd_agg' if label=='Aggregate A' else "d_" + label.replace("Source ", ""),
                          "dual", z=p[2]) for label, p in vertices.items())
     panel = Panel("dual_associations", "Verified dual cell associations", "DHECore.Adjacent; e.D.V",
                   "Actual dual-vertex coordinates and checked cell associations; not a Voronoi construction.",
-                  shapes=shapes, lines=lines, checks=("Reciprocal incident-cell association checked",))
+                  shapes=shapes, lines=lines,dimensions=('2D','3D'), checks=("Reciprocal incident-cell association checked",))
     return panel, tuple(sorted(pairs))
 
 
@@ -346,7 +346,7 @@ def _construction_panels(events, final, model, labels):
     for a, b in model.shared_walls:
         ring = points(a)
         seams.append(Line(ring + (ring[0],), PURPLE, "JoinByFace: shared interface", "construction", "--"))
-    note = ("Sew connects compatible edge uses within one aggregate cell. No JoinByFace or dual contraction."
+    note = ("Sew closes individual cells; JoinByFace connects retained lower sources to the upper aggregate without dual contraction."
             if model.aggregation else "Sew connects within-cell uses; JoinByFace connects matching faces while retaining distinct cell duals.")
     panels.append(Panel("seams_interfaces", "Sewn boundaries and cell interfaces", "DHECore.Sew" +
                         ("; DHECore.JoinByFace" if model.shared_walls else ""), note,
@@ -476,10 +476,12 @@ def _build_case(case):
                   lines=tuple(Line(tuple((*p,1.) for p in a.geometry.coords), GREEN, "Clipped skeleton arc", "preparation")
                               for a in preview.skeleton_arcs)),
         )
-        agg_plans, _, _ = _plan_shell(preview, 0., 1., 1.8, 2.)
-        planned = tuple(Facet(tuple(tuple(p) for p in f.points), "Aggregate A", f.part,
-                              provenance=labels.get(f.source_id, "Aggregate A"))
-                        for f in agg_plans)
+        agg_plans,metadata,owners,upper,_,_,_=plan_aggregation_cells(preview,0.,1.,1.8,2.)
+        public={v:labels[k] for k,v in owners.items()};public[upper]='Aggregate A'
+        incidence=Counter(tuple(sorted(f.points)) for f in agg_plans)
+        planned=tuple(Facet(tuple(tuple(p) for p in f.points),public[f.owner],
+                            metadata[f.owner,tuple(sorted(f.points))][0],incidence[tuple(sorted(f.points))]>1,
+                            labels.get(metadata[f.owner,tuple(sorted(f.points))][1],'Aggregate A')) for f in agg_plans)
     if case != "agg":
         planned = _plans(plans, labels)
     transition = tuple(f for f in planned if f.part in {"connecting", "neighbour_transition", "separator"})
@@ -500,7 +502,11 @@ def _build_case(case):
               "Source colors show provenance within one planned aggregate shell; growth completes at z_m, below the hull cap at z_t.",
               shapes=outlines, facets=ownership, default_3d=True, dimensions=("2D", "3D")),
     )
-    with OperatorTrace(labels, "realize") as trace:
+    trace_labels=dict(labels)
+    if case=='agg':
+        trace_labels.update({str(i):labels[key] for i,key in enumerate(sources,1)})
+        trace_labels[str(len(sources)+1)]='Aggregate A'
+    with OperatorTrace(trace_labels, "realize") as trace:
         if case == "agg":
             model = build_aggregation_model(preview, bottom_z=0., source_z=1., merge_z=1.8, top_z=2.)
         else:
@@ -529,8 +535,8 @@ def _build_case(case):
                                             actual_target.symmetric_difference(target).area < 1e-8)):
         raise ValueError("Terminal DHE slice does not match its target")
     if case == "agg":
-        if len(model.cells) != 1 or trace.counts["JoinByFace"]:
-            raise ValueError("Aggregate realization must construct one cell without JoinByFace")
+        if len(model.cells) != len(sources)+1 or trace.counts["JoinByFace"]<len(sources):
+            raise ValueError('Aggregation must retain lower sources and join each to its upper aggregate')
     final_checks = ("Pointer identities, closed cycles and per-cell Euler characteristic checked",
                     "Planarity and facet-plan identity checked", "Positive volumes and cap dimensions checked",
                     "Actual terminal slicer geometry matches target")
@@ -538,11 +544,11 @@ def _build_case(case):
         final_checks += ("Logical neighbor pairs and reciprocal interfaces checked",
                          "Coverage/overlap checked at the production validator's seven transition levels",)
     else:
-        final_checks += ("One aggregate cell; vertex links and hull cap checked",)
+        final_checks += ("Separate lower source cells and one upper aggregate; reciprocal interfaces checked",)
     final_panels = (
         Panel("realized_dhe", "Final realized DHE boundary", "build_aggregation_model; validate_aggregation_model" if case == "agg" else
               "build_transition_layer; validate_transition_layer",
-              "One aggregate DHE cell; subdued colors indicate provenance only." if case == "agg" else
+              "Retained lower source cells joined through source-level faces to one upper aggregate." if case == "agg" else
               "Realized source and coupled neighboring cells; no internal source-level caps.",
               facets=final, default_3d=True, dimensions=("2D", "3D"), topology=True, checks=final_checks),
         Panel("intermediate_section", "Actual intermediate horizontal section", "PlaneSlicer.sections(include_degenerate=True)",

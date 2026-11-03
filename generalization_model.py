@@ -10,6 +10,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from math import isfinite
 from types import SimpleNamespace
+from uuid import uuid4
 
 import numpy as np
 from shapely import constrained_delaunay_triangles, union_all
@@ -173,6 +174,8 @@ class State:
     description: str
     changes: tuple[int, ...] = ()
     operation: OperationRecord | None = None
+    step_id: str = field(default_factory=lambda:uuid4().hex)
+    parent_step_id: str | None = None
 
 
 @dataclass
@@ -876,7 +879,8 @@ class GeneralizationSession:
             for j,h in list(new.items())[:i]:
                 if g.intersection(h).area > TOL*TOL:
                     raise ValueError(f"Updated footprints {j} and {k} overlap.")
-        # Map selected source identities before dissolving historical interfaces.
+        # Map identities only in the NEW interval; lower source cells retain
+        # their original owners and source-level interface faces.
         old={}
         for k,g in sources.items():
             owner=remap.get(k,k)
@@ -884,15 +888,21 @@ class GeneralizationSession:
         lifted=_lift_unchanged_isolated(state,old,new,lo,hi) if not remap else {}
         if lifted:
             notes.append(f"{len(lifted)} unchanged isolated features: roof lifted without a new wall band.")
-        historical=[Face(remap.get(f.owner,f.owner),list(f.points),f.part) for f in state.faces
-                    if f.owner not in lifted and not all(p[2]==lo for p in f.points)]
+        historical=[Face(f.owner,list(f.points),f.part) for f in state.faces
+                    if f.owner not in lifted and ((operation=='aggregation' and f.owner in selected)
+                                                  or not all(p[2]==lo for p in f.points))]
         historical.extend(f for shell in lifted.values() for f in shell)
         layer=_layer_faces({k:g for k,g in old.items() if k not in lifted},
                            {k:g for k,g in new.items() if k not in lifted},patches,lo,hi,diagnostics=planning_diagnostics)
+        if operation=='aggregation':
+            # Preserve every lower source roof, pairing it with a separate
+            # bottom face of the new upper aggregate. Never remap history.
+            layer.extend(Face(aggregate,list(reversed(f.points)),'bottom') for f in state.faces
+                         if f.owner in selected and all(p[2]==lo for p in f.points))
         saved=_core()
         try:
             model,faces,core=realize([*historical,*layer],self.origin)
-            final_sections=self._validate_sections(model,old,new,lo,hi)
+            final_sections=self._validate_sections(model,sources if operation=='aggregation' else old,new,lo,hi)
             contacts={k:g for k,g in targets.items() if g.geom_type != "Polygon"}
             if contacts:
                 actual=final_sections
@@ -935,6 +945,7 @@ class GeneralizationSession:
             lo,hi,aggregate,tuple(k for k in selected if k not in features),
             dict(dz=dz,tolerance=tolerance,iterations=iterations,ratio=ratio),planning_diagnostics,z_m=aggregation_merge_z)
         next_state=State(features,faces,hi,f"{operation}: {', '.join(map(str,selected))}; Z={lo:g}–{hi:g}",affected,record)
+        next_state.parent_step_id=state.step_id
         return Proposal(state,next_state,model,core,targets,affected,notes)
 
     @staticmethod

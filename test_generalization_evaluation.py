@@ -70,7 +70,7 @@ class EvaluationMetricTests(unittest.TestCase):
                 self.assertAlmostEqual(v['added_transition_volume'],500 if operation=='merging' else 128)
                 self.assertEqual(result['winner'],s.state.operation.winner)
                 self.assertIn(str(s.state.operation.winner),result['topology']['after']['cells'])
-                if operation=='aggregation':self.assertEqual(len(result['topology']['after']['cells']),1)
+                if operation=='aggregation':self.assertEqual(len(result['topology']['after']['cells']),3)
 
     def test_batch_neighbours_and_read_only_topology(self):
         s=session();j=journal_for(s);base,model,context=applied(s,j,'point',[1,3])

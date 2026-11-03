@@ -143,12 +143,16 @@ class PlaneSlicer:
     def _compile(self, records):
         self.faces = {}
         face_owners = defaultdict(set)
+        horizontal_owners=defaultdict(dict)
         vertices = set()
         for owner, points in records:
             points=[tuple(p) for p in points]
             vertices.update(points)
-            self.faces.setdefault(str(owner), []).append(_face_frame(points))
+            frame=_face_frame(points)
+            self.faces.setdefault(str(owner), []).append(frame)
             face_owners[tuple(sorted(points))].add(str(owner))
+            if len({p[2] for p in points})==1:
+                horizontal_owners[tuple(sorted(points))]['below' if frame.normal[2]>0 else 'above']=str(owner)
         self.vertices = np.array(sorted(vertices), dtype=float)
         if len(self.vertices) == 0:
             raise ValueError("Cannot slice an empty model.")
@@ -157,12 +161,15 @@ class PlaneSlicer:
         self.center = (self.minimum + self.maximum) / 2
         self.coplanar_owner = {key: min(owners) for key, owners in face_owners.items()
                                if len(owners) > 1}
+        self.horizontal_owners={key:sides for key,sides in horizontal_owners.items() if key in self.coplanar_owner}
 
     def offset_bounds(self, plane):
         values = (self.vertices - self.center) @ plane.normal
         return float(values.min()), float(values.max())
 
-    def sections(self, plane, *, include_degenerate=False):
+    def sections(self, plane, *, include_degenerate=False, horizontal_side='below'):
+        if horizontal_side not in ('below','above'):raise ValueError('Choose below or above for horizontal interface ownership.')
+        horizontal=abs(plane.normal[2])>1-1e-12
         intersections, projected = {}, {}
 
         def uv(point):
@@ -181,7 +188,8 @@ class PlaneSlicer:
                 if np.max(np.abs(distances)) <= EPSILON:
                     polygon = Polygon([uv(p) for p in face.points])
                     key = tuple(sorted(tuple(p) for p in face.points))
-                    if self.coplanar_owner.get(key, owner) != owner:
+                    assigned=self.horizontal_owners.get(key,{}).get(horizontal_side,self.coplanar_owner.get(key,owner)) if horizontal else self.coplanar_owner.get(key,owner)
+                    if assigned != owner:
                         excluded.append(polygon)
                     else:
                         coplanar.append(polygon)

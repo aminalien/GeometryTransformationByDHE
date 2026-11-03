@@ -1,4 +1,4 @@
-"""Linked XY provenance and face selection for the single aggregate cell."""
+"""Linked provenance and face selection for many-to-one aggregation cells."""
 
 import numpy as np
 from matplotlib.lines import Line2D
@@ -61,7 +61,7 @@ class AggregationProjectionPanel:
         fig.text(0.02, 0.305, "Other face edges\n(projection only)", color="#00bcd4", fontsize=8)
         fig.suptitle(f"DHE aggregation | {', '.join(layer.preview.sources)} | "
                      f"growth Z={layer.source_z:g}–{layer.merge_z:g}; hull top Z={layer.target_z:g}", fontsize=14)
-        fig.canvas.manager.set_window_title("DHE: single-cell polygon aggregation")
+        fig.canvas.manager.set_window_title('DHE: many-to-one polygon aggregation')
         viewer.selection_callbacks.append(self.on_selection)
         self.click_connection = fig.canvas.mpl_connect("button_press_event", self.on_click)
         initial = max(layer.connecting_facets, key=lambda f: f.geometry.area, default=layer.facets[0])

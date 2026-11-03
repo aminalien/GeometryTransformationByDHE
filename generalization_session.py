@@ -176,10 +176,9 @@ class GeneralizationWindow:
         self.history_combo.bind("<<ComboboxSelected>>",self._history)
         ttk.Button(group,text="Undo",command=self.undo).pack(fill="x",pady=2)
         from generalization_evaluation import DEFAULT_EVALUATION_FOLDER
-        group=self._group('Applied operation evaluations')
-        ttk.Entry(group,textvariable=self._var('evaluation_folder',DEFAULT_EVALUATION_FOLDER)).pack(fill='x')
-        ttk.Button(group,text='Browse evaluation folder',command=self.browse_evaluations).pack(fill='x')
-        ttk.Button(group,text='Review evaluations',command=self.review_evaluations).pack(fill='x')
+        self._var('evaluation_folder',DEFAULT_EVALUATION_FOLDER)
+        group=self._group('Quantitative Evaluation')
+        ttk.Button(group,text='Quantitative Evaluation',command=self.review_evaluations).pack(fill='x')
         group=self._group("DHE inspection")
         row=ttk.Frame(group);row.pack(fill="x")
         ttk.Button(row,text="Previous face",command=lambda:self._face(-1)).pack(side="left")
@@ -386,30 +385,16 @@ class GeneralizationWindow:
 
     def _apply(self,proposal):
         self._close_inspector()
-        before_model=self.session.model;base=self.session.state;base_cursor=self.session.cursor
         self.session.apply(proposal);self.proposal=None
-        context=self.evaluation_journal.register_applied(base_cursor,base,self.session.state)
-        context['construction_notes']=list(proposal.notes)
         self.selected.intersection_update(self.session.state.features)
-        from generalization_evaluation import evaluate_and_save
-        applied=self.session.state;folder=self.variables['evaluation_folder'].get()
-        self.evaluation_pending=True
-        self._start(lambda:evaluate_and_save(base,applied,before_model,proposal.model,context,folder),
-            self._evaluation_completed,f'Applied {applied.description}. Evaluating completed operation…')
         self._refresh()
-
-    def _evaluation_completed(self,record):
-        self.evaluation_pending=False;self.evaluation_journal.complete(record)
-        if self.close_after_evaluation:self.close();return
-        self.review_evaluations(record['evaluation_id'])
-        message=f"Evaluation for {record['operation']}, step {record['history_step']}: {record['status']}. "
-        self.status.set(message+('Save failed; result retained in Evaluation window: '+record['_save_error']
-            if record.get('_save_error') else 'Saved '+record['_path'])+' '+' '.join(record.get('construction_notes',())))
+        self.status.set(f'Applied {self.session.state.description}. '+' '.join(proposal.notes))
+        if self.evaluation_window and not self.evaluation_window.closed:self.evaluation_window.on_history_changed()
 
     def review_evaluations(self,select_id=None):
-        from generalization_evaluation_viewer import EvaluationWindow
+        from lts_evaluation_viewer import EvaluationWindow
         if not self.evaluation_window or self.evaluation_window.closed:self.evaluation_window=EvaluationWindow(self)
-        self.evaluation_window.refresh(select_id);self.evaluation_window.root.lift()
+        self.evaluation_window.root.lift()
 
     def browse_evaluations(self):
         if self.busy:return
@@ -420,17 +405,7 @@ class GeneralizationWindow:
             if self.evaluation_window and not self.evaluation_window.closed:self.evaluation_window.refresh()
 
     def retry_evaluation(self,record):
-        if self.busy:return
-        from generalization_evaluation import save_evaluation
-        folder=self.variables['evaluation_folder'].get()
-        def save():
-            updated=dict(record)
-            try:
-                updated['_path']=str(save_evaluation(updated,folder));updated.pop('_save_error',None)
-            except Exception as exc:updated['_save_error']=f'{type(exc).__name__}: {exc}'
-            return updated
-        self.evaluation_pending=True
-        self._start(save,self._evaluation_completed,'Saving existing evaluation; measurements are unchanged…')
+        if self.evaluation_window and not self.evaluation_window.closed:self.evaluation_window.save()
 
     def _refresh(self):
         self.syncing=True
@@ -458,9 +433,7 @@ class GeneralizationWindow:
             self._close_inspector();self.proposal=None;self.selected=set();self._refresh()
             self.status.set(self.session.state.description)
             if self.evaluation_window and not self.evaluation_window.closed:
-                identifier=self.evaluation_journal.current_id(self.session.cursor)
-                if identifier:self.evaluation_window.refresh(identifier)
-                else:self.evaluation_window.clear()
+                self.evaluation_window.on_history_changed()
         self._start(lambda:self.session.go(index),done,"Restoring historical DHE model…")
 
     def undo(self):
@@ -494,7 +467,7 @@ class GeneralizationWindow:
             p=f.geometry.representative_point();self.map_ax.annotate(str(k),(p.x,p.y),fontsize=9,ha="center",va="center")
         if self.proposal:
             for k,g in self.proposal.targets.items():self._geometry(self.map_ax,g,"black",fill=False,linewidth=1.8,style="--")
-        self.map_ax.set(title=f"Current top map · Z={state.z:g} m",xlabel="Local X (m)",ylabel="Local Y (m)")
+        self.map_ax.set(title=f"Current top map · transition Z={state.z:g}",xlabel="Local X (m)",ylabel="Local Y (m)")
         self.map_ax.set_aspect("equal",adjustable="box")
         faces=self.display_model.generalization_faces
         grouped=defaultdict(list)
@@ -673,7 +646,7 @@ class GeneralizationWindow:
     def close(self):
         if self.evaluation_pending:
             self.close_after_evaluation=True
-            self.status.set('Finishing and saving the applied operation evaluation before closing…');return
+            self.status.set('Finishing the explicitly requested evaluation save before closing…');return
         self.closed=True
         if self.evaluation_window:self.evaluation_window.close()
         for window in self.visualizations:window.close()

@@ -86,7 +86,8 @@ class ReportedAggregationTests(unittest.TestCase):
                         self.assertAlmostEqual(seed['delta'],seed['normal_travel']*(1-cos(radians(seed['angle_degrees']))),places=12)
                     slicer=PlaneSlicer(p.model);owner=str(p.state.operation.winner);last=source
                     for fraction in (0.,.25,.5,.75,.8,1.):
-                        section=slicer.sections(SlicePlane.horizontal(source_z+fraction*dz))[owner]
+                        sections=slicer.sections(SlicePlane.horizontal(source_z+fraction*dz))
+                        section=unary_union([g for k,g in sections.items() if int(k) in set(selection)|{int(owner)}])
                         self.assertLess(last.difference(section).area,1e-6)
                         self.assertLess(source.difference(section).area,1e-6)
                         self.assertLess(section.difference(hull).area,1e-6)
@@ -101,7 +102,7 @@ class ReportedAggregationTests(unittest.TestCase):
         model=build_aggregation_model(preview,source_z=15,merge_z=23,top_z=25)
         slicer=PlaneSlicer(model)
         for z in (15,17,19,21,23,25):
-            actual=slicer.sections(SlicePlane.horizontal(z))['aggregate']
+            actual=unary_union(list(slicer.sections(SlicePlane.horizontal(z)).values()))
             self.assertLess(actual.symmetric_difference(model.aggregation.event_time_section(z)).area,1e-7)
         point=preview.timing_diagnostics['explained_vertices'][0]['point']
         from aggregation_layer import _arrival
@@ -127,7 +128,8 @@ class ReportedAggregationTests(unittest.TestCase):
                         last=source
                         for fraction in (0.,.1,.25,.5,.75,.8,.9,1.):
                             z=source_z+fraction*increment
-                            geometry=slicer.sections(SlicePlane.horizontal(z))[str(owner)]
+                            sections=slicer.sections(SlicePlane.horizontal(z))
+                            geometry=unary_union([g for k,g in sections.items() if int(k) in set(selection)|{owner}])
                             self.assertLess(last.difference(geometry).area,1e-6)
                             self.assertLess(source.difference(geometry).area,1e-6)
                             self.assertLess(geometry.difference(hull).area,1e-6)
@@ -150,7 +152,7 @@ class ReportedAggregationTests(unittest.TestCase):
         differences=[]
         for z in (25,27,29,31,33,35):
             reference=model.aggregation.horizontal_section(z)
-            actual=slicer.sections(SlicePlane.horizontal(z))['aggregate']
+            actual=unary_union(list(slicer.sections(SlicePlane.horizontal(z)).values()))
             self.assertLess(actual.symmetric_difference(model.aggregation.event_time_section(z)).area,1e-7)
             differences.append(actual.symmetric_difference(reference).area)
         self.assertGreater(max(differences),0.)

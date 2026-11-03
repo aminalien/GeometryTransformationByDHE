@@ -1,5 +1,9 @@
 # Aggregation timing and column conformity
 
+## Current many-to-one topology
+
+Aggregation retains every lower source cell and dual vertex. Preserved source roofs at Zs are paired with bottom faces of one new upper aggregate cell using `JoinByFace`; existing lower neighbour interfaces remain intact. This applies to the workspace, standalone inspector and paper scenes, including repeated aggregation. Horizontal interfaces support explicit below/above ownership independent of lexical feature-ID order. `AggregationLayer.cell` is the upper aggregate, `source_cells` contains the lower cells, `expected_upper_volume` excludes their volume, and `expected_volume` remains the total occupied volume. Older facet/cell counts in historical audit notes describe the former single-cell construction; current regressions check unchanged total volume and growth facets alongside retained lower cells.
+
 ## Reproduced defects
 
 Both selections reproduce with the default dataset's original footprints, before any prior generalization. The supplied values are the workspace's one-based feature indices.

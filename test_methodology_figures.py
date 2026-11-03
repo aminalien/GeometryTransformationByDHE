@@ -57,7 +57,7 @@ class SnapshotTests(unittest.TestCase):
                 self.assertGreaterEqual(len(stage.panels),2)
                 keys.append(tuple(p.key for p in stage.panels))
             self.assertEqual(len(set(keys)),5)
-            self.assertEqual(data.cell_count,1 if case=="agg" else 5)
+            self.assertEqual(data.cell_count,4 if case=="agg" else 5)
         self.assertEqual(count,20)
 
     def test_four_overlay_classes_area_colors_and_required_note(self):
@@ -78,7 +78,7 @@ class SnapshotTests(unittest.TestCase):
             realization = dict(counts["realize"])
             for name in ("MEVVFS","MEV","MEF","Sew"):
                 self.assertGreater(realization[name],0)
-            self.assertEqual(realization.get("JoinByFace",0)>0,case!="agg")
+            self.assertGreater(realization.get('JoinByFace',0),0)
             prep = dict(counts["prepare"])
             self.assertEqual(prep.get("MVE",0)>0,case=="p2p")
             sequence = [e.operator for e in data.events if e.operator=="MEVVFS"]
@@ -117,7 +117,7 @@ class SnapshotTests(unittest.TestCase):
             if case in {"p2pt","p2l"}:
                 self.assertFalse([f for f in source_faces if all(p[2]==2 for p in f.points)])
         aggregate = self.data["agg"]
-        self.assertEqual({f.owner for f in aggregate.stages[4].panels[0].facets},{"Aggregate A"})
+        self.assertEqual({f.owner for f in aggregate.stages[4].panels[0].facets},{'Source A','Source B','Source C','Aggregate A'})
 
     def test_snapshots_have_public_labels_only_no_live_core_records(self):
         def walk(v):

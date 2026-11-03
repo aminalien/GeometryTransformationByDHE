@@ -1,171 +1,141 @@
-# Quantitative Evaluation of Applied DHE-Based Generalization
+# Manual Quantitative Evaluation of 2D+1D LoD Transition Space
 
-## 1. Purpose, evaluation unit, and provenance
+## 1. Evaluation protocol and comparison units
 
-The evaluation characterizes each successfully applied generalization operation through a small set of geometric descriptors and measurements of its realized Dual Half Edge (DHE) representation. It is observational: it neither generates target geometries nor modifies transition facets, topology, or history. Numerical values are obtained from the preceding and applied states, rather than from illustrative geometries, random samples, or predicted outcomes. All computations use floating-point arithmetic and therefore retain its numerical limitations.
+Quantitative analysis is initiated explicitly through **Quantitative Evaluation → Evaluate**. Applying an operation performs the existing construction validation but does not calculate quantitative evaluation results or save evaluation files. **Save results** is a separate explicit action. Opening the evaluation window, Preview, loading, Undo, and history navigation do not initiate analysis.
 
-The evaluation unit is one successful GUI **Apply** event. Previewing an operation, loading data, restoring a history state, and Undo do not generate evaluations. For simplification, smoothing, and dimensional collapse, geometric descriptors are calculated separately for every selected feature. For merging and aggregation, the selected features form one evaluation group. Measurements describe the current source representation immediately before the operation, not necessarily its original Shapefile geometry.
+**Last operation** evaluates the applied transition ending at the currently displayed history state. It reports selected features individually for polygon transformation and collapse, a selected group for merging and aggregation, an additional winner profile for merging, and an affected-context summary including changed neighbours. **Whole history** evaluates the active branch from its initial top representation to the currently displayed state. Later stored history states are excluded after Undo. It reports both the entire map and the changed-lineage subset, including selected ancestors and affected neighbours. It uses only common metrics; heterogeneous operation-specific descriptors are not averaged.
 
-Every event receives a unique evaluation identifier and records its parent evaluation, session identifier, history index, UTC timestamp, operation, selection, affected features, winner and retired identities, parameters, feature lineage, and transition levels. A dataset fingerprint hashes the accepted projected geometries and indices together with their CRS. The source, CRS, local-coordinate origin, and geometry-library versions are retained. Reports do not embed the original dataset; independent reconstruction consequently requires that dataset and the corresponding operation sequence. A history index alone is insufficient to identify an event because a new Apply after Undo may reuse the same index on another branch.
+Each history state has a stable identifier and parent identifier. Each requested evaluation has a new identifier. Reports retain dataset source, projected CRS, origin and fingerprint, selected/affected indices, lineage-derived scope, operations, parameters, comparison steps and Z levels, numerical settings, and library versions. Reusing a history index on another branch does not reuse its state or evaluation identity. Existing version-1 automatic-evaluation reports can be reviewed as legacy records without reinterpretation or rewriting.
 
-## 2. Notation and measurement conventions
+## 2. Actual representations and dimensional conventions
 
-Let \(S\) denote a selected feature's source polygon and \(T\) its applied top geometry. For merging and aggregation, let \(S_1,\ldots,S_k\) denote the selected sources and \(U=\bigcup_{i=1}^{k}S_i\) their union. The operators \(A\), \(P\), and \(L\) denote polygon area, polygon boundary length, and polyline length, respectively. The symbol \(\triangle\) denotes symmetric difference, \(d\) minimum Euclidean distance, and \(\|\cdot\|\) Euclidean norm.
+All evaluated representations are horizontal sections reconstructed from immutable, realized DHE boundary records. Historical models are not reallocated, and global DHE topology is not restored or mutated for evaluation. The current model is also audited through its live primal and dual relationships. No target or section geometry is numerically interpolated from endpoint measurements.
 
-The centroid \(c(G)\) is the area-weighted centroid for a polygon, the length-weighted centroid for a polyline, and the point itself for a point geometry. The equivalent-area radius of the source is
-
-\[
-r_S=\sqrt{A(S)/\pi}.
-\]
-
-XY coordinates use the workspace's projected metre CRS; translation to a local origin does not affect the selected descriptors. The Z coordinate represents progression between spatial representations. It is not terrain elevation, physical building height, elapsed time, or map scale unless separately calibrated. Thus the reported transition volume has units of \(\mathrm{m}^2\times\text{transition-Z}\), not physical cubic metres.
-
-The planar vertex count \(n(G)\) counts the stored top polygon's exterior coordinates, excluding its repeated closing coordinate. It is distinct from the number of DHE vertices, which also includes necessary junctions and historical topology. No additional simplification, resampling, smoothing, or target construction is performed during evaluation.
-
-## 3. Operation-specific geometric descriptors
-
-### 3.1. Simplification
-
-**Vertex reduction** quantifies reduction of the planar representation:
+Every transition interval is evaluated at
 
 \[
-R_n=100\left(1-\frac{n(T)}{n(S)}\right)\%.
+z_j=z_s+t_j(z_t-z_s),\qquad t_j=j/10,\quad j=0,\ldots,10.
 \]
 
-A positive value indicates fewer vertices; zero indicates no count reduction. It expresses representational economy, but does not establish geometric fidelity. A negative value is retained rather than forced to zero.
+Thus nine interior sections and both endpoints are evaluated. Whole history retains eleven sections per operation, including unequal Z increments. Repeated boundary levels belong to their respective interval endpoints. At a shared horizontal interface, **below** selects the source-side representation and **above** selects the upper representation for inspection. This convention is based on oriented face incidence, not lexical feature-ID order. Evaluation uses below-side ownership for historical and endpoint comparisons.
 
-**Relative symmetric-difference area** measures the extent of footprint alteration:
+Let \(G_j\) be a scoped collection of actual section geometries, and let \(G_0\) be its reference representation. Last-operation comparisons use the preceding source state. Whole-history comparisons, including profiles, use the initial top state and a fixed reference normalization for each scope. The initial level is the initial extrusion's roof, not the extrusion bottom.
+
+For polygon-to-polygon comparisons, area and perimeter describe polygon representations. A collapsed point or polyline has no polygon perimeter or polygon-area quality metric: those individual-target entries and their polygon changes are **N/A**. Whole-map and affected-context totals instead describe their polygonal components; zero polygonal coverage in an all-symbol map is meaningful, but does not imply that point or line symbols are absent. Point counts and polyline lengths are reported separately. Missing physical representations are not synthesized from logical map entries.
+
+## 3. Common geometric measurements
+
+### 3.1. Area and perimeter differences
+
+For the polygonal components \(\mathcal P(G)\), define
 
 \[
-E_{\triangle}=100\frac{A(S\triangle T)}{A(S)}\%.
+A(G)=\sum_{p\in\mathcal P(G)}A(p),\qquad
+P(G)=\sum_{p\in\mathcal P(G)}P(p).
 \]
 
-This descriptor accounts for both removed and added areas and avoids cancellation between them. Zero indicates area-equivalent footprints within numerical precision. It complements vertex reduction by exposing the geometric cost of a simpler representation. It is an area discrepancy, not a maximum boundary displacement or an error relative to independent ground truth.
+Area uses square metres and perimeter uses metres in the workspace's projected CRS. A shared polygon boundary contributes to each incident feature's perimeter. The measure therefore captures removal of internal feature boundaries during merging; it is not the perimeter of a dissolved union. Holes, where present in an actual section, contribute their boundary lengths.
 
-### 3.2. Smoothing
-
-**Compactness change** is defined using the isoperimetric quotient:
+The signed differences and relative differences are
 
 \[
-C(G)=\frac{4\pi A(G)}{P(G)^2},\qquad \Delta C=C(T)-C(S).
+\Delta A_j=A(G_j)-A(G_0),\quad R_{A,j}=100\Delta A_j/A(G_0),
+\]
+\[
+\Delta P_j=P(G_j)-P(G_0),\quad R_{P,j}=100\Delta P_j/P(G_0).
 \]
 
-The dimensionless quotient relates enclosed area to boundary length and is invariant to uniform scaling. Positive \(\Delta C\) indicates an increase in compactness; negative values indicate a decrease. The descriptor is appropriate for observing the area–boundary relationship affected by the implemented corner-cutting operation. It is not a curvature measure: elongated and semantically appropriate shapes may have low compactness, and greater compactness does not necessarily imply superior cartographic quality.
+Relative changes are percentages; division by a zero reference is undefined and reported as N/A. Positive and negative values indicate expansion and reduction, respectively. These are representational changes rather than errors against independent ground truth. Equal areas or perimeters do not imply equal shapes.
 
-Smoothing also reports \(E_{\triangle}\), defined above. Together, the two descriptors distinguish a change in boundary economy from the associated footprint alteration. Neither is assigned a universal acceptance threshold.
+### 3.2. Hausdorff and normalized Hausdorff displacement
 
-### 3.3. Collapse to point
+Define the displayed geometric support \(B(G)\) as the union of polygon boundaries, actual polyline geometries, and actual point geometries. Polygon boundaries are used rather than filled polygons so that boundary removal and movement remain observable. Coincident linework is geometrically deduplicated for displacement, independently of the per-feature perimeter convention.
 
-**Normalized centroid displacement** measures positional departure from the source's area centroid:
+For nonempty supports \(X=B(G_0)\) and \(Y=B(G_j)\), continuous symmetric Hausdorff distance is
 
 \[
-D_c=\frac{\|c(T)-c(S)\|}{r_S}.
+H(X,Y)=\max\{\sup_{x\in X}d(x,Y),\sup_{y\in Y}d(y,X)\}.
 \]
 
-Normalization permits comparison across feature sizes. A value of zero places the target at the area centroid, but that is not always the appropriate feasible target: the centroid of a concave polygon may lie outside its visibility kernel or outside the polygon itself.
-
-**Normalized boundary clearance** describes how far the applied target lies from the source boundary:
+The implementation calculates a controlled sampled form. Every original segment is subdivided to a maximum spacing \(h=\alpha D\), with default \(\alpha=0.001\). Here \(D\) is the diagonal of the reference support's axis-aligned bounding box. Original vertices and isolated points are retained. Samples are queried against spatially indexed **original target segments or points**, not merely the target sample vertices:
 
 \[
-Q_p=\frac{d(T,\partial S)}{r_S}.
+H_h(X,Y)=\max\{\max_{x\in Q_h(X)}d(x,Y),\max_{y\in Q_h(Y)}d(y,X)\},\qquad
+NHD_h=H_h/D.
 \]
 
-For the application's validated interior targets, larger clearance indicates greater separation from the boundary. This complements centroid displacement when the visibility constraints require an off-centre point. It does not establish visibility from every source vertex or identify a maximum-clearance point; those are different questions. Evaluation retains the target actually produced by the existing collapse algorithm.
-
-### 3.4. Collapse to polyline
-
-Polyline collapse reports \(D_c\) using the target's length-weighted centroid. This records positional change without depending on arbitrary subdivision of a straight segment.
-
-**Relative line length** relates the realized target length to source extent:
+\(H_h\) has metre units and \(NHD_h\) is dimensionless. Both sampling directions are used. For piecewise-linear supports with maximum sample gap \(h\), the distance-to-set function is 1-Lipschitz, giving the sampling-only bound
 
 \[
-R_L=100\frac{L(T)}{D(S)}\%,
+H_h\le H\le H_h+h/2.
 \]
 
-where \(D(S)\) is the longer side of the source's minimum-area enclosing rectangle. The rectangle is allowed to rotate and is not restricted to the coordinate axes. The ratio describes the extent of the line representation relative to a characteristic source dimension. A bent line may produce a value greater than 100%; this is retained. The descriptor is not a spatial coverage percentage, a skeleton-completeness measure, or a criterion that rewards longer lines. It applies to the actual selected ridge, including the existing geometric fallback when used, without treating that fallback as a straight skeleton.
+This bound does not include floating-point or section-reconstruction errors. Results are explicitly labelled sampled Hausdorff, rather than exact continuous Hausdorff. Reports retain \(D\), \(h\), \(h/2\), and sample counts. A zero reference diagonal makes normalization undefined; an empty actual support makes displacement undefined. The default sample budget is 200,000 samples per representation in a comparison. Exceeding it produces N/A and a reason; the implementation never silently coarsens the requested sampling.
 
-### 3.5. Merging
+Displacement after dimensional collapse describes an intentional change of representation, not exclusively positional error. Similarly, removing an internal boundary during merging can increase Hausdorff displacement despite unchanged union coverage. It is therefore not assigned a universal quality threshold.
 
-**Union-preservation error** measures whether the final winner represents the selected source union:
+## 4. Concise operation-specific descriptors
+
+Only Last operation includes these descriptors. Let \(S\) and \(T\) be actual source and target representations, \(U\) the selected source union, \(n\) exterior vertex count excluding ring closure, and \(c\) the geometry centroid.
+
+| Operation | Descriptor and formula | Interpretation and limitation |
+|---|---|---|
+| Simplification | Vertex reduction \(100(1-n(T)/n(S))\%\) | Planar representation economy; DHE junction counts are measured separately. |
+| Smoothing | Compactness change \(4\pi A(T)/P(T)^2-4\pi A(S)/P(S)^2\) | Change in area–boundary economy; not a curvature measure or universal smoothness score. |
+| Collapse to point | \(\|c(S)-T\|/\sqrt{A(S)/\pi}\) | Positional departure relative to equivalent-area radius; the area centroid need not be a feasible collapse target. |
+| Collapse to polyline | \(100L(T)/D_{rect}(S)\%\) | Line length relative to the long side of the minimum-area enclosing rectangle; not spatial coverage, skeleton completeness, or a reward for length. Values above 100% are retained. |
+| Merging | \(100A(T\triangle U)/A(U)\%\) | Agreement with the implemented union target; expected near zero within numerical precision. |
+| Aggregation | \(100A(T\triangle CH(U))/A(CH(U))\%\) | Agreement with the implemented hull target. Area expansion itself is already measured by the common area difference. |
+
+Vertex reduction uses the actual section rings. Conforming junctions or collinear section vertices can therefore contribute to these planar counts; this is not a count of retained raw Shapefile vertices. The separate 3D complexity table measures the complete realized cell complex.
+
+Descriptors use applied output, including any accepted existing target-search fallback. They do not re-run generalization. Undefined descriptors include an explanatory N/A instead of an invented numerical value.
+
+## 5. Structural complexity and transition-space validity
+
+### 5.1. Retained LTS versus top-supporting cells
+
+**Retained LTS complexity** counts globally unique primal vertices \(N_V\), undirected primal edges \(N_E\), shared geometric faces \(N_F\), and bounded cells \(N_C\) across the complete stored realized complex. Coincident opposite uses of one inter-cell face count once. The unbounded exterior is excluded. Coordinates are the already conformed, realized coordinates; evaluation introduces no new snapping or clipping.
+
+**Top-supporting complexity** applies the same global-entity counting convention to the complete closed cells supporting the actual active logical representation at that history level. These are full cell shells, not the V/E/F counts of a manufactured planar slice mesh. Logical feature counts and actual top-feature counts are reported independently. Historical checkpoints use the model as stored at that step, rather than assigning later subdivisions retrospectively to earlier checkpoints.
+
+Consequently, three source cells aggregated into one target can produce one top-supporting aggregate cell while retaining four bounded cells in the LTS. Planar generalization need not reduce retained 3D topology. These quantities are not process memory measurements.
+
+### 5.2. Many-to-one aggregation topology
+
+The lower source cells retain their identities, dual vertices, boundaries, and roofs at \(z_s\). A distinct upper aggregate cell occupies the new transition interval. Every preserved source roof is paired with an oppositely oriented bottom face of the upper cell. Existing lower neighbour interfaces remain present. Repeated aggregation preserves earlier aggregate cells and their predecessors.
+
+Coordinate plans are realized using the existing `MEVVFS → MEV → MEF` face sequence, `Sew` within cells, and `JoinByFace` across matching interfaces. `JoinByFace` establishes shared primal/dual relationships while retaining distinct cell duals; it is not used as dual contraction. Skeleton times, growth facets, hull targets, and total occupied geometry are retained. Total volume sums all bounded cells, whereas the upper aggregate's volume excludes the lower source interval.
+
+### 5.3. Validation measures
+
+Missing edges have one incident face in a cell; non-manifold edges have more than two. An edge with two uses is misoriented unless its directions are opposite. These counts are **per cell**: an edge shared by several valid cells is not automatically non-manifold. Closed-cell checks additionally inspect connectedness, cyclic vertex links, and the supported genus-zero Euler relation \(V-E+F=2\). Interface checks require distinct owners and opposite face cycles.
+
+Historical validation audits immutable realized boundaries. Only the live model is checked for reciprocal symmetric/dual pointers, face continuity, cell-dual ownership, and reciprocal shared-interface adjacency. Historical rows explicitly state that live pointers were not rechecked. These are numerical/combinatorial checks, not exact-arithmetic certificates of all possible geometric intersections.
+
+Logical map entries are compared with the actual DHE section. For example, a terminal point may remain in the logical map after a later unrelated operation even though its bounded DHE cell terminates at an earlier level. Such missing terminal representations are reported explicitly and not inserted into the evaluated geometry.
+
+Construction time and memory are not reconstructed retrospectively. `evaluation_elapsed_seconds` measures the requested analysis, not generalization construction performance.
+
+## 6. Profile summaries, exports, and paper presentation
+
+For each scope, report the maximum of the sampled NHD values and a sampled Z-weighted mean:
 
 \[
-E_U=100\frac{A(T\triangle U)}{A(U)}\%.
+\overline{NHD}_{Z}=\frac{\sum_i\Delta z_i[\tfrac12h_{i,0}+\sum_{j=1}^{9}h_{i,j}+\tfrac12h_{i,10}]/10}{\sum_i\Delta z_i},
 \]
 
-The expected result is zero within floating-point precision because the implemented merging target is the union. This is an operation-fidelity descriptor rather than an independent assessment of real-world correctness. Losing identities may remain as historical DHE cells even though they disappear from the top map.
+where \(h_{i,j}\) denotes measured normalized displacement, not sample spacing. This is a trapezoidal summary of sampled metric values, not an exact continuous integral. When samples are unavailable, their weights are omitted, the remaining weights are renormalized, and valid/requested coverage is reported. Counts and heterogeneous case descriptors are not averaged.
 
-**Total boundary-length reduction** measures the change from individually represented sources to the combined target:
+Save produces a unique directory containing JSON metadata, `summary.csv`, `sections.csv`, `structure.csv`, and `analysis_report.md`. CSV values retain numerical precision rather than GUI display rounding. The separate analysis report describes the analyses actually performed, their actual input levels and parameters, formulas, values, interpretation, and limitations. Saving again to an occupied event directory cannot overwrite the previous report; a new Evaluate request creates a new evaluation identity.
 
-\[
-R_P=100\left(1-\frac{P(T)}{\sum_{i=1}^{k}P(S_i)}\right)\%.
-\]
+The most useful main-paper table is endpoint/history area and perimeter change with sampled HD/NHD. A second table should contrast retained and top-supporting V/E/F/C counts and validation outcomes. Recommended figures are the measured area/perimeter/NHD profiles against actual Z and a verified primal/dual aggregation diagram showing lower sources, source-level interfaces and the upper aggregate. Full eleven-level tables and parameter metadata are suitable for supplementary material. Profile figures reuse the publication export settings, including Times New Roman and vector SVG/PDF support.
 
-The denominator deliberately sums feature perimeters. A shared source boundary contributes to both adjacent features before merging. Accordingly, the descriptor captures elimination of internal feature boundaries as well as changes in the outer boundary. It must not be interpreted as a comparison against the perimeter of the dissolved source union.
+## References to computational semantics
 
-### 3.6. Aggregation
+- [Shapely: sampled/discrete versus continuous Hausdorff distance](https://shapely.readthedocs.io/en/stable/reference/shapely.hausdorff_distance.html).
+- [Shapely: controlled maximum-length segment subdivision](https://shapely.readthedocs.io/en/stable/reference/shapely.segmentize.html).
+- [Shapely: nearest-geometry spatial indexing](https://shapely.readthedocs.io/en/stable/strtree.html).
 
-**Relative area expansion** measures the additional area introduced between the selected sources:
-
-\[
-R_A=100\frac{A(T)-A(U)}{A(U)}\%.
-\]
-
-For the implemented convex-hull aggregation, this describes gap filling and the resulting loss of separation between sources. Zero indicates no area expansion; positive values quantify its magnitude. It is not an error against ground truth, nor does a smaller value necessarily indicate a preferable aggregation.
-
-Aggregation also reports \(R_P\). Boundary reduction may be negative when connecting distant sources creates a sufficiently long target boundary. Values are not clipped to a presumed desirable interval.
-
-## 4. DHE construction measurements
-
-### 4.1. Affected-cell complexity
-
-The evaluation scope is the union of the recorded affected identities, selected identities, and resulting winner or aggregate identity. Before and after measurements include whichever of those identities have realized bounded cells in the corresponding model. The unbounded exterior and dual cell-centre vertices are excluded.
-
-For every included cell \(c\), primal vertices are identified by their actual DHE vertex objects, undirected edges by unordered endpoint pairs, and faces by distinct traversed face cycles. Totals are
-
-\[
-N_V=\sum_c|V_c|,\qquad N_E=\sum_c|E_c|,\qquad N_F=\sum_c|F_c|.
-\]
-
-The GUI reports each total before and after Apply, together with its difference. Shared vertices, edges, and interfaces contribute once for each incident included cell. These totals measure **per-cell representational complexity**, not globally unique mesh entities or process memory usage. They include preserved history, rather than an independently clipped mesh for the latest band. Reports also retain the individual cell counts.
-
-This convention exposes the additional topology required for transition construction and the effects of historical ownership. An operation that simplifies the top map can still increase DHE complexity. These counts do not independently certify manifoldness, pointer consistency, or absence of self-intersection; the application's existing validators remain responsible for those checks.
-
-### 4.2. Added transition volume
-
-Volume is calculated from the actual oriented planar boundary faces. For a face cycle \((v_0,\ldots,v_{m-1})\), its signed triangle-fan contributions are accumulated over the closed shell:
-
-\[
-V(c)=\left|\frac{1}{6}\sum_{f\in F_c}\sum_{j=1}^{m_f-2}
-v_{f,0}\cdot\left(v_{f,j}\times v_{f,j+1}\right)\right|.
-\]
-
-The fan is an integration device; it creates no DHE triangles and does not alter polygonal faces. Signed contributions remain necessary for concave planar faces.
-
-The added transition volume is
-
-\[
-\Delta V=\sum_{c\in\mathcal C_{\mathrm{after}}}V(c)
--\sum_{c\in\mathcal C_{\mathrm{before}}}V(c),
-\]
-
-using the affected-cell scope defined above. Because the application preserves the occupied geometry below the preceding source level, subtracting the historical volume isolates the bounded occupied volume added by the new interval. Selected cells and changed neighbours are included together. Aggregation's remapping of historical source identities to the aggregate is accounted for by summing the relevant cells on each side, rather than requiring identical identifiers.
-
-This quantity describes constructed transition-space occupancy. It depends on the chosen Z increment and boundary construction, so comparisons should retain those parameters. Larger or smaller values do not have an intrinsic quality ranking. The measure excludes unbounded exterior space and is subject to floating-point cancellation when two large historical volumes are subtracted.
-
-## 5. Reporting, undefined values, and reproducibility
-
-Every Apply produces a separate JSON/CSV pair under a unique session/event directory. Files are published only when the pair has been written; an existing event is never overwritten. JSON contains full metadata, raw geometric properties, per-cell counts and volumes, and metric rows. CSV contains one row per metric with event identifiers, operation, selection, affected identities, winner, parameters, levels, dataset context, value, unit, and applicable before/after counts. Numerical values are saved without the GUI's display rounding.
-
-Reports remain available after Undo and after a new operation replaces an active history branch. Parent event identifiers preserve the original sequence. The viewer can load saved reports from earlier application runs. Merely reviewing a report does not reconstruct or change its DHE model.
-
-Undefined or non-finite measurements are recorded as unavailable, with a null numerical value and an explanatory reason. They are not replaced by zero. Unexpected evaluation failures produce a failed evaluation record without fabricated metric values. A file-system failure leaves the numerical result available in memory for retry and does not undo the completed operation. Pending evaluation is allowed to finish saving before the GUI closes normally.
-
-The system does not compute a composite quality score, invent acceptance thresholds, compare against external reference data, or estimate construction performance from other operations. Meaningful comparisons must account for operation, dataset, feature size and shape, selection, neighbours, Z increment, and prior history.
-
-## References to measurement semantics
-
-- Shapely contributors. [Centroid: area- and length-weighted geometric centres](https://shapely.readthedocs.io/en/stable/reference/shapely.centroid.html).
-- Shapely contributors. [Minimum rotated rectangle: minimum-area oriented enclosure](https://shapely.readthedocs.io/en/stable/reference/shapely.minimum_rotated_rectangle.html).
-- Shapely contributors. [Measurement operations](https://shapely.readthedocs.io/en/stable/measurement.html).
-
-These references specify library measurement semantics. The operation-specific selection and interpretation of descriptors above constitute the evaluation protocol implemented in this application.
+These references specify library semantics. The metric selection, comparison scopes, reporting conventions, and interpretation above define the application's evaluation protocol.

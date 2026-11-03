@@ -13,7 +13,7 @@ from shapely.geometry import LineString, Polygon
 import DHECore as dhe
 from DHECore import face_edges
 from aggregation_geometry import SOURCE_COLORS, build_aggregation_preview
-from aggregation_layer import _plan_shell, build_aggregation_model
+from aggregation_layer import _plan_shell,plan_aggregation_cells, build_aggregation_model
 from active_region_triangulation import classify_region, triangulate_active_regions
 from top_face_overlay import RegionKind, face_polygon, overlay_top_faces, roof_faces
 from transition_layer import _preflight, build_transition_layer, merge_transition_shells
@@ -67,9 +67,9 @@ STAGES = {
         StageSpec("gaps", "Union, hull, and gaps", False, "Compute U, H=conv(U), and H−U; no skeleton or new DHE topology yet."),
         StageSpec("skeleton", "Skeleton and source ownership", False, "Source-driven exterior skeleton clipped to the fixed hull; generating edges label growth faces."),
         StageSpec("partitions", "Colored top partitions", False, "Source-owned partitions cover the hull; these are provenance regions, not final DHE cells."),
-        StageSpec("inclined", "Lifted growth faces", False, "Assign levels from source-edge arrival times and triangulate only inclined growth faces."),
-        StageSpec("shell", "Complete aggregate shell plan", False, "One closed exterior shell includes polygon bottoms, lifted growth, hull walls and one top cap."),
-        StageSpec("final", "Final single-cell DHE", True, "One aggregate dual vertex and one hull top face; source IDs remain as face provenance."),
+        StageSpec("inclined", "Lifted growth faces", False, "Assign levels from shared skeleton event times and triangulate only inclined growth faces."),
+        StageSpec("shell", "Complete many-to-one shell plan", False, "Separate lower source shells meet one upper shell through preserved source-level faces."),
+        StageSpec("final", "Final many-to-one DHE", True, "Distinct lower source duals connect to one upper aggregate dual through matching source-level interfaces."),
     ),
 }
 
@@ -191,6 +191,9 @@ def build_paper_stage(args, transformation="aggregation", step="final"):
         result.facets = [DisplayFacet(p.points, p.source_id or "aggregate", p.part) for p in plans
                          if step == "shell" or p.part == "connecting"]
         if step == "shell":
+            faces,metadata,owners,upper,_,_,_=plan_aggregation_cells(preview,args.z_down,args.height,args.merge_z,args.target_z)
+            owner_names={v:k for k,v in owners.items()};owner_names[upper]='aggregate'
+            result.facets=[DisplayFacet(f.points,owner_names[f.owner],metadata[f.owner,tuple(sorted(f.points))][0]) for f in faces]
             result.context = []
         return result
     definition = TargetDefinition(transformation, result.metadata["target_id"], target)

@@ -205,7 +205,7 @@ other manifest/caption entries. Re-exporting a view replaces that view's files.
   P2L uses [(1.6,2.4), (1.5,1.8), (2.4,1.7)].
 - **Aggregation:** Source A is (0,0)–(2,3), B is (6,1)–(8,4), and C is
   (3,6)–(5,8). Target H is their computed union's convex hull. The final output
-  is one aggregate DHE cell. Source colors on its faces represent provenance.
+  retains three lower source DHE cells and one separate upper aggregate cell.
 - Test levels are z_b=0, z_s=1, z_t=2, with aggregation z_m=1.8. Figures use
   symbolic ticks. Z is an ordered transition/LoD coordinate, not terrain height
   or a calibrated numeric map scale. Intermediate sections use z=1.5 for the
@@ -225,9 +225,9 @@ definitions. Stage 5 freezes actual realized faces and extracts sections with
 The three construction panels concern one representative transition face and
 are not yet a closed cell. `Sew` connects compatible within-cell uses.
 `JoinByFace` subsequently connects matching interfaces in single-source cases
-while retaining distinct cell dual identities. Aggregation constructs one new
-cell with one aggregate dual vertex: no JoinByFace merger, dual contraction or
-KEF call is claimed. The operation counts exclude calls nested inside another
+while retaining distinct cell dual identities. Aggregation also uses JoinByFace
+to connect the retained lower sources to one upper aggregate, without dual
+contraction or KEF. The operation counts exclude calls nested inside another
 core operation, so a Sew nested in JoinByFace is not counted twice.
 
 Dual associations are checked from `e.D.V` and `e.Adjacent().D.V`; coordinates
@@ -255,8 +255,10 @@ may be a MultiLineString geometrically equal to the input polyline.
 Validation annotations name checks that ran for that example. Single-source
 coverage is tested at the seven production transition levels, not every possible
 plane. Additional planarity and planned/realized transition-facet comparisons run
-in the adapter. Aggregation checks one cell, vertex links, hull cap and planned
-volume; no universal all-pairs 3D intersection certificate is asserted.
+in the adapter. Aggregation retains separate lower source cells and one upper aggregate,
+checks their vertex links, source interfaces, reciprocal dual connections, hull cap and
+total planned volume. Stage 4 records actual `JoinByFace` calls; Stage 5 shows the complete
+many-to-one complex. No universal exact-arithmetic intersection certificate is asserted.
 
 ## Visual review checklist
 
