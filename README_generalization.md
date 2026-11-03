@@ -55,7 +55,9 @@ Temporary planar DHE triangulation is not a prerequisite in this workspace. Fina
 z(p) = z_source + (z_target - z_source) d_source(p) / (d_source(p) + d_target(p)),
 ```
 
-where distances are to the source and target boundaries. Shared boundary contacts use the midpoint level in this extension. An interior midpoint-height vertex subdivides an otherwise flat active triangle. The UI reports when this additional construction is used; it is **not a claim that the original paper workflow implemented this formula**. Ridge strips are also extended to exclude zero-projection moves that would leave folded flaps instead of the requested final contact.
+where distances are to the source and target boundaries. Shared boundary contacts use the midpoint level in this extension. An interior midpoint-height vertex subdivides an otherwise flat active triangle. Internal fallback edges with both endpoints at Zs or Zt are also refined when their midpoint lies inside the active region: one shared midpoint receives the same distance-based Z assignment, and both incident triangles are split consistently. This prevents an internal diagonal from touching the interior of a terminal cap. Existing boundary vertices and their elevations are preserved; polygon caps and non-active regions remain untriangulated. The UI reports when this additional construction is used; it is **not a claim that the original paper workflow implemented this formula**. Ridge strips are also extended to exclude zero-projection moves that would leave folded flaps instead of the requested final contact.
+
+The reported merge **12, 14**, with winner **14**, previously produced an inclined triangle whose top edge crossed the interior of the Zt cap. The intersection validator correctly rejected that shell. Refining its fallback interior edges resolves this construction without relaxing intersection or manifold checks. Regression coverage includes both winners at source levels 5, 15 and 25 with increments 1, 10 and 20, plus a portable concave-donor example. The existing boundary elevation policy is retained; growth can begin above Zs when all relevant boundary contacts use intermediate levels.
 
 The integration builds checked, oriented shells before allocating replacement DHE records. Checks include edge pairing, vertex links, genus-zero topology, planarity, positive volume, reciprocal dual/primal links, actual source/target sections, actual collapsed contacts, and sampled intermediate overlap checks. These are numerical checks, not a general proof of self-intersection freedom for arbitrary inputs.
 
@@ -138,6 +140,7 @@ $env:DHE_GUI_TESTS='1'
 .\.venv\Scripts\python.exe -m unittest test_generalization_ui -v
 .\.venv\Scripts\python.exe -m unittest test_generalization_visualization -v
 .\.venv\Scripts\python.exe -m unittest test_aggregation_conformity -v
+.\.venv\Scripts\python.exe -B -m unittest test_merge_terminal_edges -v
 ```
 
 The real-dataset test runs when the local default Shapefile exists; portable tests use synthetic geometries with the production builders. Live Overpass availability is separate from parser/geometry correctness.

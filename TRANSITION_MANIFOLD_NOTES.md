@@ -11,6 +11,7 @@ This change addresses shared-coordinate construction and final shell validation 
 | Lost input-interface provenance | Neighbouring polygons in every workspace case | `_conform_input_interfaces`: a real world-coordinate intersection can cease to be exactly collinear after independent origin subtraction. | Insert shared intersection endpoints on both input rings before translation. The relation comes from an actual boundary intersection, not proximity. |
 | Incorrect ownership of a tiny edge | Reproduced during workspace polyline collapse | `_recipient`: comparing uncovered edge length to an absolute tolerance previously accepted an arbitrarily distant neighbour when the entire edge was shorter than that tolerance. | Require actual boundary containment or membership on a corresponding supporting segment. Do not assign an owner merely because the edge is small. |
 | Missing or duplicated facets | Any shell planner | Common `check_oriented_shell`; controlled missing/duplicate-face tests. | Report incidence, oriented endpoints, face indices and parts. Do not infer that triangulation is impossible from a missing edge partner. |
+| Internal transition diagonal touches a terminal cap | Workspace fallback P2P lift, reproduced by merging 12 and 14 with winner 14 | `_polygon_patches`: a diagonal joins two target vertices at Zt, and both neighbouring triangles are inclined, yet their shared edge contacts the interior of the top cap. The validator correctly reports `self_intersection`. | Split the internal edge at a shared distance-lifted midpoint and split both incident triangles. Preserve active-region boundary edges, original vertex elevations and polygon caps. |
 | Winding or ownership errors | Per-cell shells and inter-cell interfaces | `check_oriented_shell`, `check_interface_pairs`; reversed-face and wrong-owner tests. | Require opposite directed uses and distinct owners for a paired interface. Do not flip faces or join nonmatching faces automatically. |
 | Excess edge/face incidence | All cases | Structured incidence diagnostics and duplicated-interface tests. | Reject more than two uses per cell edge or more than two cells per complete interface. |
 | Degenerate, disconnected, pinched or intersecting geometry | All final boundaries; source/target restrictions remain case-specific | Connectivity and vertex-link checks; polygon/plane intersection checks; closed but intersecting synthetic shell. | Diagnose each separately. Check face intersections before allocating replacement DHE records. Retain valid vertical faces with zero XY projection; reject zero 3D area. |
@@ -36,6 +37,20 @@ Validated faces are realized with the existing sequence `MEVVFS`, `MEV`, `MEF`, 
 The legacy layer builder also snapshots its existing topology records, mutable containers, ledger contents, counters and model metadata. Allocation or postvalidation exceptions restore that state. Regression tests inject both failures for polygon, point and polyline cases; the existing aggregate allocation-rollback tests remain applicable.
 
 The original paper P2P, collapse and aggregation paths retain their planners. They share the strengthened shell diagnostics and perform final geometric checks before replacement DHE allocation. Existing construction conventions, endpoint levels, cap semantics and skeleton arrival-time assignments are retained.
+
+### Fallback terminal-edge refinement
+
+The workspace boundary-distance fallback first lifts its constrained triangles and subdivides otherwise flat triangles around an interior midpoint-level vertex. Inclined triangles alone are insufficient: an internal diagonal with both endpoints at Zs or Zt can still contact a terminal cap through its interior. This is a real undeclared contact, not a numerical tangency.
+
+`_refine_terminal_internal_edges` runs only on these fallback facets, separately for each active region. It counts triangle-edge incidences, selects edges shared by two triangles with equal terminal-level endpoints, and excludes edges whose midpoint is on the region boundary within the local arithmetic bound. Each selected edge gets exactly one shared XY midpoint. Its height uses the existing field:
+
+`z(p) = Zs + (Zt − Zs) dSource(p) / (dSource(p) + dTarget(p))`.
+
+The midpoint must have a representable height strictly inside the transition interval. Both incident triangles are split using that same point, with their orientation retained. Original vertices and boundary constraints are unchanged. No cap or non-active polygon is triangulated, and valid boundary-chain strips do not enter this refinement. Unresolvable midpoint levels produce a structured planning failure; shell checks are never bypassed.
+
+For merging 12 and 14 with winner 14 at Zs=5 and Zt=15, seven internal edges are refined, increasing the fallback patches from 23 to 37. The realized full-dataset model has 346 faces. Winner 12 continues to use the existing strip. The winner's final geometry remains the union of the selected sources; the losing cell shrinks and retires at Zt, with historical ownership preserved. The boundary elevation policy is retained, so this correction does not promise growth starting immediately above Zs.
+
+`test_merge_terminal_edges` checks the real selection for both winners at source levels 5, 15 and 25 with increments 1, 10 and 20. A portable concave-donor fixture exercises both growing and shrinking fallback regions, unchanged projected coverage and boundary constraints, monotonic sections, positive volumes, terminal ownership, polygonal caps and allocation/postvalidation rollback. Disabling only the refinement reproduces the original `self_intersection` rejection, demonstrating that the validator remains strict.
 
 ## Transition coordinates and history
 
@@ -72,6 +87,8 @@ Regression tests additionally cover shared unchanged cells, preserved inclined h
 ### Verified regression results
 
 With `DHE_GUI_TESTS=1`, `python -B -m unittest discover -q` passed 151 tests. A final focused run of `python -B -m unittest test_generalization test_transition_conformity test_generalization_ui -q` passed 37 tests, including the subsequently added horizontal-transition-facet rejection test. Both runs used the project's configured virtual environment. Native GUI controls, injected allocation/postvalidation failures, unchanged-cell counts and preserved historical sections are included in these checks.
+
+For terminal-edge refinement, `test_merge_terminal_edges` passed all 5 tests (including the 18 real-dataset winner/level/increment combinations). With `DHE_GUI_TESTS=1`, the affected generalization, transition conformity, visualization/export, UI, aggregation conformity and 3D-style suites passed another 64 tests. The corrected winner-14 transition was also rendered from its actual realized face records.
 
 ## Suggested manuscript wording
 

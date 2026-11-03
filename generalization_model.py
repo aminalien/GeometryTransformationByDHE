@@ -428,6 +428,49 @@ def _prism(owner, polygon, bottom, top):
     return faces
 
 
+def _refine_terminal_internal_edges(triangles, source, target, region, lo, hi):
+    """Keep internal fallback edges away from terminal caps.
+
+    A CDT diagonal between two target (or source) vertices can touch a cap
+    through its interior even when both incident triangles are inclined.
+    Split that diagonal once, with the existing distance-based height field,
+    and use the identical midpoint in both incident triangles. Boundary edges
+    and their prescribed elevations are retained.
+    """
+    uses=defaultdict(int)
+    for points in triangles:
+        for a,b in zip(points,points[1:]+points[:1]):
+            uses[tuple(sorted((a,b)))]+=1
+    midpoints={}
+    boundary=region.boundary
+    for (a,b),count in sorted(uses.items()):
+        if count!=2 or a[2]!=b[2] or a[2] not in (lo,hi):continue
+        xy=((a[0]+b[0])/2,(a[1]+b[1])/2)
+        point=Point(xy)
+        if boundary.distance(point)<=arithmetic_bound([a,b]):continue
+        ds,dt=source.boundary.distance(point),target.boundary.distance(point)
+        z=lo+(hi-lo)*ds/(ds+dt) if ds+dt>0 else lo
+        if not lo<z<hi:
+            raise TransitionShellError('An internal transition edge has no representable interior elevation.',
+                'unresolvable_transition_refinement',stage='terminal_edge_refinement',edge=(a,b),point=xy,
+                height=z,interval=(lo,hi))
+        midpoints[a,b]=(*xy,z)
+    result=[]
+    for points in triangles:
+        hits=[i for i in range(3) if tuple(sorted((points[i],points[(i+1)%3]))) in midpoints]
+        if not hits:
+            result.append(points);continue
+        # Flat fallback triangles have already been split around a midpoint-
+        # level centre, so an inclined triangle has at most one terminal edge.
+        if len(hits)!=1:
+            raise TransitionShellError('Fallback refinement requires inclined input triangles.',
+                'invalid_transition_refinement',stage='terminal_edge_refinement',points=points)
+        i=hits[0];a,b,c=points[i],points[(i+1)%3],points[(i+2)%3]
+        mid=midpoints[tuple(sorted((a,b)))]
+        result.extend([[a,mid,c],[mid,b,c]])
+    return result
+
+
 def _polygon_patches(owner, source, target, lo, hi):
     """Use the paper strip whenever possible; otherwise a boundary-distance lift."""
     from active_region_triangulation import VertexRole
@@ -474,6 +517,7 @@ def _polygon_patches(owner, source, target, lo, hi):
                         triangles.extend([[a,b,mid] for a,b in zip(points, points[1:]+points[:1])])
                     else:
                         triangles.append(points)
+                triangles=_refine_terminal_internal_edges(triangles,source,target,region,lo,hi)
             patches.extend(Patch(owner, points) for points in triangles if Polygon([p[:2] for p in points]).area > TOL*TOL)
     return patches, extensions
 
