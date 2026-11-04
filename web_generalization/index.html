@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>DHE · Transition Atlas</title>
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@6.16.0/dist/maplibre-gl.css">
+  <link rel="stylesheet" href="/assets/app.css">
+  <script type="importmap">{"imports":{"maplibre-gl":"https://esm.sh/maplibre-gl@6.16.0","@deck.gl/core":"https://esm.sh/@deck.gl/core@9.4.1"}}</script>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="m16 3 13 7-13 7L3 10Z M3 16l13 7 13-7M3 22l13 7 13-7"/></svg><div><strong>Transition Atlas</strong><span>DHE generalization workspace</span></div></div>
+  <div class="dataset-pill"><i></i><span id="dataset-name">Connecting to local workspace…</span></div>
+  <div class="top-actions"><button id="draw-bbox">⌖ Draw OSM area</button><button id="open-import" class="primary">＋ Load data</button></div>
+</header>
+<main class="app-layout">
+<aside class="sidebar">
+  <div class="side-tabs"><button class="active" data-tab="generalize">Generalize</button><button data-tab="inspect">Inspect DHE</button></div>
+  <section id="generalize-tab">
+    <div class="section-title"><span>01 / SELECTION</span><button id="clear-selection" class="text-button">Clear</button></div>
+    <p class="hint">Click features on the current map. Shift-click to add; use the box tool for a group.</p>
+    <div class="selection-tools"><input id="indices" aria-label="Feature indices" placeholder="Indices, e.g. 1, 3-6"><button id="select-indices" title="Select indices">Select</button></div>
+    <div class="selection-tools"><button id="select-box">▱ Box select</button><button id="select-all">All polygons</button></div>
+    <div class="feature-heading"><span>Current features</span><span id="selection-count">0 selected</span></div>
+    <div id="feature-list" class="feature-list" aria-label="Current features"></div>
+    <div class="section-title"><span>02 / TRANSFORMATION</span></div>
+    <label>Operation<select id="operation"><option value="simplification">Simplification</option><option value="smoothing">Smoothing</option><option value="point">Collapse to point</option><option value="polyline">Collapse to polyline</option><option value="merging">Merging</option><option value="aggregation">Aggregation</option></select></label>
+    <div class="form-grid"><label>Top-up ΔZ<input id="dz" type="number" min="0.000001" step="1" value="10"></label><label id="tolerance-field">Tolerance (m)<input id="tolerance" type="number" min="0" step="0.1" value="1"></label></div>
+    <div class="form-grid" id="smoothing-fields" hidden><label>Iterations<input id="iterations" type="number" min="1" max="8" value="1"></label><label>Corner ratio<input id="ratio" type="number" min="0.01" max="0.49" step="0.01" value="0.25"></label></div>
+    <label id="winner-field" hidden>Merge winner<select id="winner"></select></label>
+    <div id="operation-help" class="hint operation-help"></div>
+    <div class="operation-actions"><button id="preview">Preview</button><button id="apply" class="primary">Apply & top up ↗</button></div>
+    <button id="discard-preview" class="text-button" hidden>Discard preview</button>
+    <div class="section-title"><span>03 / HISTORY</span><button id="undo" class="text-button">↶ Undo</button></div>
+    <select id="history" aria-label="History step"></select>
+    <p class="hint">Operations use the current top. Slicing is a view of the constructed space.</p>
+  </section>
+  <section id="inspect-tab" hidden>
+    <div class="section-title"><span>ACTUAL DHE TOPOLOGY</span></div>
+    <p class="hint">Click a face or edge in the 3D view. Navigate its real DHE relationships.</p>
+    <div id="edge-details" class="inspector-card">Choose a face to inspect.</div>
+    <div class="edge-nav"><button data-hop="nf">Next face edge</button><button data-hop="s">Twin</button><button data-hop="adjacent">Adjacent cell</button></div>
+    <label>Half-edge<select id="edge-select" aria-label="Half-edge"></select></label>
+    <div class="section-title"><span>DUAL APPEARANCE</span></div>
+    <label class="check"><input type="checkbox" id="dual-labels">Dual labels</label>
+    <label class="check"><input type="checkbox" id="exterior">Include exterior dual</label>
+    <label>Dual radius <span class="unit">pixels</span><input id="dual-size" type="range" min="2" max="16" step="0.5" value="5"></label>
+    <label>Dual edge width <span class="unit">pixels</span><input id="dual-width" type="range" min="0.5" max="6" step="0.25" value="2.5"></label>
+    <div class="section-title"><span>DATA DETAILS</span></div>
+    <div id="data-details" class="hint"></div>
+  </section>
+  <details class="load-notes"><summary id="notes-title">Import & construction notes</summary><div id="notes"></div></details>
+</aside>
+<section class="workspace">
+  <div class="map-area">
+    <div id="map" aria-label="DHE space over geographic background"></div>
+    <div class="scene-badge"><span class="live-dot"></span><strong id="scene-title">Current DHE space</strong><span id="scene-subtitle">Loading data…</span></div>
+    <div class="view-controls">
+      <label class="master-switch"><input id="show-3d" type="checkbox" checked><span>3D DHE space</span><span class="switch-track"></span></label>
+      <div class="view-row"><label class="check"><input id="primal" type="checkbox" checked>Primal</label><label class="check"><input id="dual" type="checkbox">Dual</label><label class="check"><input id="fill" type="checkbox" checked>Fill cells</label></div>
+      <label class="compact">Opacity<input id="opacity" type="range" min="0.05" max="0.8" step="0.05" value="0.3"></label>
+      <label class="compact">Z display ×<input id="exaggeration" type="number" min="0.1" max="100" step="0.5" value="3"></label>
+      <label class="compact">Background<select id="basemap"><option value="osm">OpenStreetMap</option><option value="light">Light</option><option value="dark">Dark</option><option value="satellite">Satellite · Esri</option><option value="google-roadmap">Google Maps · road</option><option value="google-satellite">Google Maps · satellite</option><option value="blank">White / no background</option><option value="custom">Custom XYZ layer…</option></select></label>
+      <button id="fit" class="fit-button">⊞ Fit data</button>
+    </div>
+    <div id="mode-banner" class="mode-banner" hidden></div>
+    <div id="map-warning" class="map-warning" hidden></div>
+    <div class="mini-panel" id="mini-panel"><div class="mini-header"><strong>Current top · select features</strong><button id="expand-mini" title="Expand current map">⤢</button><button id="hide-mini" title="Hide current map">−</button></div><div id="mini-map" aria-label="Current top selection map"></div></div>
+    <button id="show-mini" class="mini-restore" hidden>▱ Current top map</button>
+    <div id="tooltip" class="tooltip" hidden></div>
+    <div id="google-attribution" class="google-attribution" hidden></div>
+  </div>
+  <div class="slice-panel">
+    <div class="slice-heading"><div><span class="eyebrow">LIVE CROSS-SECTION</span><strong id="slice-label">Horizontal · Z = 5</strong></div><div class="slice-options"><select id="orientation" aria-label="Plane orientation"><option>Horizontal</option><option>Vertical</option><option>Inclined</option></select><label>Step<input id="slice-step" type="number" min="0.000001" value="0.1" step="0.1"></label><button id="source-level">Zs</button><button id="target-level">Zt</button></div></div>
+    <div class="slice-track"><button id="lower" aria-label="Lower slicing plane">−</button><input id="slice-slider" type="range" min="0" max="5" step="0.1" value="5" aria-label="Slicing plane position"><button id="raise" aria-label="Raise slicing plane">＋</button><input id="slice-value" type="number" value="5" step="0.1" aria-label="Slice value"></div>
+    <div id="plane-angles" class="plane-angles" hidden><label id="tilt-field">Tilt °<input id="tilt" type="number" min="0" max="90" value="45"></label><label>Azimuth °<input id="azimuth" type="number" min="0" max="360" value="0"></label><span>Azimuth clockwise from north · tilt from horizontal</span></div>
+    <div class="slice-meta"><span id="slice-summary">Sections are reconstructed from DHE faces.</span><span>↑ / ↓ or scroll over the slider</span></div>
+  </div>
+</section>
+</main>
+<footer><span id="status" role="status" aria-live="polite">Starting local workspace…</span><span id="model-count">DHE · 2D + 1D transition space</span></footer>
+<dialog id="import-dialog"><form method="dialog"><div class="dialog-heading"><div><span class="eyebrow">DATA SOURCE</span><h2>Bring your polygons</h2></div><button class="icon-button" aria-label="Close">×</button></div></form>
+  <p class="hint">Overlapping groups are unioned automatically. Touching neighbours stay separate.</p>
+  <label>Initial extrusion ΔZ<input id="initial-height" type="number" min="0.000001" value="5"></label>
+  <button id="load-default" class="source-card"><strong>↗ Open default dataset</strong><span id="default-path">osm_data4.shp</span></button>
+  <label class="upload-card">＋ Choose a polygon dataset<input id="upload-file" type="file" accept=".zip,.gpkg,.geojson,.json"><span>GeoJSON · GeoPackage · zipped Shapefile (100 MiB)</span></label>
+  <div id="upload-fields" hidden><label>Layer<select id="upload-layer"></select></label><label>CRS, if missing<input id="upload-crs" placeholder="e.g. EPSG:2180"></label><button id="load-upload" class="primary">Load uploaded layer</button></div>
+  <p id="import-message" class="hint"></p>
+</dialog>
+<dialog id="custom-dialog"><form method="dialog"><div class="dialog-heading"><h2>Custom background</h2><button class="icon-button" aria-label="Close">×</button></div></form><label>XYZ tile URL<input id="custom-url" placeholder="https://…/{z}/{x}/{y}.png"></label><label>Attribution<input id="custom-credit" placeholder="Provider / copyright"></label><button id="custom-apply" class="primary">Use layer</button><p class="hint">A Web Mercator XYZ service with browser access enabled.</p></dialog>
+<div id="busy-overlay" class="busy-overlay" hidden><span class="spinner"></span><span id="busy-label">Constructing DHE…</span></div>
+<script type="module">
+  import('/assets/app.js').catch(error=>{
+    document.getElementById('status').textContent='Map engine could not start. Check access to esm.sh and reload. '+error.message;
+    console.error(error);
+  });
+</script>
+</body>
+</html>
