@@ -27,7 +27,7 @@ except ImportError as exc:
     raise SystemExit('Install optional web dependencies: python -m pip install -r requirements-web.txt') from exc
 
 from generalization_model import GeneralizationSession,_core,_restore
-from web_generalization_data import DEFAULT_WEB_DATA,MAX_UPLOAD_BYTES,UploadStore,read_web_dataset,fetch_web_osm
+from web_generalization_data import DEFAULT_WEB_DATA,MAX_UPLOAD_BYTES,UploadStore,read_web_dataset,fetch_web_osm,prepared_preview
 from web_generalization_scene import WebScene
 
 
@@ -49,13 +49,17 @@ class Workspace:
         with self.lock:
             self.check(revision)
             if self.running:raise RevisionConflict('Another construction job is running. Wait for it to finish.')
-            token=uuid4().hex;self.running=token;self.jobs[token]=dict(id=token,status='running',action=action)
+            token=uuid4().hex;self.running=token;self.jobs[token]=dict(id=token,status='running',action=action,stage='Queued')
             if len(self.jobs)>50:
                 old=next(k for k,v in self.jobs.items() if v['status']!='running');del self.jobs[old]
         def work():
             outcome={}
+            def progress(stage,data=None):
+                with self.lock:
+                    self.jobs[token]['stage']=stage
+                    if data is not None:self.jobs[token]['input_preview']=data
             try:
-                result=self.execute(action,revision,**parameters)
+                result=self.execute(action,revision,_progress=progress,**parameters)
                 outcome=dict(status='complete',result=result)
             except Exception as exc:
                 detail=getattr(self.session,'last_diagnostic',None) if self.session and action in ('preview','apply') else None
@@ -67,14 +71,18 @@ class Workspace:
 
     def execute(self,action,revision,**p):
         self.check(revision)
+        progress=p.pop('_progress',lambda *args:None)
         saved=_core()
         try:
             if self.session:_restore(self.session.core)
             if action in ('default','upload','osm'):
+                progress('Downloading OSM footprints' if action=='osm' else 'Reading data, interpreting CRS and unioning overlaps')
                 if action=='default':data=read_web_dataset(self.default_path,source=Path(self.default_path).name)
-                elif action=='upload':data=self.uploads.read(p['upload_id'],p['layer'],p.get('crs'))
+                elif action=='upload':data=self.uploads.read(p['upload_id'],p['layer'],p.get('crs'),p.get('override_crs'),p.get('accept_declared_crs',False))
                 else:data=fetch_web_osm(p['bounds'])
+                progress(f'Constructing and validating {len(data.frame)} DHE cells; large datasets can take several minutes',prepared_preview(data))
                 candidate=GeneralizationSession(data,p.get('initial_height',self.initial_height))
+                progress('Preparing geographic scene and topology inspector')
                 snapshot=WebScene(candidate,self.revision+1)
                 with self.lock:
                     self.session=candidate;self.scene=snapshot;self.revision+=1;self.clear_preview()
@@ -172,6 +180,8 @@ class ImportPayload(LoadPayload):
     upload_id:str
     layer:str
     crs:str|None=None
+    override_crs:str|None=None
+    accept_declared_crs:bool=False
 
 
 class OSMInput(LoadPayload):
@@ -197,6 +207,8 @@ class SliceInput(Payload):
     tilt:float=Field(default=45.,ge=0,le=90)
     azimuth:float=0.
     preview_id:str|None=None
+    include_sections:bool=True
+    clamp_position:bool=False
 
 
 class BoxInput(Payload):bounds:tuple[float,float,float,float]
@@ -236,7 +248,7 @@ def create_app(*,default_path=DEFAULT_WEB_DATA,initial_height=5.,autoload=True,w
     def state():
         with w.lock:
             return dict(revision=w.revision,job_id=w.running,loaded=w.scene is not None,
-                        recent_jobs=list(w.jobs.values())[-1:] if not w.running and not w.scene else [])
+                        recent_jobs=[{k:v for k,v in j.items() if k!='input_preview'} for j in list(w.jobs.values())[-1:]])
 
     @app.get('/api/scene')
     def scene(preview_id:str|None=None):
@@ -248,7 +260,13 @@ def create_app(*,default_path=DEFAULT_WEB_DATA,initial_height=5.,autoload=True,w
     def job(token:str):
         with w.lock:
             if token not in w.jobs:raise HTTPException(404,'Job is missing or expired.')
-            return dict(w.jobs[token])
+            return {**{k:v for k,v in w.jobs[token].items() if k!='input_preview'},'has_input_preview':'input_preview' in w.jobs[token]}
+
+    @app.get('/api/jobs/{token}/input-preview')
+    def input_preview(token:str):
+        with w.lock:
+            if token not in w.jobs or 'input_preview' not in w.jobs[token]:raise HTTPException(404,'Prepared input preview not available.')
+            return w.jobs[token]['input_preview']
 
     def submit(action,p):
         values=p.model_dump();revision=values.pop('revision');return w.submit(action,revision,**values)
@@ -275,7 +293,7 @@ def create_app(*,default_path=DEFAULT_WEB_DATA,initial_height=5.,autoload=True,w
     def section(p:SliceInput):
         w.check(p.revision);snapshot=w.get_scene(p.preview_id)
         if snapshot is None:raise ValueError('Load a dataset first.')
-        return snapshot.section(p.orientation,p.value,p.tilt,p.azimuth)
+        return snapshot.section(p.orientation,p.value,p.tilt,p.azimuth,include_sections=p.include_sections,clamp_position=p.clamp_position)
 
     @app.post('/api/select-box')
     def select_box(p:BoxInput):
@@ -289,14 +307,18 @@ def create_app(*,default_path=DEFAULT_WEB_DATA,initial_height=5.,autoload=True,w
                              if f['properties']['kind']=='Polygon' and shape(f['geometry']).intersects(region)])
 
     @app.post('/api/uploads')
-    async def upload(file:UploadFile=File(...)):
-        content=bytearray()
+    async def upload(file:list[UploadFile]=File(...)):
+        files=[];total=0
         try:
-            while chunk:=await file.read(1024**2):
-                content.extend(chunk)
-                if len(content)>MAX_UPLOAD_BYTES:raise ValueError('Upload exceeds 100 MiB.')
-            return await run_in_threadpool(w.uploads.add,file.filename or 'dataset',content)
-        finally:await file.close()
+            for item in file:
+                content=bytearray()
+                while chunk:=await item.read(1024**2):
+                    content.extend(chunk);total+=len(chunk)
+                    if total>MAX_UPLOAD_BYTES:raise ValueError('Upload exceeds 100 MiB combined.')
+                files.append((item.filename or 'dataset',content))
+            return await run_in_threadpool(w.uploads.add_files,files)
+        finally:
+            for item in file:await item.close()
 
     @app.get('/api/google/tiles/{kind}/{z}/{x}/{y}')
     def google_tile(kind:str,z:int,x:int,y:int):

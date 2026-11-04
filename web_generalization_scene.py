@@ -118,14 +118,17 @@ class WebScene:
             cursor=session.cursor,history=[dict(index=i,label=s.description,step_id=s.step_id,z=s.z) for i,s in enumerate(session.history)],
             operation=json_value(asdict(state.operation)) if state.operation else None)
 
-    def section(self,orientation,value,tilt=45.,azimuth=0.):
+    def section(self,orientation,value,tilt=45.,azimuth=0.,*,include_sections=True,clamp_position=False):
         if orientation=='Horizontal':plane=SlicePlane.horizontal(value)
         elif orientation in ('Vertical','Inclined'):
             plane=SlicePlane.from_angles(self.slicer.center,90. if orientation=='Vertical' else tilt,azimuth,value)
         else:raise ValueError('Choose Horizontal, Vertical, or Inclined.')
         lower,upper=(float(self.slicer.minimum[2]),float(self.slicer.maximum[2])) if orientation=='Horizontal' else self.slicer.offset_bounds(plane)
-        if not lower-1e-8<=value<=upper+1e-8:raise ValueError(f'Plane position must be between {lower:g} and {upper:g}.')
-        sections=self.slicer.sections(plane,include_degenerate=True,horizontal_side='below');features=[]
+        if not lower-1e-8<=value<=upper+1e-8:
+            if not clamp_position:raise ValueError(f'Plane position must be between {lower:g} and {upper:g}.')
+            value=max(lower,min(upper,value))
+            plane=SlicePlane.horizontal(value) if orientation=='Horizontal' else SlicePlane.from_angles(self.slicer.center,90. if orientation=='Vertical' else tilt,azimuth,value)
+        sections=self.slicer.sections(plane,include_degenerate=True,horizontal_side='below') if include_sections else {};features=[]
         for owner,g in sections.items():
             def lift(points):return [self.geo.point(p) for p in plane.lift(np.array(points))]
             for part in geometry_parts(g):
@@ -135,9 +138,9 @@ class WebScene:
                 features.append(dict(type='Feature',geometry=dict(type=part.geom_type,coordinates=coordinates),
                     properties=dict(owner=int(owner),color=rgba(int(owner)),active=int(owner) in self.features)))
         missing=[]
-        if orientation=='Horizontal' and abs(value-self.payload['levels']['z_t'])<1e-8:
+        if include_sections and orientation=='Horizontal' and abs(value-self.payload['levels']['z_t'])<1e-8:
             missing=sorted(set(self.features)-{int(k) for k in sections})
         return dict(revision=self.revision,preview_id=self.preview_id,orientation=orientation,value=value,
-            normal=list(plane.normal),
+            normal=list(plane.normal),sections_computed=include_sections,
             bounds=[float(lower),float(upper)],outline=[self.geo.point(p) for p in self.slicer.plane_outline(plane)],
             features=dict(type='FeatureCollection',features=features),missing=missing)

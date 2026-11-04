@@ -12,6 +12,7 @@ from zipfile import ZipFile,BadZipFile
 import geopandas as gpd
 import numpy as np
 import pyogrio
+from pyproj import CRS
 from shapely import force_2d
 from shapely.ops import unary_union
 
@@ -39,7 +40,28 @@ def source_id(attributes,position):
     return str(attributes[key]) if key is not None else str(position)
 
 
-def prepare_web_frame(frame,source='Upload',*,crs=None,notes=()):
+def crs_metadata(crs,bounds,count):
+    declared=CRS.from_user_input(crs) if crs else None
+    if bounds is None or len(bounds)!=4 or not np.isfinite(bounds).all():raise ValueError('The layer has no finite spatial bounds. Choose a nonempty polygon layer.')
+    bounds=[float(v) for v in bounds]
+    suspicious=bool(declared and declared.is_projected and np.isfinite(bounds).all()
+        and -180<=bounds[0]<=bounds[2]<=180 and -90<=bounds[1]<=bounds[3]<=90)
+    return dict(crs=declared.to_string() if declared else None,bounds=bounds,count=int(count),
+        suspicious=suspicious,suggested_crs='EPSG:4326' if suspicious else None,
+        warning='Projected CRS with longitude/latitude-sized coordinates. Confirm the declared CRS or explicitly override it; coordinate ranges alone do not prove a CRS error.' if suspicious else '')
+
+
+def prepared_preview(data):
+    frame=data.frame.to_crs(4326)
+    return dict(type='FeatureCollection',features=[dict(type='Feature',geometry=g.__geo_interface__,
+        properties=dict(index=int(k))) for k,g in zip(frame['_index'],frame.geometry)])
+
+
+def prepare_web_frame(frame,source='Upload',*,crs=None,override_crs=None,notes=()):
+    notes=list(notes)
+    if override_crs:
+        notes.append(f'Explicit CRS interpretation override: {frame.crs or "missing"} -> {override_crs}; source files unchanged.')
+        frame=frame.set_crs(override_crs,allow_override=True)
     if frame.crs is None:
         if not crs:raise ValueError('This dataset has no CRS. Supply its EPSG code before loading.')
         frame=frame.set_crs(crs)
@@ -84,8 +106,8 @@ def prepare_web_frame(frame,source='Upload',*,crs=None,notes=()):
     return LoadedData(result,rejected,str(source))
 
 
-def read_web_dataset(path,*,layer=None,crs=None,source=None):
-    return prepare_web_frame(gpd.read_file(path,layer=layer),source or Path(path).name,crs=crs)
+def read_web_dataset(path,*,layer=None,crs=None,override_crs=None,source=None):
+    return prepare_web_frame(gpd.read_file(path,layer=layer),source or Path(path).name,crs=crs,override_crs=override_crs)
 
 
 def fetch_web_osm(bounds):
@@ -109,6 +131,24 @@ class UploadStore:
 
     def add(self,name,payload):
         with self.lock:return self._add(name,payload)
+
+    def add_files(self,files):
+        if len(files)==1 and Path(files[0][0]).suffix.lower()!='.shp':return self.add(*files[0])
+        if sum(len(p) for _,p in files)>MAX_UPLOAD_BYTES:raise ValueError('Upload exceeds 100 MiB combined.')
+        names=[Path(n).name for n,_ in files]
+        if len({n.casefold() for n in names})!=len(names):raise ValueError('Duplicate upload filenames.')
+        shapes=[n for n in names if Path(n).suffix.lower()=='.shp']
+        if len(shapes)!=1:raise ValueError('Select one .shp together with its .shx and .dbf files (optional .prj and .cpg).')
+        stem=Path(shapes[0]).stem.casefold();extensions={Path(n).suffix.lower() for n in names if Path(n).stem.casefold()==stem}
+        missing={'.shx','.dbf'}-extensions
+        if missing:raise ValueError('Missing Shapefile companions: '+', '.join(sorted(missing))+'. Select them together with the .shp.')
+        if any(Path(n).stem.casefold()!=stem or Path(n).suffix.lower() not in ('.shp','.shx','.dbf','.prj','.cpg','.qix','.sbn','.sbx') for n in names):
+            raise ValueError('Select only the companion files for one Shapefile.')
+        from io import BytesIO
+        stream=BytesIO()
+        with ZipFile(stream,'w') as archive:
+            for name,(_,payload) in zip(names,files):archive.writestr(name,payload)
+        return self.add(stem+'.zip',stream.getvalue())
 
     def _add(self,name,payload):
         if not payload or len(payload)>MAX_UPLOAD_BYTES:raise ValueError('Upload a nonempty file of at most 100 MiB.')
@@ -144,20 +184,33 @@ class UploadStore:
             self._remove_failed(folder);raise ValueError(f'Cannot read polygon dataset: {exc}') from exc
         except Exception:
             self._remove_failed(folder);raise
-        self.items[token]=dict(name=Path(name).name,choices=choices)
-        return dict(upload_id=token,name=Path(name).name,layers=[c['name'] for c in choices])
+        try:
+            metadata={}
+            for c in choices:
+                if c['path'].suffix.lower()=='.shp':
+                    companions={p.suffix.lower() for p in c['path'].parent.iterdir() if p.stem.casefold()==c['path'].stem.casefold()}
+                    missing={'.shx','.dbf'}-companions
+                    if missing:raise ValueError('Missing Shapefile companions: '+', '.join(sorted(missing)))
+                info=pyogrio.read_info(c['path'],layer=c['layer'])
+                metadata[c['name']]=crs_metadata(info['crs'],info['total_bounds'],info['features'])
+        except Exception:
+            self._remove_failed(folder);raise
+        self.items[token]=dict(name=Path(name).name,choices=choices,metadata=metadata)
+        return dict(upload_id=token,name=Path(name).name,layers=[c['name'] for c in choices],metadata=metadata)
 
     def _remove_failed(self,folder):
         target=folder.resolve()
         if target.parent!=self.root.resolve():raise ValueError('Upload cleanup target is outside its temporary directory.')
         shutil.rmtree(target)
 
-    def read(self,token,layer,crs=None):
+    def read(self,token,layer,crs=None,override_crs=None,accept_declared_crs=False):
         if token not in self.items:raise ValueError('Upload is missing or expired. Upload it again.')
         item=self.items[token]
         choice=next((c for c in item['choices'] if c['name']==layer),None)
         if choice is None:raise ValueError('Choose one of the uploaded polygon layers.')
-        return read_web_dataset(choice['path'],layer=choice['layer'],crs=crs,source=item['name']+' / '+layer)
+        if item['metadata'][layer]['suspicious'] and not override_crs and not accept_declared_crs:
+            raise ValueError('Suspicious declared CRS: explicitly confirm it or choose a CRS override before loading.')
+        return read_web_dataset(choice['path'],layer=choice['layer'],crs=crs,override_crs=override_crs,source=item['name']+' / '+layer)
 
     def close(self):
         with self.lock:self.temporary.cleanup()

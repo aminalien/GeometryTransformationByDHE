@@ -57,16 +57,28 @@ class FakeMap{
   getZoom(){return 19;}
   setMaxPitch(pitch){this.maxPitch=pitch;if(this.pitch>pitch)this.pitch=pitch;}
   easeTo(options){this.pitch=options.pitch??this.pitch;this.bearing=options.bearing??this.bearing;}
-  setStyle(){this.sources={};this.layers={};setTimeout(()=>this.emit('style.load'),1);}
+  setStyle(style){this.style=style;this.sources={};this.layers={};setTimeout(()=>this.emit('style.load'),1);}
   getBounds(){const b=this.bounds;return {getWest:()=>b[0],getSouth:()=>b[1],getEast:()=>b[2],getNorth:()=>b[3],extend(){return this;}};}
 }
 class Marker{setLngLat(){return this;}addTo(){return this;}remove(){}}
-class Overlay{constructor(props){this.props=props;overlays.push(this);}setProps(props){this.props=props;}}
+class Overlay{constructor(props){this.props=props;overlays.push(this);}setProps(props){this.props={...this.props,...props};}}
 class Layer{constructor(props){this.props=props;this.id=props.id;}}
-const realFetch=globalThis.fetch;let submitted;
+const realFetch=globalThis.fetch;let submitted,activeSlices=0,maxActiveSlices=0,slowSlices=false;
 async function fetchLocal(path,options){
   if(path==='/api/apply'){submitted=JSON.parse(options.body);return {ok:true,json:async()=>({job_id:'failure-test'})};}
   if(path==='/api/jobs/failure-test')return {ok:true,json:async()=>({status:'failed',error:'Test construction rejection'})};
+  if(path==='/api/scene'&&process.env.DHE_WEB_STRESS_INSPECTOR==='1'){
+    // Synthetic menu stress only: repeat actual topology records in the mock client.
+    // This does not alter server geometry or constitute a DHE validity test.
+    const response=await realFetch(new URL(path,origin),options),scene=await response.json();
+    const original=scene.halfedges;
+    scene.halfedges=[...original,...Array.from({length:40},(_,copy)=>original.map(e=>({...e,id:e.id+'-menu-'+copy}))).flat()];
+    return {ok:true,status:200,json:async()=>scene};
+  }
+  if(path==='/api/slice'){
+    activeSlices++;maxActiveSlices=Math.max(maxActiveSlices,activeSlices);
+    try{if(slowSlices)await pause(200);return await realFetch(new URL(path,origin),options);}finally{activeSlices--;}
+  }
   return realFetch(new URL(path,origin),options);
 }
 const context=vm.createContext({console,document,window:{},location:{origin},fetch:fetchLocal,Option:OptionElement,URLSearchParams,FormData,setTimeout,clearTimeout,setInterval:()=>0});
@@ -74,7 +86,7 @@ const source=await fs.readFile(new URL('./web_generalization/app.js',import.meta
 const module=new vm.SourceTextModule(source,{context});
 await module.link(async specifier=>{
   const exports=specifier==='maplibre-gl'?{Map:FakeMap,Marker,NavigationControl:class{},ScaleControl:class{}}:
-    specifier.includes('/maplibre@')?{MapLibreOverlay:Overlay}:Object.fromEntries(['SolidPolygonLayer','PathLayer','LineLayer','ScatterplotLayer','TextLayer'].map(key=>[key,Layer]));
+    specifier.includes('/maplibre@')?{MapLibreOverlay:Overlay}:Object.fromEntries(['SolidPolygonLayer','PathLayer','LineLayer','ScatterplotLayer','TextLayer','SimpleMeshLayer','AmbientLight','DirectionalLight','LightingEffect'].map(key=>[key,Layer]));
   return new vm.SyntheticModule(Object.keys(exports),function(){for(const [key,value] of Object.entries(exports))this.setExport(key,value);},{context});
 });
 await module.evaluate();
@@ -89,16 +101,42 @@ await waitFor(()=>!layer('dhe-faces')&&layer('slice-fills')?.data.length,'Flat m
 assert.equal(maps[0].maxPitch,0);assert.ok(layer('slice-fills').data.every(d=>d.rings.every(r=>r.every(p=>p[2]===.04))));
 el('show-3d').checked=true;await el('show-3d').emit('change');assert.equal(maps[0].pitch,55);
 el('dual').checked=true;await el('dual').emit('input');assert.ok(layer('dual-vertices').data.length);assert.ok(layer('dual-edges').data.every(d=>!d.exterior));
-el('dual-size').value='9';await el('dual-size').emit('input');assert.equal(layer('dual-vertices').getRadius,9);
+assert.ok(layer('dual-vertices').mesh.attributes.positions.value.length>100);assert.ok(layer('dual-vertices').mesh.indices.value.length>100);
+const radius=layer('dual-vertices').sizeScale;el('dual-size').value='9';await el('dual-size').emit('input');assert.ok(Math.abs(layer('dual-vertices').sizeScale/radius-9/5)<1e-10);
+el('dual-style').value='dots';await el('dual-style').emit('input');assert.equal(layer('dual-vertices').getRadius,9);
+el('dual-style').value='spheres';await el('dual-style').emit('input');assert.ok(layer('dual-vertices').mesh);
+assert.equal(layer('cutting-plane'),undefined);
+el('show-plane').checked=true;await el('show-plane').emit('change');assert.ok(layer('cutting-plane'));
+el('show-sections').checked=false;await el('show-sections').emit('change');
+await waitFor(()=>!layer('slice-fills')&&el('slice-summary').textContent.includes('hidden'),'Hidden slice features');assert.ok(layer('cutting-plane'));
+el('show-plane').checked=false;await el('show-plane').emit('change');assert.equal(layer('cutting-plane'),undefined);
+el('show-sections').checked=true;await el('show-sections').emit('change');await waitFor(()=>layer('slice-fills')?.data.length,'Restore sections');
+assert.ok(el('edge-select').children.length<=302);assert.ok(el('edge-cell').children.length);
+const firstEdge=el('edge-select').children[1];el('edge-select').value=firstEdge.value;await el('edge-select').emit('change');assert.ok(layer('selected-face'));
+assert.equal(layer('selected-face').opacity,.5);
+el('edge-search').value='not-a-halfedge';await el('edge-search').emit('input');assert.ok(el('edge-select').children.length<=2);
+el('edge-search').value='';await el('edge-search').emit('input');
 el('exaggeration').value='6';await el('exaggeration').emit('input');const edge=layer('primal-edges').data.find(d=>d.source[2]>0);assert.equal(layer('primal-edges').getSourcePosition(edge)[2],edge.source[2]*6);
 el('slice-step').value='.5';await el('slice-step').emit('change');const top=Number(el('slice-value').value);await el('lower').emit('click');
 await waitFor(()=>el('slice-label').textContent.includes(String(top-.5)),'Slicing step');
 assert.equal(el('slice-slider').step,.5);
+await pause(100);slowSlices=true;
+for(const value of ['1','1.5','2','2.5']){el('slice-value').value=value;await el('slice-value').emit('input');await pause(100);}
+await waitFor(()=>layer('slice-fills')?.data.some(d=>Math.abs(d.rings[0][0][2]-15)<1e-6)&&activeSlices===0,'Latest queued section');
+assert.equal(maxActiveSlices,1);slowSlices=false;
 el('orientation').value='Vertical';await el('orientation').emit('change');el('show-3d').checked=false;await el('show-3d').emit('change');
 await waitFor(()=>el('slice-label').textContent.startsWith('Vertical')&&layer('slice-outlines')?.data.length,'Vertical sections');
 await pause(150);assert.equal(layer('slice-fills').data.length,0);assert.ok(layer('slice-outlines').data.every(d=>d.path.every(p=>p[2]===.04)));
 el('orientation').value='Inclined';await el('orientation').emit('change');await waitFor(()=>el('slice-label').textContent.startsWith('Inclined')&&layer('slice-fills')?.data.length,'Inclined sections');
 el('basemap').value='blank';await el('basemap').emit('change');await pause(25);assert.ok(layer('slice-fills'));
+assert.equal(maps[0].style.layers[0].paint['background-color'],'#ffffff');
+await maps[0].emit('error',{sourceId:'background',error:new Error('tile test failure')});assert.ok(el('map-warning').textContent.includes('background'));assert.ok(layer('slice-fills'));
+await maps[0].emit('sourcedata',{sourceId:'background',isSourceLoaded:true});assert.equal(el('map-warning').hidden,true);
+overlays[0].props.onError?.(new Error('mesh test failure'),{id:'dual-vertices'});
+assert.ok(el('status').textContent.includes('3D renderer / dual-vertices'));assert.ok(layer('slice-fills'));
+el('basemap').value='light';await el('basemap').emit('change');
+await maps[0].emit('error',{error:new Error('style fetch test failure')});
+assert.deepEqual(Object.keys(maps[0].style.sources),[]);await pause(25);assert.ok(layer('slice-fills'));
 assert.ok(maps[1].getSource('current').data.features.length);
 await el('select-box').emit('click');
 const bounds=maps[1].bounds;

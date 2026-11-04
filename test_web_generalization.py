@@ -33,6 +33,30 @@ def frame(polygons=None):
 
 
 class WebImportTests(unittest.TestCase):
+    def test_direct_shapefile_crs_preflight_and_explicit_override(self):
+        store=UploadStore()
+        try:
+            with tempfile.TemporaryDirectory() as temp:
+                path=Path(temp)/'wrong.shp'
+                raw=gpd.GeoDataFrame({'osm_id':['one']},geometry=[box(17.01,51.13,17.0101,51.1301)],crs=3857)
+                raw.to_file(path)
+                files=[(p.name,p.read_bytes()) for p in path.parent.glob('wrong.*')]
+                original={name:payload for name,payload in files}
+                with self.assertRaisesRegex(ValueError,'Missing Shapefile companions'):store.add_files([(path.name,path.read_bytes())])
+                entry=store.add_files(files);layer=entry['layers'][0];metadata=entry['metadata'][layer]
+                self.assertEqual(metadata['crs'],'EPSG:3857');self.assertTrue(metadata['suspicious'])
+                self.assertEqual(metadata['suggested_crs'],'EPSG:4326')
+                with self.assertRaisesRegex(ValueError,'Suspicious declared CRS'):store.read(entry['upload_id'],layer)
+                corrected=store.read(entry['upload_id'],layer,override_crs='EPSG:4326')
+                self.assertEqual(corrected.frame.crs.to_epsg(),32633)
+                self.assertGreater(corrected.frame.geometry.iloc[0].area,50)
+                self.assertTrue(any('override' in n for n in corrected.rejected))
+                retained=store.read(entry['upload_id'],layer,accept_declared_crs=True)
+                self.assertEqual(retained.frame.crs.to_epsg(),3857)
+                self.assertAlmostEqual(retained.frame.geometry.iloc[0].area,raw.geometry.iloc[0].area)
+                self.assertEqual(original,{p.name:p.read_bytes() for p in path.parent.glob('wrong.*')})
+        finally:store.close()
+
     def test_osm_network_fallback_preserves_geometry_errors(self):
         from types import SimpleNamespace
         data=SimpleNamespace(frame=frame(),source='OSM',rejected=[])
@@ -74,10 +98,10 @@ class WebImportTests(unittest.TestCase):
                 with ZipFile(stream,'w') as archive:
                     for file in folder.iterdir():archive.write(file,'nested/'+file.name)
                 entry=store.add('footprints.zip',stream.getvalue())
-                self.assertEqual(len(store.read(entry['upload_id'],entry['layers'][0]).frame),3)
+                self.assertEqual(len(store.read(entry['upload_id'],entry['layers'][0],accept_declared_crs=True).frame),3)
                 gpkg=folder/'layers.gpkg';frame().to_file(gpkg,layer='one');frame([box(60,0,70,5)]).to_file(gpkg,layer='two')
                 entry=store.add('layers.gpkg',gpkg.read_bytes());self.assertEqual(set(entry['layers']),{'one','two'})
-                self.assertEqual(len(store.read(entry['upload_id'],'two').frame),1)
+                self.assertEqual(len(store.read(entry['upload_id'],'two',accept_declared_crs=True).frame),1)
             stream=BytesIO()
             with ZipFile(stream,'w') as archive:archive.writestr('../outside.shp','bad')
             with self.assertRaisesRegex(ValueError,'Unsafe'):store.add('unsafe.zip',stream.getvalue())
@@ -165,6 +189,63 @@ class WebApiTests(unittest.TestCase):
         with patch('web_generalization_app.read_web_dataset',return_value=prepare_web_frame(frame(polygons))):
             answer=self.job('/api/load-default',{});self.assertEqual(answer['status'],'complete',answer)
 
+    def test_prepared_preview_progress_last_failure_and_hidden_sections(self):
+        self.load();w=self.workspace
+        token=list(w.jobs)[-1]
+        job=self.client.get('/api/jobs/'+token).json()
+        self.assertTrue(job['has_input_preview']);self.assertNotIn('input_preview',job)
+        preview=self.client.get('/api/jobs/'+token+'/input-preview').json()
+        self.assertEqual(len(preview['features']),3)
+        self.assertGreater(preview['features'][0]['geometry']['coordinates'][0][0][0],-180)
+        with patch.object(w.scene.slicer,'sections',side_effect=AssertionError('Hidden sections should not be computed')):
+            for orientation in ('Horizontal','Vertical','Inclined'):
+                response=self.client.post('/api/slice',json=dict(revision=1,orientation=orientation,value=0,include_sections=False))
+                self.assertEqual(response.status_code,200,response.text);answer=response.json()
+                self.assertFalse(answer['sections_computed']);self.assertEqual(answer['features']['features'],[])
+                self.assertTrue(answer['outline']);self.assertEqual(answer['missing'],[])
+        self.assertEqual(self.client.post('/api/slice',json=dict(revision=1,orientation='Vertical',value=1e6)).status_code,400)
+        clamped=self.client.post('/api/slice',json=dict(revision=1,orientation='Vertical',value=1e6,clamp_position=True,include_sections=False)).json()
+        self.assertEqual(clamped['value'],clamped['bounds'][1])
+        with patch('web_generalization_app.fetch_web_osm',side_effect=ValueError('OSM network test failure')):
+            failed=self.job('/api/osm',dict(bounds=[17,51,17.01,51.01]))
+        self.assertEqual(failed['status'],'failed');current=self.client.get('/api/state').json()
+        self.assertTrue(current['loaded']);self.assertEqual(current['revision'],1)
+        self.assertIn('OSM network',current['recent_jobs'][0]['error']);self.assertNotIn('input_preview',current['recent_jobs'][0])
+
+    def test_input_preview_available_before_atomic_replacement(self):
+        self.load();original_scene=self.workspace.scene;original_session=self.workspace.session
+        entered=Event();release=Event()
+        def delayed(data,height):
+            entered.set();release.wait(10);return GeneralizationSession(data,height)
+        try:
+            with patch('web_generalization_app.GeneralizationSession',side_effect=delayed),patch('web_generalization_app.read_web_dataset',return_value=prepare_web_frame(frame([box(1000,1000,1004,1004)]))):
+                token=self.client.post('/api/load-default',json=dict(revision=1)).json()['job_id']
+                self.assertTrue(entered.wait(5))
+                self.assertIs(self.workspace.scene,original_scene);self.assertIs(self.workspace.session,original_session)
+                job=self.client.get('/api/jobs/'+token).json()
+                self.assertTrue(job['has_input_preview']);self.assertIn('Constructing',job['stage'])
+                self.assertEqual(len(self.client.get('/api/jobs/'+token+'/input-preview').json()['features']),1)
+                self.assertEqual(self.client.get('/api/scene').json()['cells'],3)
+                release.set();deadline=time.monotonic()+10
+                while self.client.get('/api/jobs/'+token).json()['status']=='running' and time.monotonic()<deadline:time.sleep(.01)
+                self.assertEqual(self.client.get('/api/jobs/'+token).json()['status'],'complete')
+                self.assertEqual(self.client.get('/api/scene').json()['cells'],1)
+                self.assertEqual(self.workspace.revision,2)
+        finally:release.set()
+
+    def test_direct_multipart_shapefile_api(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/'small.shp';frame().to_file(path)
+            files=[('file',(p.name,p.read_bytes(),'application/octet-stream')) for p in path.parent.glob('small.*')]
+            entry=self.client.post('/api/uploads',files=files)
+            self.assertEqual(entry.status_code,200,entry.text);entry=entry.json()
+            self.assertTrue(entry['metadata'][entry['layers'][0]]['suspicious'])
+            failed=self.job('/api/load-upload',dict(upload_id=entry['upload_id'],layer=entry['layers'][0]))
+            self.assertEqual(failed['status'],'failed');self.assertFalse(self.workspace.scene)
+            loaded=self.job('/api/load-upload',dict(upload_id=entry['upload_id'],layer=entry['layers'][0],accept_declared_crs=True))
+            self.assertEqual(loaded['status'],'complete',loaded)
+            self.assertEqual(len(self.workspace.session.model.cells),3)
+
     def test_preview_apply_cache_undo_failed_load_and_stale_requests(self):
         self.load();w=self.workspace;source=w.session.state
         params=dict(operation='smoothing',selected=[1],dz=10,tolerance=1,iterations=1,ratio=.25,winner=None)
@@ -189,7 +270,7 @@ class WebApiTests(unittest.TestCase):
     def test_upload_osm_selection_and_invalid_values(self):
         payload=frame([box(0,0,4,4),box(3,0,7,4)]).to_json().encode()
         uploaded=self.client.post('/api/uploads',files={'file':('data.geojson',payload,'application/geo+json')}).json()
-        result=self.job('/api/load-upload',dict(upload_id=uploaded['upload_id'],layer=uploaded['layers'][0]))
+        result=self.job('/api/load-upload',dict(upload_id=uploaded['upload_id'],layer=uploaded['layers'][0],accept_declared_crs=True))
         self.assertEqual(result['status'],'complete',result);self.assertEqual(len(self.workspace.session.state.features),1)
         with patch('web_generalization_app.fetch_web_osm',return_value=prepare_web_frame(frame())):
             self.assertEqual(self.job('/api/osm',dict(bounds=[17,51,17.01,51.01]))['status'],'complete')

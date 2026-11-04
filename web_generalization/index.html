@@ -40,11 +40,14 @@
     <p class="hint">Click a face or edge in the 3D view. Navigate its real DHE relationships.</p>
     <div id="edge-details" class="inspector-card">Choose a face to inspect.</div>
     <div class="edge-nav"><button data-hop="nf">Next face edge</button><button data-hop="s">Twin</button><button data-hop="adjacent">Adjacent cell</button></div>
+    <label>Cell<select id="edge-cell" aria-label="Inspector cell"></select></label>
+    <label>Find half-edge<input id="edge-search" placeholder="Label or raw ID (up to 300 matches)"></label>
     <label>Half-edge<select id="edge-select" aria-label="Half-edge"></select></label>
     <div class="section-title"><span>DUAL APPEARANCE</span></div>
     <label class="check"><input type="checkbox" id="dual-labels">Dual labels</label>
     <label class="check"><input type="checkbox" id="exterior">Include exterior dual</label>
-    <label>Dual radius <span class="unit">pixels</span><input id="dual-size" type="range" min="2" max="16" step="0.5" value="5"></label>
+    <label>Dual vertices<select id="dual-style"><option value="spheres">3D spheres</option><option value="dots">Dots</option></select></label>
+    <label>Dual radius <span class="unit">screen pixels at map centre</span><input id="dual-size" type="range" min="2" max="16" step="0.5" value="5"></label>
     <label>Dual edge width <span class="unit">pixels</span><input id="dual-width" type="range" min="0.5" max="6" step="0.25" value="2.5"></label>
     <div class="section-title"><span>DATA DETAILS</span></div>
     <div id="data-details" class="hint"></div>
@@ -65,12 +68,14 @@
     </div>
     <div id="mode-banner" class="mode-banner" hidden></div>
     <div id="map-warning" class="map-warning" hidden></div>
+    <div id="map-recovery" class="map-recovery" hidden><button id="retry-background">Retry background</button><button id="white-background">White background</button></div>
     <div class="mini-panel" id="mini-panel"><div class="mini-header"><strong>Current top · select features</strong><button id="expand-mini" title="Expand current map">⤢</button><button id="hide-mini" title="Hide current map">−</button></div><div id="mini-map" aria-label="Current top selection map"></div></div>
     <button id="show-mini" class="mini-restore" hidden>▱ Current top map</button>
     <div id="tooltip" class="tooltip" hidden></div>
     <div id="google-attribution" class="google-attribution" hidden></div>
   </div>
   <div class="slice-panel">
+    <div class="slice-visibility"><label class="check"><input id="show-sections" type="checkbox" checked>Show slice features</label><label class="check"><input id="show-plane" type="checkbox">Show slicing plane (3D)</label></div>
     <div class="slice-heading"><div><span class="eyebrow">LIVE CROSS-SECTION</span><strong id="slice-label">Horizontal · Z = 5</strong></div><div class="slice-options"><select id="orientation" aria-label="Plane orientation"><option>Horizontal</option><option>Vertical</option><option>Inclined</option></select><label>Step<input id="slice-step" type="number" min="0.000001" value="0.1" step="0.1"></label><button id="source-level">Zs</button><button id="target-level">Zt</button></div></div>
     <div class="slice-track"><button id="lower" aria-label="Lower slicing plane">−</button><input id="slice-slider" type="range" min="0" max="5" step="0.1" value="5" aria-label="Slicing plane position"><button id="raise" aria-label="Raise slicing plane">＋</button><input id="slice-value" type="number" value="5" step="0.1" aria-label="Slice value"></div>
     <div id="plane-angles" class="plane-angles" hidden><label id="tilt-field">Tilt °<input id="tilt" type="number" min="0" max="90" value="45"></label><label>Azimuth °<input id="azimuth" type="number" min="0" max="360" value="0"></label><span>Azimuth clockwise from north · tilt from horizontal</span></div>
@@ -83,8 +88,8 @@
   <p class="hint">Overlapping groups are unioned automatically. Touching neighbours stay separate.</p>
   <label>Initial extrusion ΔZ<input id="initial-height" type="number" min="0.000001" value="5"></label>
   <button id="load-default" class="source-card"><strong>↗ Open default dataset</strong><span id="default-path">osm_data4.shp</span></button>
-  <label class="upload-card">＋ Choose a polygon dataset<input id="upload-file" type="file" accept=".zip,.gpkg,.geojson,.json"><span>GeoJSON · GeoPackage · zipped Shapefile (100 MiB)</span></label>
-  <div id="upload-fields" hidden><label>Layer<select id="upload-layer"></select></label><label>CRS, if missing<input id="upload-crs" placeholder="e.g. EPSG:2180"></label><button id="load-upload" class="primary">Load uploaded layer</button></div>
+  <label class="upload-card">＋ Choose a polygon dataset<input id="upload-file" type="file" multiple accept=".zip,.gpkg,.geojson,.json,.shp,.shx,.dbf,.prj,.cpg,.qix,.sbn,.sbx"><span>GeoJSON · GeoPackage · ZIP or .shp + .shx + .dbf (+ .prj/.cpg), 100 MiB combined</span></label>
+  <div id="upload-fields" hidden><label>Layer<select id="upload-layer"></select></label><p id="upload-metadata" class="hint"></p><label>CRS, if missing<input id="upload-crs" placeholder="e.g. EPSG:2180"></label><label>Coordinate interpretation<select id="crs-choice"><option value="">Choose interpretation…</option><option value="declared">Use declared CRS</option><option value="override">Override declared CRS</option></select></label><label id="override-field" hidden>Interpret existing coordinates as<input id="override-crs" placeholder="e.g. EPSG:4326"></label><button id="load-upload" class="primary">Load uploaded layer</button></div>
   <p id="import-message" class="hint"></p>
 </dialog>
 <dialog id="custom-dialog"><form method="dialog"><div class="dialog-heading"><h2>Custom background</h2><button class="icon-button" aria-label="Close">×</button></div></form><label>XYZ tile URL<input id="custom-url" placeholder="https://…/{z}/{x}/{y}.png"></label><label>Attribution<input id="custom-credit" placeholder="Provider / copyright"></label><button id="custom-apply" class="primary">Use layer</button><p class="hint">A Web Mercator XYZ service with browser access enabled.</p></dialog>

@@ -7,6 +7,9 @@ at `http://127.0.0.1:8765`. It defaults to `C:/University/PhD/Data/Kleczkow/osm_
 and reuses the existing six generalization operations, actual DHE cells and slicing.
 The interface includes geographic backgrounds, uploads, mouse-drawn OSM downloads,
 automatic union of overlapping input groups, 3D primal/dual controls and projected sections.
+Uploads include CRS preflight and explicit interpretation overrides, direct Shapefile companion
+selection, and a prepared-footprint preview during construction. Slice features and the slicing
+plane have independent visibility controls; dual vertices can use shaded 3D spheres or dots.
 Install `requirements-web.txt` first. See [web setup and usage](README_web_generalization.md).
 
 ## Desktop viewers
