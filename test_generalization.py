@@ -46,7 +46,7 @@ class GeometryTests(unittest.TestCase):
         self.assertEqual(len(loaded.frame),1)
         self.assertIn("unsupported Point",loaded.rejected[0])
         with self.assertRaisesRegex(ValueError,"overlap"):
-            prepare_frame(gpd.GeoDataFrame(geometry=[box(0,0,2,2),box(1,1,3,3)],crs=2180))
+            prepare_frame(gpd.GeoDataFrame(geometry=[box(0,0,2,2),box(1,1,3,3)],crs=2180),overlap_policy='error')
 
     def test_original_positions_survive_rejected_records(self):
         loaded=prepare_frame(gpd.GeoDataFrame(geometry=[Point(0,0),box(1,1,2,2)],crs=2180))

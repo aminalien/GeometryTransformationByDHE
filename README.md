@@ -41,6 +41,14 @@ and target navigation retain these choices. Exports retain the displayed style
 and record it in their settings JSON. Fonts, camera, colours and topology are
 unchanged by these options.
 
+The full DHE inspector also provides **Fill all cells** and **Dual sizes…**.
+Dual markers default to 50 points² and links to 2.5 points; both values can be
+edited live. Disabling cell fills preserves the current face at 50% opacity.
+The generalization workspace now reviews overlapping input polygons before
+construction, allowing complete-feature survivor choices, and supports mouse-wheel
+zoom plus Zoom in/out and Fit map with a persistent top-map extent.
+See [data loading and viewer controls](README_generalization.md).
+
 ## Paper viewer and implementation steps
 
 The transformation dropdown switches between polygon → polygon, polygon → point,

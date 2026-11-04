@@ -66,6 +66,7 @@ class GeneralizationWindow:
         self.selected=set()
         self.inspector=None
         self.visualizations=[]
+        self.overlap_review=None
         self.slicer=None
         self.face_index=0
         self.edge_index=0
@@ -154,6 +155,10 @@ class GeneralizationWindow:
         self.selection_label=ttk.Label(group,text="None selected",wraplength=280)
         self.selection_label.pack(fill="x")
         ttk.Button(group,text="Attributes / lineage…",command=self.attributes).pack(fill="x")
+        row=ttk.Frame(group);row.pack(fill='x',pady=4)
+        ttk.Button(row,text='Zoom in',command=lambda:self.zoom_map(1)).pack(side='left')
+        ttk.Button(row,text='Zoom out',command=lambda:self.zoom_map(-1)).pack(side='left',padx=3)
+        ttk.Button(row,text='Fit map',command=self.fit_map).pack(side='left')
         group=self._group("Generalization")
         self.operation=tk.StringVar(value="Simplification")
         menu=ttk.Combobox(group,textvariable=self.operation,values=tuple(OPERATIONS),state="readonly")
@@ -256,9 +261,20 @@ class GeneralizationWindow:
         if not self.closed:self.poll_id=self.root.after(100,self._poll)
 
     def load(self):
-        if self.busy:return
+        if self.busy or (self.overlap_review and not self.overlap_review.closed):return
         path=self.variables["path"].get()
-        self._start(lambda:GeneralizationSession(load_shapefile(path),self.initial_height),self._loaded,"Loading and constructing initial DHE cells…")
+        self._start(lambda:load_shapefile(path,overlap_policy='review'),self._input_loaded,'Reading polygon dataset…')
+
+    def _input_loaded(self,data):
+        if data.conflicts:
+            from overlap_review import OverlapReview
+            self.overlap_review=OverlapReview(self.root,data,self._construct_loaded,
+                lambda:self.status.set('Loading cancelled. Current dataset and history are unchanged.'))
+            self.status.set('Choose which complete overlapping polygons to retain before DHE construction.')
+        else:self._construct_loaded(data)
+
+    def _construct_loaded(self,data):
+        self._start(lambda:GeneralizationSession(data,self.initial_height),self._loaded,'Constructing initial DHE cells from retained polygons…')
 
     def _loaded(self,session):
         self._close_inspector()
@@ -267,8 +283,9 @@ class GeneralizationWindow:
         if self.evaluation_window and not self.evaluation_window.closed:self.evaluation_window.clear()
         self.data_label.configure(text=f"{len(session.state.features)} polygons · {session.data.frame.crs.name}\n{session.data.source}")
         self._refresh()
+        self.fit_map()
         rejected=session.data.rejected
-        self.status.set(f"Loaded {len(session.state.features)} features. Z=0–{session.state.z:g}. "+(f"{len(rejected)} unsupported records: see report." if rejected else ""))
+        self.status.set(f"Loaded {len(session.state.features)} features. Z=0–{session.state.z:g}. "+(f"{len(rejected)} excluded records / load notes: see report." if rejected else ""))
         if rejected:
             self._text_dialog("Dataset report","\n".join(rejected))
 
@@ -278,7 +295,7 @@ class GeneralizationWindow:
         if path:self.variables["path"].set(path);self.load()
 
     def osm_dialog(self):
-        if self.busy:return
+        if self.busy or (self.overlap_review and not self.overlap_review.closed):return
         top=self.tk.Toplevel(self.root);top.title("Download OSM buildings")
         values=[16.99,51.12,17.00,51.13]
         if self.session:
@@ -293,7 +310,7 @@ class GeneralizationWindow:
             try:bounds=[float(v.get()) for v in variables]
             except ValueError:return
             top.destroy()
-            self._start(lambda:GeneralizationSession(download_osm(*bounds),self.initial_height),self._loaded,"Downloading OSM buildings and constructing DHE…")
+            self._start(lambda:download_osm(*bounds,overlap_policy='review'),self._input_loaded,"Downloading OSM buildings…")
         self.ttk.Button(top,text="Download",command=fetch).pack(pady=10)
 
     def _invalidate(self):
@@ -352,6 +369,7 @@ class GeneralizationWindow:
             k=min(candidates);self._select(self.selected^{k})
 
     def _rectangle(self,start,end):
+        if self.busy or (self.canvas.toolbar and self.canvas.toolbar.mode):return
         if not self.session or start.xdata is None or end.xdata is None:return
         from shapely.geometry import box
         region=box(min(start.xdata,end.xdata),min(start.ydata,end.ydata),max(start.xdata,end.xdata),max(start.ydata,end.ydata))
@@ -461,6 +479,7 @@ class GeneralizationWindow:
         from mpl_toolkits.mplot3d.art3d import Poly3DCollection
         state=self.session.state
         camera=(self.ax.elev,self.ax.azim)
+        map_limits=(self.map_ax.get_xlim(),self.map_ax.get_ylim()) if hasattr(self,'_map_initialized') else None
         self.map_ax.clear();self.ax.clear()
         for k,f in state.features.items():
             self._geometry(self.map_ax,f.geometry,self._colour(k),linewidth=2.7 if k in self.selected else 1.,alpha=.65 if k in self.selected else .25)
@@ -469,6 +488,9 @@ class GeneralizationWindow:
             for k,g in self.proposal.targets.items():self._geometry(self.map_ax,g,"black",fill=False,linewidth=1.8,style="--")
         self.map_ax.set(title=f"Current top map · transition Z={state.z:g}",xlabel="Local X (m)",ylabel="Local Y (m)")
         self.map_ax.set_aspect("equal",adjustable="box")
+        if map_limits:
+            self.map_ax.set_xlim(map_limits[0]);self.map_ax.set_ylim(map_limits[1])
+        self._map_initialized=True
         faces=self.display_model.generalization_faces
         grouped=defaultdict(list)
         for face in faces:grouped[face.owner].append(face.points)
@@ -573,7 +595,26 @@ class GeneralizationWindow:
     def _wheel(self,event):return self.move_plane(1 if event.delta>0 else -1)
 
     def _plot_scroll(self,event):
-        if event.inaxes is self.section_ax:self.move_plane(1 if event.button=="up" else -1)
+        if event.inaxes is self.map_ax:
+            if self.canvas.toolbar and self.canvas.toolbar.mode:return
+            self.zoom_map(1 if event.button=='up' else -1,event.xdata,event.ydata)
+        elif event.inaxes is self.section_ax:self.move_plane(1 if event.button=="up" else -1)
+
+    def zoom_map(self,direction,x=None,y=None):
+        if not self.session:return
+        from math import isfinite
+        limits=(self.map_ax.get_xlim(),self.map_ax.get_ylim());factor=1/1.2 if direction>0 else 1.2
+        centers=(sum(limits[0])/2 if x is None else x,sum(limits[1])/2 if y is None else y)
+        updated=[tuple(c+(v-c)*factor for v in axis) for axis,c in zip(limits,centers)]
+        if not all(isfinite(v) for axis in updated for v in axis) or any(abs(b-a)<1e-9 for a,b in updated):return
+        self.map_ax.set_xlim(updated[0]);self.map_ax.set_ylim(updated[1]);self.canvas.draw_idle()
+
+    def fit_map(self):
+        if not self.session:return
+        from shapely.ops import unary_union
+        xmin,ymin,xmax,ymax=unary_union([f.geometry for f in self.session.state.features.values()]).bounds
+        padx=max((xmax-xmin)*.05,1.);pady=max((ymax-ymin)*.05,1.)
+        self.map_ax.set_xlim(xmin-padx,xmax+padx);self.map_ax.set_ylim(ymin-pady,ymax+pady);self.canvas.draw_idle()
 
     def _key(self,event):
         if event.key in ("up","down"):self.move_plane(1 if event.key=="up" else -1)
@@ -648,12 +689,16 @@ class GeneralizationWindow:
             self.close_after_evaluation=True
             self.status.set('Finishing the explicitly requested evaluation save before closing…');return
         self.closed=True
+        if self.overlap_review and not self.overlap_review.closed:self.overlap_review.cancel()
         if self.evaluation_window:self.evaluation_window.close()
         for window in self.visualizations:window.close()
         for identifier in (self.poll_id,self.load_id):
             if identifier:
                 self.root.after_cancel(identifier)
         self._close_inspector()
+        if self.canvas._idle_draw_id is not None:
+            self.canvas.get_tk_widget().after_cancel(self.canvas._idle_draw_id)
+            self.canvas._idle_draw_id=None
         self.root.destroy()
 
     def show(self):self.root.mainloop()

@@ -26,6 +26,7 @@ class AggregationProjectionPanel:
             if text.get_text() == "Feature aggregate":
                 text.remove()
         viewer.checkbox.ax.set_position([0.01, 0.78, 0.13, 0.15])
+        viewer.dual_style_button.ax.set_position([0.01,0.725,0.13,0.035])
         viewer.text_box.ax.set_position([0.055, 0.67, 0.085, 0.045])
         fig.text(0.02, 0.63, "Source provenance", fontsize=9, fontweight="bold")
         for i, key in enumerate(layer.preview.sources):

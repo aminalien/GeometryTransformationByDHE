@@ -39,9 +39,11 @@ class ViewerSession:
         figure.canvas.draw_idle()
 
     def _mount(self, model, figure=None,appearance=None):
+        if self.viewer:self.viewer._close_dual_style()
+        appearance=dict(appearance or {});appearance.setdefault('highlight_cells',True)
         viewer = interactive_plot_from_lists(
-            model.active_edges(), dhe.Getdhe()[1], show=False, highlight_cells=True,
-            overlay=model.overlay, transition=model.transition, figure=figure,**(appearance or {}))
+            model.active_edges(), dhe.Getdhe()[1], show=False,
+            overlay=model.overlay, transition=model.transition, figure=figure,**appearance)
         viewer.session = self
         viewer.fig.text(0.02, 0.655, "Target geometry", fontsize=9)
         self.target_dropdown = OrientationDropdown(
@@ -70,7 +72,9 @@ class ViewerSession:
         self.busy = True
         old_core = _core_state()
         old_viewer = self.viewer
-        appearance=dict(show_axes=old_viewer.show_axes,show_z_transition=old_viewer.show_z_transition)
+        appearance=dict(show_axes=old_viewer.show_axes,show_z_transition=old_viewer.show_z_transition,
+                        dual_vertex_size=old_viewer.dual_vertex_size,dual_edge_width=old_viewer.dual_edge_width,
+                        highlight_cells=old_viewer.checkbox.get_status()[5])
         canvas = old_viewer.fig.canvas
         self.target_dropdown.close(draw=False)
         old_viewer.plane_controls.orientation_dropdown.close(draw=False)

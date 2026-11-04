@@ -10,7 +10,7 @@
 import random
 import matplotlib
 import numpy as np
-from matplotlib.widgets import CheckButtons
+from matplotlib.widgets import CheckButtons, Button
 import math
 from mpl_toolkits.mplot3d import proj3d
 # Disable default key bindings that conflict with ours (f, s, etc.)
@@ -54,7 +54,7 @@ VERT_SIZE = 30
 
 class DHEInteractivePlot:
     def __init__(self, seed_edge, loop_edges=None ,unique_duals=None, SlicingAnalyses=False, ExteraInfo=None, figure=None,
-                 *,levels=None,show_axes=True,show_z_transition=False):
+                 *,levels=None,show_axes=True,show_z_transition=False,dual_vertex_size=50.,dual_edge_width=2.5):
 
         if seed_edge is None:
             raise ValueError("Need a starting half-edge")
@@ -76,6 +76,8 @@ class DHEInteractivePlot:
         self.hi_line = None
         self.loop_edges = loop_edges or []
         self.unique_duals = unique_duals or []
+        self.dual_vertex_size=50.;self.dual_edge_width=2.5;self.dual_style_figure=None
+        self.set_dual_style(dual_vertex_size,dual_edge_width)
         self.show_axes=show_axes;self.show_z_transition=show_z_transition
         self.z_levels=levels or {'z_b':min(e.V.z for e in (self.loop_edges or [seed_edge])),
                                 'z_s':max(e.V.z for e in (self.loop_edges or [seed_edge]))}
@@ -137,12 +139,16 @@ class DHEInteractivePlot:
 
         # --- create UI checkboxes (place them on left side of the figure) ---
         check_ax = self.fig.add_axes([0.02, 0.78, 0.22, 0.15])
-        labels = ['Show Dual Vertices', 'Show Dual Half-Edges', 'Show LoD labels','Show axes','Show Z transition guide']
-        actives = [self.show_dual_vertices, self.show_dual_edges, self.show_lod_labels,self.show_axes,self.show_z_transition]
+        labels = ['Show Dual Vertices', 'Show Dual Half-Edges', 'Show LoD labels','Show axes','Show Z transition guide','Fill all cells']
+        actives = [self.show_dual_vertices, self.show_dual_edges, self.show_lod_labels,self.show_axes,self.show_z_transition,False]
         self.checkbox = CheckButtons(check_ax, labels, actives)
         for label in self.checkbox.labels:
             label.set_fontsize(8)
         self.checkbox.on_clicked(self._toggle_dual_visuals)
+        self.dual_style_button=Button(self.fig.add_axes([0.02,0.725,0.19,0.035]),'Dual sizes…')
+        self.dual_style_button.label.set_fontsize(9)
+        self.dual_style_button.on_clicked(self.open_dual_style)
+        self.fig.canvas.mpl_connect('close_event',lambda event:self._close_dual_style())
         # --- text box for selecting an edge by ID ---
         box_ax = self.fig.add_axes([0.09, 0.67, 0.12, 0.045])
         self.text_box = TextBox(box_ax, "Edge ID:", initial="")
@@ -335,6 +341,53 @@ class DHEInteractivePlot:
             self.set_3d_options()
         # self.ax = self.fig.add_axes([0.05, 0.05, 0.9, 0.9], projection='3d')
     # ---------- visualization helpers ----------
+    def set_dual_style(self,vertex_size=None,edge_width=None):
+        size=self.dual_vertex_size if vertex_size is None else float(vertex_size)
+        width=self.dual_edge_width if edge_width is None else float(edge_width)
+        if not all(math.isfinite(v) and v>0 for v in (size,width)):
+            raise ValueError('Dual marker area and line width must be positive and finite.')
+        self.dual_vertex_size=size;self.dual_edge_width=width
+        for artist in getattr(self,'dual_vertex_artists',[]):artist.set_sizes([size])
+        for artist in getattr(self,'dual_edge_artists',[]):artist.set_linewidth(width)
+        if hasattr(self,'fig'):self.fig.canvas.draw_idle()
+
+    def open_dual_style(self,event=None):
+        if self.dual_style_figure is not None and plt.fignum_exists(self.dual_style_figure.number):
+            self.dual_style_figure.show();return
+        figure=plt.figure(figsize=(5.6,2.7));self.dual_style_figure=figure
+        figure.canvas.manager.set_window_title('DHE dual symbol sizes')
+        figure.text(.07,.88,'Edit a value and press Enter. Geometry and camera stay unchanged.',fontsize=9)
+        self.dual_size_box=TextBox(figure.add_axes([.56,.60,.34,.14]),'Marker area (pt²): ',initial=f'{self.dual_vertex_size:g}')
+        self.dual_width_box=TextBox(figure.add_axes([.56,.34,.34,.14]),'Line width (pt): ',initial=f'{self.dual_edge_width:g}')
+        self.dual_style_message=figure.text(.07,.12,'Default marker area: 50 pt²; line width: 2.5 pt.',fontsize=9)
+        def update(value):
+            try:
+                self.set_dual_style(self.dual_size_box.text,self.dual_width_box.text)
+                self.dual_style_message.set_text('Applied to visible dual symbols and future redraws.')
+            except ValueError as exc:self.dual_style_message.set_text(str(exc))
+            figure.canvas.draw_idle()
+        self.dual_size_box.on_submit(update);self.dual_width_box.on_submit(update)
+        figure.show()
+
+    def _close_dual_style(self):
+        if self.dual_style_figure is not None:
+            plt.close(self.dual_style_figure);self.dual_style_figure=None
+
+    def _all_bounded_features(self):
+        return {self._feature(e.D.V) for e in self.loop_edges if str(e.D.V.i)!='VINF'}
+
+    def _sync_fill_checkbox(self):
+        features=self._all_bounded_features();checked=bool(features) and features<=self.shaded_features
+        if self.checkbox.get_status()[5]!=checked:
+            previous=self.checkbox.eventson;self.checkbox.eventson=False
+            try:self.checkbox.set_active(5)
+            finally:self.checkbox.eventson=previous
+
+    def set_fill_all_cells(self,enabled):
+        if not hasattr(self,'scene_faces'):return
+        self.shaded_features=self._all_bounded_features() if enabled else set()
+        self._refresh_scene_colors();self.fig.canvas.draw_idle()
+
     def set_3d_options(self,*,levels=None,show_axes=None,show_z_transition=None):
         if levels is not None:self.z_levels=levels
         if show_axes is not None:self.show_axes=bool(show_axes)
@@ -403,7 +456,7 @@ class DHEInteractivePlot:
             record = self.scene_faces.setdefault(key, dict(
                 points=points, seeds=[], artist=None, owner=None))
             record["seeds"].append(edge)
-        self.shaded_features = ({self._feature(e.D.V) for e in active_edges}
+        self.shaded_features = ({self._feature(e.D.V) for e in active_edges if str(e.D.V.i)!='VINF'}
                                 if shaded else set())
         for record in self.scene_faces.values():
             owners = {self._feature(e.D.V) for e in record["seeds"]}
@@ -451,6 +504,7 @@ class DHEInteractivePlot:
             record["artist"].set_alpha(0.42)
         self.cell_artists = [r["artist"] for r in self.scene_faces.values()
                              if r["artist"] is not None]
+        self._sync_fill_checkbox()
         self._render_current_face()
 
     def _remove_current_face_artist(self):
@@ -523,6 +577,7 @@ class DHEInteractivePlot:
             self.shaded_features.clear()
             for record in self.scene_faces.values():
                 record["artist"] = None
+            self._sync_fill_checkbox()
         self.fig.canvas.draw_idle()
     ######### Fill-Cell done!!
     ##CheckBoxes:
@@ -846,6 +901,8 @@ class DHEInteractivePlot:
 
     def _toggle_dual_visuals(self, label):
         """Handle checkbox toggles for dual vertices and dual edges."""
+        if label=='Fill all cells':
+            self.set_fill_all_cells(self.checkbox.get_status()[5]);return
         if label in ('Show axes','Show Z transition guide'):
             self.set_3d_options(show_axes=self.checkbox.get_status()[3],
                                 show_z_transition=self.checkbox.get_status()[4])
@@ -959,7 +1016,7 @@ class DHEInteractivePlot:
             s = self.ax.scatter(
                         v.x, v.y, v.z,
                         color=v.color,
-                        s=100,
+                        s=self.dual_vertex_size,
                         edgecolors='k',
                         depthshade=True,
                         alpha=1,
@@ -1062,7 +1119,7 @@ class DHEInteractivePlot:
 
                 clr=(1, 0.75, 0, 1)
                 clr = (1, 0, 0, 1)
-            line = self.ax.plot(xs, ys, zs, color=clr, lw=5, alpha=0.9, zorder=5)[0]
+            line = self.ax.plot(xs, ys, zs, color=clr, lw=self.dual_edge_width, alpha=0.9, zorder=5)[0]
             self.dual_edge_artists.append(line)
 
     def _clear_dual_half_edges(self):
@@ -1645,6 +1702,7 @@ class _RoofOverlayPanel:
         viewer.fig.set_size_inches(18, 9)
         viewer.ax.set_position([0.17, 0.18, 0.40, 0.70])
         viewer.checkbox.ax.set_position([0.01, 0.78, 0.15, 0.15])
+        viewer.dual_style_button.ax.set_position([0.01,0.725,0.14,0.035])
         viewer.text_box.ax.set_position([0.06, 0.67, 0.09, 0.045])
         self.ax = viewer.fig.add_axes([0.62, 0.18, 0.35, 0.70])
         self.ax.set_aspect("equal", adjustable="box")
@@ -1802,7 +1860,7 @@ def interactive_plot_dhe(seed_edge, loop_edges=None):
     viewer = DHEInteractivePlot(seed_edge, loop_edges=loop_edges)
     viewer.show()
 def interactive_plot_from_lists(dhe_List, Kill_List=None, pick='first', SlicingAnalyses=False, ExteraInfo=None, *, show=True, highlight_cells=False, overlay=None, transition=None, aggregation=None, figure=None,
-                                levels=None,show_axes=True,show_z_transition=False):
+                                levels=None,show_axes=True,show_z_transition=False,dual_vertex_size=50.,dual_edge_width=2.5):
     """
     Visualize all half-edges in dhe_List except those in Kill_List.
     Highlight and start from a chosen CurrentEdge.
@@ -1849,7 +1907,7 @@ def interactive_plot_from_lists(dhe_List, Kill_List=None, pick='first', SlicingA
     viewer = DHEInteractivePlot(seed_edge, loop_edges=active_edges , unique_duals=unique_duals,
                                 SlicingAnalyses=SlicingAnalyses, ExteraInfo=ExteraInfo, figure=figure,
                                 levels=levels or levels_from_layer(aggregation or transition),show_axes=show_axes,
-                                show_z_transition=show_z_transition)
+                                show_z_transition=show_z_transition,dual_vertex_size=dual_vertex_size,dual_edge_width=dual_edge_width)
     viewer.baseline_connections = baseline
     if aggregation is not None:
         viewer.face_color_resolver = aggregation.face_color

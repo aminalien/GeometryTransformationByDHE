@@ -755,6 +755,8 @@ def _layer_faces(old, new, patches, lo, hi, *, diagnostics=None):
 
 class GeneralizationSession:
     def __init__(self, data, initial_height=5.):
+        if data.conflicts:
+            raise ValueError('Resolve input overlaps before DHE construction.')
         if not isfinite(initial_height) or initial_height <= 0:
             raise ValueError("Initial height must be positive and finite.")
         self.data=data

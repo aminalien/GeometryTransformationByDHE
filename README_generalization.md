@@ -16,7 +16,13 @@ An existing projected CRS in metres is preserved. Geographic or other linear uni
 
 Feature labels are stable **one-based input positions**, not OSM IDs. Rejected records do not renumber other features. Select/deselect by clicking polygons, right-drag a rectangle to add features, or Shift + right-drag to remove features. The table supports multiple selection. Index entry accepts `1, 3-6, 10`. Original IDs are recognized from `osm_id`, `id`, `fid`, or `objectid` (case insensitive). **Attributes / lineage…** explains identities after merging or aggregation.
 
-The loader reports unsupported records explicitly. Initial geometry supports valid, non-overlapping, hole-free Polygon features. Multipart features, holes, invalid geometry, and positive-area overlaps are not silently repaired. The default dataset has 32 supported polygons, with both shared boundaries and isolated buildings.
+The loader reports unsupported records explicitly. Initial geometry supports valid, hole-free Polygon features. Multipart features, holes, and invalid geometry remain excluded. Shared boundaries and point contacts are allowed.
+
+If supported input polygons overlap in positive area, Shapefile and OSM loading opens an **overlap review** before constructing any replacement DHE cells. The suggested survivors are chosen by descending projected area, with original row index breaking ties: retain a polygon unless it overlaps an already retained polygon. A chain A–B–C can therefore retain A+C instead of deleting the entire group. Click **Keep?** to change a survivor; keeping one polygon deselects its conflicting neighbours. Highlight compatible rows and use **Keep only highlighted in this group** for choices such as only B or A+C. **Largest first in this group** restores the suggestion. Nonconflicting input is always retained, and at least one polygon must remain in each overlap group. **Load chosen survivors** constructs the new session; **Cancel** preserves the current dataset and history.
+
+Resolution retains whole polygons, their attributes and original indices. It does not trim footprints or edit source files. The Dataset report names removed indices and retained conflicting neighbours where applicable. Headless loading uses the same deterministic largest-first rule and prints its removal notes. Programmatic loaders (`prepare_frame`, `load_shapefile`, `download_osm`) accept `overlap_policy='keep_largest'` (default), `'review'` (return pending conflicts), or `'error'` (strict rejection). Use `resolve_overlaps(data, survivor_indices)` before passing pending review data to `GeneralizationSession`.
+
+Use the mouse wheel over the **current top map** for cursor-centred zoom, or **Zoom in**, **Zoom out**, and **Fit map**. The view survives selection, Preview, Apply, Undo, and history navigation. Loading a new dataset fits its extent automatically. Matplotlib toolbar pan/zoom remains available; map selection is suspended while a toolbar navigation mode is active. Scrolling over the section panel still moves the slicing plane.
 
 ## Generalization operations
 
@@ -41,7 +47,7 @@ Point and line representations are terminal: they remain visible on later 2D map
 
 The model retains the external boundary below each new interval and removes the previous horizontal roof. New upper faces are integrated into continuous closed cells; there is no hidden second cell per height interval. The updated map comes from the realized top section, not a cosmetic target overlay.
 
-Smooth merging preserves the historical cells and ownership below the source level. Within the new interval, inclined interfaces transfer space from the losers to the winner; the occupied union stays constant. Losers remain valid historical cells, with zero-area terminal contacts, after retirement from the current top map. Further operations act on the winner's union footprint. Aggregation retains its existing single aggregate-cell construction and growth surface in the hull-minus-union region.
+Smooth merging preserves the historical cells and ownership below the source level. Within the new interval, inclined interfaces transfer space from the losers to the winner; the occupied union stays constant. Losers remain valid historical cells, with zero-area terminal contacts, after retirement from the current top map. Further operations act on the winner's union footprint. Aggregation retains separate lower source cells connected through source-level interfaces to one new upper aggregate cell, with its existing growth surface in the hull-minus-union region.
 
 **Undo** or the history selector restores an earlier DHE model. Applying after navigating backwards replaces the later history branch. History is in memory for this session; closing the window does not save a project file.
 
@@ -82,6 +88,8 @@ See [Quantitative evaluation methodology](DHE_Generalization_Evaluation_Methodol
 ## Viewing and exporting
 
 The left map always shows the current top; the large 3D panel shows the actual DHE shell; the lower 2D panel shows the live section. The current half-edge is red and its face remains filled at 50%, including when cell filling is disabled. Face/edge buttons browse actual DHE records. **Open full DHE inspector** opens the existing navigation viewer; it closes when its model is replaced. **Last transition diagnostics…** shows the failed operation's case, parameters, cell, validation class and detailed evidence when available.
+
+The full inspector includes **Fill all cells** (initially on when opened here). Turning it off leaves cell outlines and the independently filled current face; `x` also clears cell fills and unchecks it. `c` shades the current cell, and `l` hides the current-face highlight until the next edge selection. **Dual sizes…** opens two editable fields: marker **area** in points² (default **50**, previously 100), and dual-edge line width in points (default **2.5**, previously 5). Enter a positive finite value and press Enter to update visible symbols immediately. These settings also apply when dual visibility is toggled again and are retained when changing target type in the transition viewer. No DHE geometry or camera is modified. The programmatic viewer accepts `dual_vertex_size` and `dual_edge_width` keyword arguments.
 
 Plane controls support Horizontal (Z), Vertical (azimuth/offset), and Inclined (tilt/azimuth/offset). Enter a positive **Step size** to control slider resolution, mouse wheel over the slider or section, ↑/↓, and Lower/Raise consistently. The 3D plane is hidden initially; interacting with the slider/keys/buttons enables it. The checkbox can hide it again. Tilt is measured from horizontal. The **3D Z exaggeration** field changes only display aspect, not coordinates or calculations.
 
@@ -155,6 +163,7 @@ $env:DHE_GUI_TESTS='1'
 .\.venv\Scripts\python.exe -m unittest test_generalization_visualization -v
 .\.venv\Scripts\python.exe -m unittest test_aggregation_conformity -v
 .\.venv\Scripts\python.exe -B -m unittest test_merge_terminal_edges -v
+.\.venv\Scripts\python.exe -B -m unittest test_input_overlap_controls -v
 ```
 
 The real-dataset test runs when the local default Shapefile exists; portable tests use synthetic geometries with the production builders. Live Overpass availability is separate from parser/geometry correctness.

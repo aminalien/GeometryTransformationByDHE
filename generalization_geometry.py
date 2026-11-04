@@ -14,7 +14,7 @@ import urllib.error
 
 import geopandas as gpd
 import numpy as np
-from shapely import force_2d
+from shapely import force_2d, STRtree
 from shapely.geometry import Polygon, Point, LineString, box
 from shapely.geometry.polygon import orient
 from shapely.ops import polygonize, unary_union
@@ -34,9 +34,70 @@ class LoadedData:
     frame: gpd.GeoDataFrame
     rejected: list[str]
     source: str
+    conflicts: tuple[tuple[int, int], ...] = ()
+    overlap_removed: tuple[int, ...] = ()
 
 
-def prepare_frame(frame, source="memory"):
+def overlap_pairs(frame):
+    """Positive-area conflicts, expressed in stable original row indices."""
+    geometries=list(frame.geometry);indices=list(map(int,frame['_index']))
+    tree=STRtree(geometries);pairs=[]
+    for i,a in enumerate(geometries):
+        for j in tree.query(a,predicate='intersects'):
+            if j<i and a.intersection(geometries[j]).area>TOL*TOL:
+                pairs.append(tuple(sorted((indices[j],indices[i]))))
+    return tuple(sorted(pairs))
+
+
+def overlap_groups(conflicts):
+    graph={}
+    for a,b in conflicts:
+        graph.setdefault(a,set()).add(b);graph.setdefault(b,set()).add(a)
+    groups=[];remaining=set(graph)
+    while remaining:
+        group=set();todo=[min(remaining)]
+        while todo:
+            key=todo.pop()
+            if key in group:continue
+            group.add(key);todo.extend(graph[key]-group)
+        remaining-=group;groups.append(group)
+    return groups
+
+
+def largest_first_survivors(data):
+    blocked=set();kept=set();neighbours={}
+    for a,b in data.conflicts:
+        neighbours.setdefault(a,set()).add(b);neighbours.setdefault(b,set()).add(a)
+    rows=sorted(data.frame.iterrows(),key=lambda item:(-item[1].geometry.area,int(item[1]['_index'])))
+    for _,row in rows:
+        key=int(row['_index'])
+        if key not in blocked:
+            kept.add(key);blocked.update(neighbours.get(key,()))
+    return kept
+
+
+def resolve_overlaps(data,survivors):
+    """Keep complete selected features; nonconflicting input is always retained."""
+    indices=set(map(int,data.frame['_index']));survivors=set(map(int,survivors))
+    if not survivors<=indices:raise ValueError('Unknown overlap-review feature index.')
+    conflicted={k for pair in data.conflicts for k in pair}
+    kept=survivors|(indices-conflicted)
+    if any(a in kept and b in kept for a,b in data.conflicts):
+        raise ValueError('Selected survivors still overlap; choose one side of each conflict.')
+    if any(not group&kept for group in overlap_groups(data.conflicts)):
+        raise ValueError('Keep at least one feature in each overlap group.')
+    removed=sorted(indices-kept);messages=list(data.rejected)
+    for key in removed:
+        neighbours=sorted({b if a==key else a for a,b in data.conflicts if key in (a,b)}&kept)
+        detail=f"overlaps retained feature(s) {', '.join(map(str,neighbours))}" if neighbours else 'not selected in overlap review'
+        messages.append(f'Feature {key}: removed whole polygon ({detail}).')
+    result=data.frame[data.frame['_index'].isin(kept)].copy()
+    return LoadedData(result,messages,data.source,(),tuple(sorted(set(data.overlap_removed)|set(removed))))
+
+
+def prepare_frame(frame, source="memory", *, overlap_policy='keep_largest'):
+    if overlap_policy not in ('keep_largest','review','error'):
+        raise ValueError('Choose keep_largest, review, or error for overlap_policy.')
     if frame.crs is None:
         raise ValueError("The dataset must declare its CRS.")
     frame = frame.copy()
@@ -68,18 +129,18 @@ def prepare_frame(frame, source="memory"):
     if not accepted:
         raise ValueError("No supported polygon features. " + "; ".join(rejected[:8]))
     result = gpd.GeoDataFrame(accepted, geometry=frame.geometry.name, crs=frame.crs)
-    for i, a in enumerate(result.geometry):
-        for j in range(i):
-            if a.intersection(result.geometry.iloc[j]).area > TOL*TOL:
-                raise ValueError(f"Input features {result.iloc[j]['_index']} and {result.iloc[i]['_index']} overlap. Resolve overlap before loading.")
-    return LoadedData(result, rejected, str(source))
+    data=LoadedData(result,rejected,str(source),overlap_pairs(result))
+    if data.conflicts and overlap_policy=='error':
+        a,b=data.conflicts[0]
+        raise ValueError(f'Input features {a} and {b} overlap. Resolve overlap before loading.')
+    return resolve_overlaps(data,largest_first_survivors(data)) if data.conflicts and overlap_policy=='keep_largest' else data
 
 
-def load_shapefile(path=DEFAULT_DATA):
+def load_shapefile(path=DEFAULT_DATA, *, overlap_policy='keep_largest'):
     path = Path(path)
     if not path.is_file():
         raise FileNotFoundError(f"Shapefile not found: {path}")
-    return prepare_frame(gpd.read_file(path), str(path))
+    return prepare_frame(gpd.read_file(path), str(path),overlap_policy=overlap_policy)
 
 
 def visibility_kernel(polygon):
@@ -248,7 +309,7 @@ def parse_osm(payload):
     return gpd.GeoDataFrame(records, geometry="geometry", crs="EPSG:4326"), errors
 
 
-def download_osm(west, south, east, north, endpoint="https://overpass-api.de/api/interpreter", max_bytes=50*1024**2):
+def download_osm(west, south, east, north, endpoint="https://overpass-api.de/api/interpreter", max_bytes=50*1024**2, *, overlap_policy='keep_largest'):
     bounds = list(map(float, (west, south, east, north)))
     west, south, east, north = bounds
     if not all(map(isfinite, bounds)) or not -180 <= west < east <= 180 or not -90 <= south < north <= 90:
@@ -269,6 +330,6 @@ def download_osm(west, south, east, north, endpoint="https://overpass-api.de/api
     if payload.get("remark"):
         raise ValueError("Overpass reported: " + payload["remark"])
     frame, errors = parse_osm(payload)
-    data = prepare_frame(frame, f"OpenStreetMap buildings {bounds}; © OpenStreetMap contributors, ODbL")
+    data = prepare_frame(frame, f"OpenStreetMap buildings {bounds}; © OpenStreetMap contributors, ODbL",overlap_policy=overlap_policy)
     data.rejected[:0] = errors
     return data

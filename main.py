@@ -467,7 +467,7 @@ def main(argv=None) -> ExtrusionModel | AggregationPreview | StageResult | Gener
                     print(note)
             print(f"Generalization: {len(session.state.features)} current features; {len(session.model.cells)} DHE cells; Z={session.state.z:g}; CRS={data.frame.crs.name}")
             for warning in data.rejected:
-                print("Unsupported: " + warning)
+                print("Dataset report: " + warning)
             if args.preview:
                 from generalization_session import render_overview
                 args.preview.parent.mkdir(parents=True, exist_ok=True)
