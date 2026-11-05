@@ -16,10 +16,10 @@ class TransitionVisualizationWindow:
         self.tk,self.ttk=tk,ttk
         self.root=tk.Toplevel(parent);self.root.title('DHE · Transition visualization and publication export')
         self.root.geometry('1600x1000');self.root.protocol('WM_DELETE_WINDOW',self.close)
-        self.snapshots=[]
+        self.snapshots=[];outline_cache={}
         for i,state in enumerate(session.history[:session.cursor+1]):
-            if state.operation:self.snapshots.append(TransitionSnapshot.capture(state,session.history[:i]))
-        if proposal:self.snapshots.append(TransitionSnapshot.capture(proposal.state,session.history[:session.cursor+1]))
+            if state.operation:self.snapshots.append(TransitionSnapshot.capture(state,session.history[:i],outline_cache=outline_cache))
+        if proposal:self.snapshots.append(TransitionSnapshot.capture(proposal.state,session.history[:session.cursor+1],outline_cache=outline_cache))
         if not self.snapshots:
             self.root.destroy();raise ValueError('Preview or apply a generalization operation first.')
         self.closed=False;self.figure=None;self.canvas=None;self.toolbar=None;self.setting=False

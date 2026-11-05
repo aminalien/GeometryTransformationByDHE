@@ -38,17 +38,60 @@ class Boundary:
 
 
 @dataclass(frozen=True)
+class HistoryOutline:
+    level: float
+    owner: int
+    geometry: object  # Immutable Shapely boundary/line/point; no live DHE record.
+
+
+def _outline_geometry(geometry):
+    if geometry.geom_type in ('Polygon','MultiPolygon'):
+        return geometry.boundary
+    if geometry.geom_type=='GeometryCollection':
+        return unary_union([_outline_geometry(g) for g in geometry.geoms])
+    return geometry
+
+
+def _capture_history_outlines(states,cache):
+    """Freeze real endpoint sections, deduplicating equal owner/level outlines."""
+    outlines={}
+    def capture(state,level):
+        key=(state.step_id,float(level))
+        if key not in cache:
+            slicer=PlaneSlicer.from_face_records((str(f.owner),f.points) for f in state.faces)
+            cache[key]=tuple((int(k),_outline_geometry(g)) for k,g in
+                slicer.sections(SlicePlane.horizontal(level),include_degenerate=True).items())
+        for owner,geometry in cache[key]:
+            group=outlines.setdefault((float(level),owner),[])
+            if not geometry.is_empty and not any(geometry.equals(g) for g in group):group.append(geometry)
+    previous=None
+    for state in states:
+        if state.operation is None:
+            capture(state,state.z)
+        else:
+            # The preceding saved representation supplies the source. When no
+            # predecessor was supplied, use this state's actual source section.
+            source=previous if previous is not None and previous.z==state.operation.z_s else state
+            capture(source,state.operation.z_s)
+            capture(state,state.operation.z_t)
+        previous=state
+    return tuple(HistoryOutline(level,owner,g) for (level,owner),geometries in sorted(outlines.items()) for g in geometries)
+
+
+@dataclass(frozen=True)
 class TransitionSnapshot:
     label: str
     faces: tuple[Boundary, ...]
     operation: dict
     affected: tuple[int, ...]
     names: tuple[tuple[int, str], ...]
+    history_outlines: tuple[HistoryOutline, ...] = ()
 
     @classmethod
-    def capture(cls, state, preceding=()):
+    def capture(cls, state, preceding=(), *, outline_cache=None):
         if state.operation is None:
             raise ValueError("Choose a validated operation; initial extrusion has no transition interval.")
+        preceding=tuple(preceding)
         record=asdict(state.operation)
         owners=set(record['affected'])
         # Include earlier contributing cells in full-history views, including
@@ -58,7 +101,8 @@ class TransitionSnapshot:
                 owners.update(old.operation.selected)
         names={k:f.label for old in [*preceding,state] for k,f in old.features.items()}
         faces=tuple(Boundary(f.owner,tuple(tuple(p) for p in f.points),f.part) for f in state.faces)
-        return cls(state.description,faces,record,tuple(sorted(owners)),tuple(sorted(names.items())))
+        outlines=_capture_history_outlines([*preceding,state],{} if outline_cache is None else outline_cache)
+        return cls(state.description,faces,record,tuple(sorted(owners)),tuple(sorted(names.items())),outlines)
 
     def slicer(self):
         return PlaneSlicer.from_face_records((str(f.owner),f.points) for f in self.faces)
@@ -214,6 +258,18 @@ def selected_sections(slicer, plane, owners):
     return {int(k):g for k,g in slicer.sections(plane,include_degenerate=True).items() if int(k) in owners}
 
 
+def visible_outlines(snapshot,options,*,slicer=None):
+    """Use the same filtered outline records for drawing and export metadata."""
+    if not options.outlines:return ()
+    lower,upper=view_bounds(snapshot,options)
+    owners=visible_owners(snapshot,options)
+    if options.extent=='history' and snapshot.history_outlines:
+        return tuple(o for o in snapshot.history_outlines if o.owner in owners and lower<=o.level<=upper)
+    slicer=slicer or snapshot.slicer()
+    return tuple(HistoryOutline(level,owner,_outline_geometry(g)) for level in (snapshot.operation['z_s'],upper)
+        for owner,g in selected_sections(slicer,SlicePlane.horizontal(level),owners).items())
+
+
 def render_scene(ax,snapshot,slicer,options,settings,*,plane=None):
     lower,upper=view_bounds(snapshot,options)
     owners=visible_owners(snapshot,options)
@@ -236,12 +292,8 @@ def render_scene(ax,snapshot,slicer,options,settings,*,plane=None):
                 actual=unary_union(horizontal.get((owner,level),[]))
                 remainder=geometry.difference(actual)
                 draw_geometry(ax,remainder,feature_color(owner),plane=cut,alpha=options.opacity,fill=options.fill_cells)
-    if options.outlines:
-        for level in (snapshot.operation['z_s'],upper):
-            cut=SlicePlane.horizontal(level)
-            for owner,geometry in selected_sections(slicer,cut,owners).items():
-                boundary=geometry.boundary if geometry.geom_type in ('Polygon','MultiPolygon') else geometry
-                draw_geometry(ax,boundary,feature_color(owner),plane=cut,linewidth=1.8)
+    for outline in visible_outlines(snapshot,options,slicer=slicer):
+        draw_geometry(ax,outline.geometry,feature_color(outline.owner),plane=SlicePlane.horizontal(outline.level),linewidth=1.8,fill=False)
     arr=np.asarray(points);lo,hi=arr.min(axis=0),arr.max(axis=0)
     span=np.maximum(hi-lo,1.);middle=(hi+lo)/2
     for axis,i in ((ax.set_xlim,0),(ax.set_ylim,1)):
@@ -377,8 +429,8 @@ def render_slices(snapshot,count=9,kind='2d',options=None,settings=None,*,levels
             if kind=='2d' and not options.slice_xy_numbers:
                 ax.set_xticklabels([]);ax.set_yticklabels([])
                 ax.set_xlabel('');ax.set_ylabel('')
-            letter=i if len(levels)>1 else int(np.argmin(np.abs(np.array(configured)-z)))
-            ax.set_title(f'({chr(97+letter)}) Z = {z:g}',fontsize=settings['fonts']['panel_title'])
+            number=i+1 if len(levels)>1 else int(np.argmin(np.abs(np.array(configured)-z)))+1
+            ax.set_title(f'({number}) Z = {z:g}',fontsize=settings['fonts']['panel_title'])
         if settings['layout']['show_title']:fig.suptitle(snapshot.label,fontsize=settings['fonts']['title'])
         add_legend(fig,snapshot,options,settings)
         apply_layout(fig,settings,grid=True,options=options)
@@ -410,8 +462,10 @@ def export_transition(snapshot,output,*,options=None,settings=None,count=9,kind=
         if individual:
             for i,z in enumerate(levels):
                 save(render_slices(snapshot,count,kind,options,settings,levels=[z],slicer=slicer),stem+f'_{kind}_slice{i+1:02d}')
+    outline_levels=sorted({o.level for o in visible_outlines(snapshot,options,slicer=slicer)}) if content=='scene' or kind=='3d' else []
     record=dict(description=snapshot.label,operation=snapshot.operation,affected=snapshot.affected,
         visible_owners=sorted(visible_owners(snapshot,options)),display_interval=[lower,upper],slice_levels=levels,
+        outline_levels=outline_levels,
         slice_range=[levels[0],levels[-1]] if levels else None,
         geometry_source='Validated realized face records; sections from the complete shell.',
         display_caps='Clipped-boundary closing surfaces are visualization only.',

@@ -17,7 +17,7 @@ from shapely.ops import unary_union
 import DHECore as dhe
 from generalization_model import _core
 from generalization_visualization import (TransitionSnapshot,ViewSettings,clip_ring,export_transition,
-    render_slices,render_transition,view_bounds,visible_owners,resolve_slice_levels)
+    render_slices,render_transition,view_bounds,visible_owners,visible_outlines,resolve_slice_levels)
 from methodology_publication import PublicationSettings
 from plane_slicing import PlaneSlicer,SlicePlane
 from test_generalization import session
@@ -95,7 +95,7 @@ class PublicationViewTests(unittest.TestCase):
             for kind in ('2d','3d'):
                 figure=render_slices(self.snapshot,count,kind,options)
                 self.assertEqual([a.get_title() for a in figure.axes],
-                    [f'({chr(97+i)}) Z = {z:g}' for i,z in enumerate(levels)])
+                    [f'({i+1}) Z = {z:g}' for i,z in enumerate(levels)])
                 figure.clear()
         for start,end in ((-1,10),(5,16),(7,7),(9,8),(float('nan'),10),(5,float('inf'))):
             with self.subTest(start=start,end=end),self.assertRaises(ValueError):
@@ -108,7 +108,7 @@ class PublicationViewTests(unittest.TestCase):
         # Grid limits do not change the live section or scene-only render.
         figure=render_transition(snap,replace(options,value=17));figure.clear()
 
-    def test_custom_range_exports_and_individual_letters(self):
+    def test_custom_range_exports_and_individual_numbers(self):
         settings=PublicationSettings({'layout':{'width_in':4,'height_in':3},'export':{'dpi':100}})
         options=ViewSettings(slice_z_start=2,slice_z_end=12)
         with tempfile.TemporaryDirectory(dir='artifacts') as output:
@@ -119,7 +119,7 @@ class PublicationViewTests(unittest.TestCase):
             self.assertEqual(record['view']['slice_z_start'],2)
             self.assertTrue(all('range2_12' in p.name for p in paths))
             last=next(p for p in paths if p.name.endswith('slice06.svg'))
-            self.assertIn('(f) Z = 12',''.join(ET.parse(last).getroot().itertext()))
+            self.assertIn('(6) Z = 12',''.join(ET.parse(last).getroot().itertext()))
             metadata=json.loads(next(Path(output).glob('*6slices.json')).read_text())
             self.assertEqual(metadata['slice_range'],[2,12])
 
@@ -185,7 +185,7 @@ class PublicationViewTests(unittest.TestCase):
                 content='slices',individual=True,settings=settings)
             self.assertEqual(len(files),21)
             last=next(p for p in files if p.name.endswith('slice06.svg'))
-            self.assertIn('(f) Z = 15',''.join(ET.parse(last).getroot().itertext()))
+            self.assertIn('(6) Z = 15',''.join(ET.parse(last).getroot().itertext()))
 
     def test_terminal_point_polyline_and_aggregation_views(self):
         s=session([box(0,0,10,5),box(14,0,24,5)])
@@ -218,6 +218,94 @@ class PublicationViewTests(unittest.TestCase):
         figure=render_slices(self.snapshot,6,'2d',replace(options,slice_xy_numbers=True))
         self.assertTrue(any(t.get_text() for ax in figure.axes for t in ax.get_xticklabels()))
         figure.clear()
+
+
+class HistoryOutlineTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.session=session()
+        cls.session.apply(cls.session.preview('smoothing',[3]))
+        cls.session.apply(cls.session.preview('merging',[1,2],winner=1))
+        cls.proposal=cls.session.preview('smoothing',[1])
+        cls.states=(*cls.session.history,cls.proposal.state)
+        cls.snapshot=TransitionSnapshot.capture(cls.proposal.state,cls.session.history)
+
+    def test_saved_sections_and_shared_endpoint_deduplication(self):
+        options=ViewSettings(extent='history',scope='all')
+        outlines=visible_outlines(self.snapshot,options)
+        self.assertEqual({o.level for o in outlines},{5,15,25,35})
+        for state in self.states:
+            actual=PlaneSlicer.from_face_records((str(f.owner),f.points) for f in state.faces)
+            for owner,geometry in actual.sections(SlicePlane.horizontal(state.z),include_degenerate=True).items():
+                boundary=geometry.boundary if geometry.geom_type in ('Polygon','MultiPolygon') else geometry
+                matching=[o for o in outlines if o.level==state.z and o.owner==int(owner) and o.geometry.equals(boundary)]
+                self.assertEqual(len(matching),1)
+        interval=visible_outlines(self.snapshot,replace(options,extent='interval'))
+        self.assertEqual({o.level for o in interval},{25,35})
+        self.assertEqual(visible_outlines(self.snapshot,replace(options,outlines=False)),())
+
+    def test_hidden_features_ancestry_and_earlier_history(self):
+        options=ViewSettings(extent='history')
+        eligible=visible_owners(self.snapshot,options)
+        self.assertIn(2,eligible)  # Earlier merge loser remains a contributing owner.
+        self.assertNotIn(3,eligible)
+        outlines=visible_outlines(self.snapshot,options)
+        self.assertEqual({o.owner for o in outlines},eligible)
+        hidden=visible_outlines(self.snapshot,replace(options,hidden=(2,)))
+        self.assertNotIn(2,{o.owner for o in hidden})
+        earlier=TransitionSnapshot.capture(self.states[1],self.states[:1])
+        self.assertEqual({o.level for o in visible_outlines(earlier,replace(options,scope='all'))},{5,15})
+        aggregate=session([box(0,0,5,5),box(8,0,13,5)])
+        aggregate.apply(aggregate.preview('aggregation',[1,2]))
+        owner=max(aggregate.state.features)
+        next_step=aggregate.preview('smoothing',[owner])
+        snapshot=TransitionSnapshot.capture(next_step.state,aggregate.history)
+        self.assertEqual(set(snapshot.affected),{1,2,owner})
+        low=[o for o in visible_outlines(snapshot,options) if o.level==5]
+        self.assertEqual({o.owner for o in low},{1,2})
+
+    def test_cached_capture_and_rendering_are_read_only(self):
+        core=_core();history=tuple(self.session.history);cache={}
+        original=PlaneSlicer.from_face_records
+        with patch.object(PlaneSlicer,'from_face_records',wraps=original) as sections:
+            for i,state in enumerate(self.states[1:],1):
+                TransitionSnapshot.capture(state,self.states[:i],outline_cache=cache)
+            self.assertEqual(sections.call_count,4)  # One extraction per unique saved endpoint.
+        with patch.multiple(dhe,**{name:unittest.mock.Mock(side_effect=AssertionError('Visualization mutated DHE'))
+                                  for name in ('MEVVFS','MEV','MVE','MEF','Sew','SewComplex','JoinByFace')}):
+            snapshot=TransitionSnapshot.capture(self.states[-1],self.states[:-1])
+            options=ViewSettings(extent='history',scope='all',cut_caps=False,show_axes=False)
+            for linked in (False,True):
+                figure=render_transition(snapshot,options,with_section=linked)
+                levels={float(line.get_data_3d()[2][0]) for line in figure.axes[0].lines}
+                self.assertEqual(levels,{5,15,25,35});figure.clear()
+            figure=render_transition(snapshot,replace(options,outlines=False))
+            self.assertFalse(figure.axes[0].lines);figure.clear()
+        self.assertEqual(_core(),core);self.assertEqual(tuple(self.session.history),history)
+
+    def test_numbered_history_grid_and_export_metadata(self):
+        options=ViewSettings(extent='history',scope='all',slice_z_start=5,slice_z_end=35)
+        settings=PublicationSettings({'layout':{'width_in':5,'height_in':4},'export':{'dpi':100}})
+        for count in (6,9):
+            levels=resolve_slice_levels(self.snapshot,options,count)
+            figure=render_slices(self.snapshot,count,'3d',options,settings)
+            self.assertEqual([a.get_title() for a in figure.axes],[f'({i+1}) Z = {z:g}' for i,z in enumerate(levels)])
+            for axis in figure.axes:
+                drawn={float(line.get_data_3d()[2][0]) for line in axis.lines if line.get_linewidth()==1.8}
+                self.assertEqual(drawn,{5,15,25,35})
+            figure.clear()
+            individual=render_slices(self.snapshot,count,'2d',options,settings,levels=[35])
+            self.assertEqual(individual.axes[0].get_title(),f'({count}) Z = 35');individual.clear()
+        with tempfile.TemporaryDirectory(dir='artifacts') as output:
+            paths,record=export_transition(self.snapshot,output,options=options,settings=settings,count=9,kind='3d',content='slices')
+            self.assertEqual(record['outline_levels'],[5,15,25,35])
+            svg=next(p for p in paths if p.suffix=='.svg')
+            text=''.join(ET.parse(svg).getroot().itertext())
+            self.assertIn('(1) Z = 5',text);self.assertIn('(9) Z = 35',text)
+            metadata=json.loads(next(Path(output).glob('*.json')).read_text())
+            self.assertEqual(metadata['outline_levels'],record['outline_levels'])
+            _,disabled=export_transition(self.snapshot,Path(output)/'disabled',options=replace(options,outlines=False),settings=settings)
+            self.assertEqual(disabled['outline_levels'],[])
 
 
 @unittest.skipUnless(os.environ.get('DHE_GUI_TESTS')=='1','Set DHE_GUI_TESTS=1 for native Tk controls')
@@ -266,6 +354,11 @@ class TransitionViewerControlTests(unittest.TestCase):
             window.scope.set('All features');window._scope_changed();root.update()
             for presentation in ('2D slice grid','3D slice grid','3D figure','3D + live section'):
                 window.presentation.set(presentation);window.redraw();root.update()
+                if 'slice grid' in presentation:
+                    self.assertTrue(window.figure.axes[0].get_title().startswith('(1)'))
+                if presentation!='2D slice grid':
+                    levels={float(line.get_data_3d()[2][0]) for line in window.figure.axes[0].lines if line.get_linewidth()==1.8}
+                    self.assertEqual(levels,{5,15,25})
             self.assertEqual(_core(),core);self.assertEqual(s.cursor,1)
             window.figure.axes[0].set_xlim((0,25))
             self.assertEqual(window.options().axis_limits[0],(0,25))
