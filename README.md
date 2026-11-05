@@ -16,6 +16,10 @@ Desktop and web now support **Level operations** (several disjoint assignments
 within one ΔZ interval) and final-only **Automatic generalization** of selected
 polygons. Automatic runs preserve the original workspace on failure and retain
 successful intermediate levels in History. See [rules and methodology](AUTOMATIC_GENERALIZATION.md).
+Aggregation validates retained source cells and the actual upper cell, allowing valid
+point contacts without an artificial lower-prism rejection. Automatic retries attribute
+local failures, filter overlapping targets, and cache unchanged failed constructions
+across scales; failed reports retain the detailed shell evidence.
 
 ## DHE boundary symmetry
 

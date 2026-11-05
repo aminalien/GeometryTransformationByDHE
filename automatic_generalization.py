@@ -5,6 +5,7 @@ All DHE execution remains in the shared level/session engine.
 """
 from dataclasses import dataclass,asdict
 from copy import copy
+from collections import Counter
 from itertools import combinations
 from math import isfinite,atan2,pi
 
@@ -73,6 +74,26 @@ class AutomaticRun:
 class AutomaticRunError(ValueError):
     def __init__(self,message,report,classification='automatic_run_incomplete'):
         super().__init__(message);self.report=dict(classification=classification,message=message,automatic=report)
+
+
+def _action_key(action):
+    """Only parameters consumed by the construction, independent of scale costs."""
+    op=action['operation']
+    parameters=({'merging':('winner',),'simplification':('tolerance',),
+                 'smoothing':('iterations','ratio')}).get(op,())
+    return (op,tuple(sorted(action['selected'])),*(action.get(k) for k in parameters))
+
+
+def _compatible_candidates(candidates,blocked,failed_pairs):
+    chosen=[];used=set();keys=set()
+    for c in candidates:
+        key=_action_key(c.action)
+        if key in blocked or used.intersection(c.action['selected']):continue
+        if any(frozenset((key,k)) in failed_pairs for k in keys):continue
+        if c.target.geom_type=='Polygon' and any(other.target.geom_type=='Polygon'
+                and c.target.intersection(other.target).area>TOL*TOL for other in chosen):continue
+        chosen.append(c);used.update(c.action['selected']);keys.add(key)
+    return chosen
 
 
 def indicators(g):
@@ -203,6 +224,23 @@ def build_automatic_run(session,selected,settings=None,*,cancelled=lambda:False,
     base=session.state;saved=_core();fork=copy(session);fork.history=list(session.history[:session.cursor+1]);fork.last_diagnostic=None
     start=fork.cursor;scale=settings.scale;advances=0
     report=dict(settings=asdict(settings),selected=list(selected),lineage=sorted(family),steps=[],rejections=[],status='planning')
+    # The private step identity fixes all source geometry, historical cells and
+    # neighbours. Failures never escape that state, even if IDs are reused.
+    failed_levels={};failed_actions={};failed_pairs={}
+    report['cached_constructions_skipped']=0
+    def cache_skip(entry):
+        entry['cached_skips']=entry.get('cached_skips',0)+1;entry['last_scale']=scale
+        report['cached_constructions_skipped']+=1
+    def reject(chosen,exc):
+        diagnostic=dict(getattr(exc,'report',None) or dict(classification='level_construction_failure',message=str(exc)))
+        entry=dict(scale=scale,actions=[dict(c.action) for c in chosen],reason=str(exc),diagnostic=diagnostic)
+        report['rejections'].append(entry)
+        return entry
+    def failed_report(status):
+        report.update(status=status,last_scale=scale,constructed_private_levels=len(report['steps']))
+        counts=Counter((r.get('diagnostic',{}).get('classification','candidate_geometry'),r['reason'])
+                       for r in report['rejections'])
+        report['failure_summary']=[dict(classification=k[0],reason=k[1],count=n) for k,n in counts.most_common()]
     def check_cancel():
         if cancelled():raise AutomaticRunError('Automatic run cancelled; original workspace preserved.',report,'automatic_run_cancelled')
     def construct(chosen):
@@ -233,25 +271,48 @@ def build_automatic_run(session,selected,settings=None,*,cancelled=lambda:False,
                     if c.action is None:completed=True;break
                     try:construct([c]);completed=True;break
                     except AutomaticRunError:raise
-                    except ValueError as exc:report['rejections'].append(dict(scale=scale,actions=[c.action],reason=str(exc)))
+                    except ValueError as exc:reject([c],exc)
                 if not completed:raise AutomaticRunError('No feasible final representation satisfies the requested choice.',report)
                 break
             if fork.cursor-start>=settings.max_levels:raise AutomaticRunError('Maximum constructed levels reached before consolidation to one feature.',report)
             progress(f'Analyzing {len(focus)} selected-family polygons at scale 1:{scale:g}')
             candidates=generate_candidates(fork.state,focus,settings,scale,rejections=report['rejections'])
-            succeeded=False;blocked=set()
-            for attempt in range(settings.max_attempts):
-                chosen=[];used=set()
-                for i,c in enumerate(candidates):
-                    if i in blocked or used.intersection(c.action['selected']):continue
-                    chosen.append(c);used.update(c.action['selected'])
+            state_key=fork.state.step_id
+            local_failures=failed_actions.setdefault(state_key,{})
+            conflicts=failed_pairs.setdefault(state_key,set())
+            blocked=set(local_failures)
+            for c in candidates:
+                if _action_key(c.action) in local_failures:cache_skip(local_failures[_action_key(c.action)])
+            succeeded=False;batch_limit=None;attempt=0
+            while attempt<settings.max_attempts:
+                check_cancel()
+                chosen=_compatible_candidates(candidates,blocked,conflicts)
+                if batch_limit is not None:chosen=chosen[:batch_limit]
                 if not chosen:break
+                batch_key=(state_key,settings.dz,tuple(sorted(_action_key(c.action) for c in chosen)))
+                cached=failed_levels.get(batch_key)
+                if cached is not None:
+                    cache_skip(cached)
+                    if len(chosen)==1:blocked.add(_action_key(chosen[0].action));batch_limit=None
+                    else:batch_limit=max(1,len(chosen)//2)
+                    continue
+                attempt+=1
                 try:construct(chosen);succeeded=True;break
                 except AutomaticRunError:raise
                 except ValueError as exc:
-                    report['rejections'].append(dict(scale=scale,actions=[c.action for c in chosen],reason=str(exc)))
-                    # Remove one failed choice per retry, allowing disjoint alternatives.
-                    blocked.add(next(i for i,c in enumerate(candidates) if c is chosen[0]))
+                    entry=reject(chosen,exc);failed_levels[batch_key]=entry
+                    diagnostic=entry['diagnostic'];failed=diagnostic.get('failed_action')
+                    if diagnostic.get('failure_scope')=='action' and failed:
+                        key=_action_key(failed);local_failures[key]=entry;blocked.add(key);batch_limit=None
+                    elif len(diagnostic.get('conflicting_actions',()))==2:
+                        conflicts.add(frozenset(_action_key(a) for a in diagnostic['conflicting_actions']))
+                        batch_limit=None
+                    elif len(chosen)>1:
+                        # A joint shell failure is not proof that any one action
+                        # is invalid. Try progressively smaller ranked prefixes.
+                        batch_limit=max(1,len(chosen)//2)
+                    else:
+                        blocked.add(_action_key(chosen[0].action));batch_limit=None
             if succeeded and sum(bool(set(f.lineage)&family) for f in fork.state.features.values())==1:continue
             if advances>=settings.max_scale_advances:raise AutomaticRunError('Scale-advance limit reached before consolidation to one feature.',report)
             advances+=1;scale*=settings.scale_multiplier
@@ -264,8 +325,15 @@ def build_automatic_run(session,selected,settings=None,*,cancelled=lambda:False,
         report.update(status='complete',final_index=final[0].index,final_geometry=final[0].geometry.geom_type,
             final_scale=scale,remaining_cartographic_violation=violation(final[0].geometry,thresholds(settings,scale)))
         return AutomaticRun(base,tuple(fork.history[start+1:]),fork.model,fork.core,report)
-    except AutomaticRunError:raise
+    except AutomaticRunError as exc:
+        cancelled_run=exc.report['classification']=='automatic_run_cancelled'
+        failed_report('cancelled' if cancelled_run else 'failed')
+        if not cancelled_run and report['rejections']:
+            message=f"{exc} Last planning failure: {report['rejections'][-1]['reason']}"
+            exc.args=(message,);exc.report['message']=message
+        raise
     except Exception as exc:
+        failed_report('failed')
         raise AutomaticRunError(str(exc),report) from exc
     finally:_restore(saved)
 

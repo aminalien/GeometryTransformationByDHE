@@ -276,7 +276,13 @@ def _check_vertex_links(plans):
             raise ValueError("Aggregate source polygons meet at a non-manifold point pinch.")
 
 
-def _plan_shell(preview, bottom_z, source_z, merge_z, top_z):
+def _plan_upper_shell(preview, source_z, merge_z, top_z):
+    """Validate the real upper cell, whose bottom is at the source roofs.
+
+    Extruding the union below source_z creates an artificial nonmanifold
+    vertical edge when distinct retained sources touch at a point. Those
+    lower sources are separate cells; that union prism is never realized.
+    """
     validate_aggregation(preview)
     if any(p.interiors for p in preview.sources.values()):
         raise ValueError("Aggregate source footprints must have single-ring bottom faces.")
@@ -291,16 +297,8 @@ def _plan_shell(preview, bottom_z, source_z, merge_z, top_z):
         heights[point]=source_z if time==0 else merge_z if time==maximum_time else source_z+(merge_z-source_z)*time/maximum_time
     plans = []
     for key, source in preview.sources.items():
-        plans.append(_FacePlan([(*p, bottom_z) for p in nodes.ring(orient(source, -1).exterior)], "bottom_cap", key))
-    for polygon in polygon_parts(preview.union):
-        polygon = orient(polygon, 1)
-        for ring in [polygon.exterior, *polygon.interiors]:
-            coords = nodes.ring(ring)
-            for a, b in zip(coords, coords[1:]+coords[:1]):
-                edge = LineString([a, b])
-                owner = _boundary_owner(edge, preview)
-                plans.append(_FacePlan([(*a, bottom_z), (*b, bottom_z), (*b, source_z), (*a, source_z)], "base_wall", owner))
-    expected_volume = preview.union.area * (top_z-bottom_z)
+        plans.append(_FacePlan([(*p, source_z) for p in nodes.ring(orient(source, -1).exterior)], "bottom_cap", key))
+    expected_volume = preview.union.area * (top_z-source_z)
     for face in preview.growth_faces:
         for polygon in polygon_parts(face.geometry):
             polygon = Polygon(nodes.ring(polygon.exterior), [nodes.ring(r) for r in polygon.interiors])
@@ -318,7 +316,7 @@ def _plan_shell(preview, bottom_z, source_z, merge_z, top_z):
                       if partition.distance(midpoint) <= preview.tolerance), None)
         plans.append(_FacePlan([(*a, heights[a]), (*b, heights[b]), (*b, top_z), (*a, top_z)], "hull_wall", owner))
     plans.append(_FacePlan([(*p, top_z) for p in hull], "upper_cap", None))
-    _check_shell(plans,context=dict(case='aggregation',cell='aggregate',bottom_z=bottom_z,source_z=source_z,
+    _check_shell(plans,context=dict(case='aggregation',cell='aggregate',bottom_z=source_z,source_z=source_z,
                                   merge_z=merge_z,target_z=top_z,stage='growth_boundary'))
     _check_vertex_links(plans)
     from shell_conformity import check_face_intersections
@@ -328,12 +326,10 @@ def _plan_shell(preview, bottom_z, source_z, merge_z, top_z):
     return plans, maximum_time, expected_volume
 
 
-def _boundary_owner(edge, preview):
-    owners = [key for key, source in preview.sources.items()
-              if edge.difference(source.boundary.buffer(preview.tolerance)).length <= preview.tolerance]
-    if len(owners) != 1:
-        raise ValueError("Cannot assign an exposed aggregate wall to one source.")
-    return owners[0]
+def _plan_shell(preview, bottom_z, source_z, merge_z, top_z):
+    """Compatibility adapter: upper facets and total retained-cell volume."""
+    plans, maximum_time, upper_volume = _plan_upper_shell(preview,source_z,merge_z,top_z)
+    return plans, maximum_time, upper_volume+preview.union.area*(source_z-bottom_z)
 
 
 def plan_aggregation_cells(preview,bottom_z,source_z,merge_z,top_z):
@@ -350,8 +346,7 @@ def plan_aggregation_cells(preview,bottom_z,source_z,merge_z,top_z):
             part='source_roof' if f.part=='top' else 'bottom_cap' if f.part=='bottom' else 'base_wall'
             faces.append(f);metadata[owner,tuple(sorted(f.points))]=(part,key)
     for plan in plans:
-        if plan.part=='base_wall':continue
-        pts=[(x,y,source_z if plan.part=='bottom_cap' else z) for x,y,z in plan.points]
+        pts=plan.points
         part='source_interface' if plan.part=='bottom_cap' else plan.part
         f=Face(upper,pts,'bottom' if part=='source_interface' else 'top' if part=='upper_cap' else 'transition' if part=='connecting' else 'wall')
         faces.append(f);metadata[upper,tuple(sorted(pts))]=(part,plan.source_id)

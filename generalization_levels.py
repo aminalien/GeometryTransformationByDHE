@@ -2,6 +2,7 @@
 from math import isfinite
 from collections import defaultdict
 from itertools import combinations
+from contextlib import contextmanager
 
 from shapely.geometry import Polygon
 from shapely.ops import unary_union,linemerge
@@ -9,9 +10,21 @@ from shapely.ops import unary_union,linemerge
 from generalization_geometry import TOL,polygon_target,visible_point,skeleton_ridge
 from generalization_model import (Face,Patch,Feature,State,Proposal,OperationRecord,_core,_restore,
     _conform_footprints,_polygon_patches,_collapse_patches,_recipient,_lift_unchanged_isolated,_layer_faces,realize)
-from shell_conformity import arithmetic_bound
+from shell_conformity import arithmetic_bound,TransitionShellError
 
 OPERATIONS=('simplification','smoothing','point','polyline','merging','aggregation')
+
+
+@contextmanager
+def _planning_action(action,index):
+    """Attribute only local target/facet failures, not joint realization errors."""
+    try:yield
+    except ValueError as exc:
+        report=dict(getattr(exc,'report',dict(classification='level_planning_constraint',message=str(exc))))
+        report.update(failure_scope='action',failed_action=dict(action),action_index=index,
+                      phase='action_planning')
+        exc.report=report
+        raise
 
 
 def normalize_actions(actions,state):
@@ -73,45 +86,50 @@ def _mixed(session,actions,dz):
     next_id=max(k for s in session.history for k in s.features)+1
     for index,action in enumerate(actions,1):
         op=action['operation'];keys=action['selected'];local=[];winner=None
-        if op in ('merging','aggregation'):
-            if op=='merging':
-                winner=action['winner'];target=unary_union([sources[k] for k in keys])
-                if target.geom_type!='Polygon' or target.interiors:raise ValueError(f'Action {index}: merging needs an edge-connected, hole-free union.')
-                local,_=_polygon_patches(winner,sources[winner],target,lo,hi)
-            else:
-                from aggregation_geometry import build_aggregation_preview
-                from aggregation_layer import _plan_shell
-                winner=next_id;next_id+=1
-                preview=build_aggregation_preview({str(k):sources[k] for k in keys},tolerance=TOL)
-                plans,_,_=_plan_shell(preview,lo-1,lo,lo+.8*dz,hi)
-                local=[Patch(winner,p.points) for p in plans if p.part=='connecting'];target=preview.hull
-                remap.update({k:winner for k in keys})
-                diagnostics[f'action_{index}_skeleton_timing']=dict(preview.timing_diagnostics)
-            targets[winner]=target;groups[winner]=action
-        else:
-            for k in keys:
-                if op in ('simplification','smoothing'):
-                    target=polygon_target(state.features[k].geometry,op,action['tolerance'],action['iterations'],action['ratio'])
-                    ps,_=_polygon_patches(k,sources[k],target,lo,hi)
-                elif op=='point':
-                    target=visible_point(sources[k]);ps=_collapse_patches(k,sources[k],target,lo,hi)
+        with _planning_action(action,index):
+            if op in ('merging','aggregation'):
+                if op=='merging':
+                    winner=action['winner'];target=unary_union([sources[k] for k in keys])
+                    if target.geom_type!='Polygon' or target.interiors:raise ValueError(f'Action {index}: merging needs an edge-connected, hole-free union.')
+                    local,_=_polygon_patches(winner,sources[winner],target,lo,hi)
                 else:
-                    target,method=skeleton_ridge(sources[k]);notes.append(f'Feature {k}: {method}')
-                    ps=_collapse_patches(k,sources[k],target,lo,hi)
-                targets[k]=target;local.extend(ps)
+                    from aggregation_geometry import build_aggregation_preview
+                    from aggregation_layer import _plan_upper_shell
+                    winner=next_id;next_id+=1
+                    preview=build_aggregation_preview({str(k):sources[k] for k in keys},tolerance=TOL)
+                    plans,_,_=_plan_upper_shell(preview,lo,lo+.8*dz,hi)
+                    local=[Patch(winner,p.points) for p in plans if p.part=='connecting'];target=preview.hull
+                    remap.update({k:winner for k in keys})
+                    diagnostics[f'action_{index}_skeleton_timing']=dict(preview.timing_diagnostics)
+                targets[winner]=target;groups[winner]=action
+            else:
+                for k in keys:
+                    if op in ('simplification','smoothing'):
+                        target=polygon_target(state.features[k].geometry,op,action['tolerance'],action['iterations'],action['ratio'])
+                        ps,_=_polygon_patches(k,sources[k],target,lo,hi)
+                    elif op=='point':
+                        target=visible_point(sources[k]);ps=_collapse_patches(k,sources[k],target,lo,hi)
+                    else:
+                        target,method=skeleton_ridge(sources[k]);notes.append(f'Feature {k}: {method}')
+                        ps=_collapse_patches(k,sources[k],target,lo,hi)
+                    targets[k]=target;local.extend(ps)
         action_patches.append(local);patches.extend(local);winners.append(winner)
     explicit={k:g for k,g in targets.items() if g.geom_type=='Polygon'}
+    owners={k:a for a,w in zip(actions,winners) for k in ([w] if w is not None else a['selected'])}
     for (a,g),(b,h) in combinations(explicit.items(),2):
-        if g.intersection(h).area>TOL*TOL:raise ValueError(f'Level targets {a} and {b} overlap; edit the assigned actions.')
+        if g.intersection(h).area>TOL*TOL:
+            raise TransitionShellError(f'Level targets {a} and {b} overlap; edit the assigned actions.',
+                'level_target_overlap',stage='joint_targets',conflicting_actions=[owners[a],owners[b]],targets=[a,b])
     # Independent operations must not assign different height fields to the
     # same positive-area transition region. Boundary contacts are conformed by
     # the existing interval builder.
-    for left,right in combinations(action_patches,2):
+    for (i,left),(j,right) in combinations(enumerate(action_patches),2):
         for a in left:
             for b in right:
                 overlap=a.geometry.intersection(b.geometry)
                 if overlap.area>TOL*TOL:
-                    raise ValueError('Transition regions of separate actions overlap. Use separate levels or change their parameters.')
+                    raise TransitionShellError('Transition regions of separate actions overlap. Use separate levels or change their parameters.',
+                        'level_transition_overlap',stage='joint_transitions',conflicting_actions=[actions[i],actions[j]])
     occupied=unary_union(list(explicit.values()))
     new={k:g.difference(occupied) for k,g in sources.items() if k not in selected}
     gains=defaultdict(list)

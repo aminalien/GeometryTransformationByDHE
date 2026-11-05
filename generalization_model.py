@@ -836,10 +836,10 @@ class GeneralizationSession:
             else:
                 aggregate=max([*state.features,*[f for s in self.history for f in s.features]])+1
                 from aggregation_geometry import build_aggregation_preview
-                from aggregation_layer import _plan_shell
+                from aggregation_layer import _plan_upper_shell
                 preview=build_aggregation_preview({str(k):sources[k] for k in selected},tolerance=TOL)
                 aggregation_merge_z=lo+.8*dz
-                plans,_,_=_plan_shell(preview,lo-1,lo,aggregation_merge_z,hi)
+                plans,_,_=_plan_upper_shell(preview,lo,aggregation_merge_z,hi)
                 planning_diagnostics['skeleton_timing']=dict(preview.timing_diagnostics)
                 patches=[Patch(aggregate,p.points) for p in plans if p.part == "connecting"]
                 target=preview.hull

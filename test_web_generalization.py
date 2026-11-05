@@ -298,6 +298,22 @@ class WebApiTests(unittest.TestCase):
         finally:release.set()
         self.assertEqual(self.workspace.revision,revision);self.assertIs(self.workspace.session.state,base)
 
+    def test_automatic_failure_keeps_shell_evidence_and_revision(self):
+        from shell_conformity import TransitionShellError
+        self.load([box(0,0,2,2),box(2,0,4,2)])
+        w=self.workspace;base=w.session.state;scene=w.scene;revision=w.revision
+        failure=TransitionShellError('Known shell failure','nonmanifold_edge_incidence',
+            stage='realization',cell='1',edges=[dict(incidence=4)])
+        with patch.object(GeneralizationSession,'preview_level',side_effect=failure) as preview:
+            result=self.job('/api/automatic',dict(selected=[1,2],settings=dict(max_scale_advances=2)))
+        self.assertEqual(result['status'],'failed');self.assertEqual(preview.call_count,1)
+        report=result['diagnostic']['automatic']
+        self.assertEqual(report['status'],'failed');self.assertEqual(report['cached_constructions_skipped'],2)
+        evidence=report['rejections'][0]['diagnostic']
+        self.assertEqual(evidence['stage'],'realization');self.assertEqual(evidence['cell'],'1')
+        self.assertEqual(evidence['edges'],[dict(incidence=4)])
+        self.assertIs(w.session.state,base);self.assertIs(w.scene,scene);self.assertEqual(w.revision,revision)
+
     def test_preview_apply_cache_undo_failed_load_and_stale_requests(self):
         self.load();w=self.workspace;source=w.session.state
         params=dict(operation='smoothing',selected=[1],dz=10,tolerance=1,iterations=1,ratio=.25,winner=None)
