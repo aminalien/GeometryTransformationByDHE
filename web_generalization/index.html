@@ -31,6 +31,11 @@
     <div id="operation-help" class="hint operation-help"></div>
     <div class="operation-actions"><button id="preview">Preview</button><button id="apply" class="primary">Apply & top up ↗</button></div>
     <button id="discard-preview" class="text-button" hidden>Discard preview</button>
+    <details class="workflow"><summary>Level operations · one ΔZ</summary><p class="hint">Add independent selections. Preview / Apply uses the table when nonempty.</p>
+      <select id="level-actions" size="4" aria-label="Level operations"></select>
+      <div class="level-tools"><button id="level-add">Add selection</button><button id="level-update">Update action</button><button id="level-remove">Remove</button><button id="level-clear">Clear level</button></div>
+    </details>
+    <div class="operation-actions"><button id="open-automatic">Automatic…</button><button id="open-run-summary">Run summary</button></div>
     <div class="section-title"><span>03 / HISTORY</span><button id="undo" class="text-button">↶ Undo</button></div>
     <select id="history" aria-label="History step"></select>
     <p class="hint">Operations use the current top. Slicing is a view of the constructed space.</p>
@@ -93,6 +98,18 @@
   <p id="import-message" class="hint"></p>
 </dialog>
 <dialog id="custom-dialog"><form method="dialog"><div class="dialog-heading"><h2>Custom background</h2><button class="icon-button" aria-label="Close">×</button></div></form><label>XYZ tile URL<input id="custom-url" placeholder="https://…/{z}/{x}/{y}.png"></label><label>Attribution<input id="custom-credit" placeholder="Provider / copyright"></label><button id="custom-apply" class="primary">Use layer</button><p class="hint">A Web Mercator XYZ service with browser access enabled.</p></dialog>
+<dialog id="automatic-dialog"><form method="dialog"><div class="dialog-heading"><h2>Automatic generalization</h2><button class="icon-button" aria-label="Close">×</button></div></form>
+  <p class="hint">Selected polygons become one feature. All levels are constructed privately, then the final result is displayed. Failure or cancellation preserves the original map.</p>
+  <label>Starting scale 1:M<input id="auto-scale" type="number" value="10000" min="1"></label>
+  <div class="form-grid"><label>Scale multiplier<input id="auto-multiplier" type="number" value="2" min="1.01" step=".1"></label><label>Top-up ΔZ<input id="auto-dz" type="number" value="10" min=".000001"></label></div>
+  <label>Final representation<select id="auto-kind"><option value="automatic">Automatic</option><option value="polygon">Polygon</option><option value="point">Point</option><option value="polyline">Polyline</option></select></label>
+  <label>Optional class constraint<select id="auto-class"><option value="">Geometry / topology only</option></select></label>
+  <label>Maximum constructed levels<input id="auto-max-levels" type="number" value="20" min="1" max="100"></label>
+  <details><summary>Advanced rules</summary><div id="auto-advanced"></div></details>
+  <button id="run-automatic" class="primary">Run all levels · show final result</button>
+</dialog>
+<dialog id="run-summary-dialog"><form method="dialog"><div class="dialog-heading"><h2>Automatic run summary</h2><button class="icon-button" aria-label="Close">×</button></div></form><pre id="run-summary-text"></pre><button id="save-run-summary">Save decision summary JSON</button></dialog>
+<button id="cancel-automatic" class="automatic-cancel" hidden>Cancel automatic run</button>
 <div id="busy-overlay" class="busy-overlay" hidden><span class="spinner"></span><span id="busy-label">Constructing DHE…</span></div>
 <script type="module">
   import('/assets/app.js').catch(error=>{

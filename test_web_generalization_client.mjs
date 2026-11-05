@@ -63,10 +63,12 @@ class FakeMap{
 class Marker{setLngLat(){return this;}addTo(){return this;}remove(){}}
 class Overlay{constructor(props){this.props=props;overlays.push(this);}setProps(props){this.props={...this.props,...props};}}
 class Layer{constructor(props){this.props=props;this.id=props.id;}}
-const realFetch=globalThis.fetch;let submitted,activeSlices=0,maxActiveSlices=0,slowSlices=false;
+const realFetch=globalThis.fetch;let submitted,automaticSubmitted,activeSlices=0,maxActiveSlices=0,slowSlices=false;
 async function fetchLocal(path,options){
   if(path==='/api/apply'){submitted=JSON.parse(options.body);return {ok:true,json:async()=>({job_id:'failure-test'})};}
   if(path==='/api/jobs/failure-test')return {ok:true,json:async()=>({status:'failed',error:'Test construction rejection'})};
+  if(path==='/api/automatic'){automaticSubmitted=JSON.parse(options.body);return {ok:true,json:async()=>({job_id:'automatic-failure'})};}
+  if(path==='/api/jobs/automatic-failure')return {ok:true,json:async()=>({status:'failed',error:'Test atomic automatic rejection'})};
   if(path==='/api/scene'&&process.env.DHE_WEB_STRESS_INSPECTOR==='1'){
     // Synthetic menu stress only: repeat actual topology records in the mock client.
     // This does not alter server geometry or constitute a DHE validity test.
@@ -154,4 +156,18 @@ el('operation').value='smoothing';await el('operation').emit('change');await el(
 assert.equal(submitted.operation,'smoothing');assert.deepEqual(submitted.selected,[1]);assert.equal(submitted.revision,revision);
 assert.ok(el('status').textContent.includes('Test construction rejection'));assert.equal(context.window.dheAtlas.revision,revision);assert.equal(el('apply').disabled,false);
 assert.equal((await (await realFetch(origin+'/api/state')).json()).revision,revision);
-console.log('Client integration passed: boot, real sections, 3D/flat modes, primal/dual, sizing, exaggeration, step, vertical/inclined projection, background changes, selection/box drawing, OSM BBOX workflow, and failed-operation preservation.');
+el('operation').value='point';await el('operation').emit('change');await el('level-add').emit('click');
+assert.equal(el('level-actions').children.length,1);
+await el('level-add').emit('click');assert.ok(el('status').textContent.includes('Already assigned'));
+el('indices').value='3';await el('select-indices').emit('click');el('operation').value='smoothing';await el('operation').emit('change');
+await el('level-add').emit('click');assert.equal(el('level-actions').children.length,2);
+assert.equal(el('preview').textContent,'Preview level');await el('preview').emit('click');
+await waitFor(()=>el('busy-overlay').hidden&&el('scene-title').textContent==='Validated preview','Mixed-level preview');
+assert.equal(context.window.dheAtlas.revision,revision);
+await el('discard-preview').emit('click');await el('level-clear').emit('click');assert.equal(el('level-actions').children.length,0);
+await el('open-automatic').emit('click');assert.ok(el('automatic-dialog').open);
+el('auto-kind').value='polygon';await el('run-automatic').emit('click');
+assert.equal(automaticSubmitted.settings.final_kind,'polygon');assert.deepEqual(automaticSubmitted.selected,[3]);
+assert.ok(el('status').textContent.includes('atomic automatic rejection'));assert.equal(context.window.dheAtlas.revision,revision);
+assert.equal(el('cancel-automatic').hidden,true);
+console.log('Client integration passed: map/section controls, primal/dual sizing, selection and OSM drawing, level queue/duplicate guards, real mixed-level preview, automatic request settings, and atomic failure preservation.');

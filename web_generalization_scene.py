@@ -116,7 +116,8 @@ class WebScene:
             faces=faces,triangles=triangles,edges=list(segments.values()),halfedges=halfedges,vertices=list(vertices.values()),
             duals=list(duals.values()),dual_edges=links,cells=len(model.cells),
             cursor=session.cursor,history=[dict(index=i,label=s.description,step_id=s.step_id,z=s.z) for i,s in enumerate(session.history)],
-            operation=json_value(asdict(state.operation)) if state.operation else None)
+            operation=json_value(asdict(state.operation)) if state.operation else None,
+            automatic_report=json_value(getattr(session,'last_automatic_report',None)))
 
     def section(self,orientation,value,tilt=45.,azimuth=0.,*,include_sections=True,clamp_position=False):
         if orientation=='Horizontal':plane=SlicePlane.horizontal(value)

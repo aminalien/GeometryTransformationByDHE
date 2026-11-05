@@ -17,6 +17,7 @@ from shapely.ops import unary_union
 
 from plane_slicing import PlaneSlicer,SlicePlane
 from shell_conformity import check_oriented_shell,check_interface_pairs
+from generalization_model import operation_actions
 
 
 def parts(g):
@@ -157,6 +158,7 @@ def _case_descriptor(operation,source,target):
         p=list(source.minimum_rotated_rectangle.exterior.coords)
         return 'Relative line length (%)',100*target.length/max(Point(a).distance(Point(b)) for a,b in zip(p,p[1:]))
     if operation=='merging':return 'Union preservation error (%)',100*source.symmetric_difference(target).area/source.area
+    if operation!='aggregation':return 'N/A','No case descriptor is defined for this level.'
     hull=source.convex_hull
     return 'Target hull deviation (%)',100*hull.symmetric_difference(target).area/hull.area
 
@@ -177,7 +179,14 @@ def evaluate_history(history,end_index,mode,live_model,dataset,session_id,*,rela
         first=0;steps=range(1,len(states))
     else:
         op=states[-1].operation;first=len(states)-2;steps=[len(states)-1]
-        if op.name in ('merging','aggregation'):
+        if op.name=='batch':
+            scopes={}
+            for index,action in enumerate(operation_actions(op),1):
+                if action.name in ('merging','aggregation'):
+                    scopes[f'Action {index}: {action.name} group']=(set(action.selected)|{action.winner},True)
+                else:
+                    scopes.update({f'Action {index}: {action.name} feature {k}':({k},False) for k in action.selected})
+        elif op.name in ('merging','aggregation'):
             scopes={'Selected group':(set(op.selected)|{op.winner},True)}
             if op.name=='merging':scopes[f'Winner {op.winner}']=({op.winner},False)
         else:scopes={f'Feature {k}':({k},False) for k in op.selected}
@@ -197,6 +206,7 @@ def evaluate_history(history,end_index,mode,live_model,dataset,session_id,*,rela
                 reference_z=states[first].z,**_comparison(gs,baselines[scope],references[scope],totals))
             if mode=='last_operation' and i==len(states)-1 and scope!='Affected context' and not scope.startswith('Winner'):
                 op=s.operation
+                if op.name=='batch':op=operation_actions(op)[int(scope.split(':',1)[0].split()[1])-1]
                 try:label,value=_case_descriptor(op.name,unary_union(baselines[scope]),unary_union(gs))
                 except (ValueError,AttributeError,ZeroDivisionError):label,value='N/A','Descriptor is undefined for actual geometry.'
                 row.update(operation_descriptor=label,descriptor_value=None if label=='N/A' else value,
@@ -244,6 +254,7 @@ def analysis_report(record):
         f"Dataset: {record['dataset']['source']}. Fingerprint: {record['dataset']['fingerprint']}.",
         '', '## Applied operations and parameters',
         *[f"- Step {o['step']} ({o['step_id']}): {o['name']}; selected={o['selected']}; affected={o['affected']}; winner={o['winner']}; parameters={o['parameters']}; Zs={o['z_s']}, Zt={o['z_t']}, Zm={o['z_m']}." for o in record['operations']],
+        *[f"- Step {o['step']}, action {i}: {a['name']}; selected={a['selected']}; winner={a['winner']}; parameters={a['parameters']}." for o in record['operations'] if o['name']=='batch' for i,a in enumerate(o.get('actions',()),1)],
         '', '## Definitions and comparison inputs',
         *[f"- {scope}: family cell IDs={definition['cell_ids']}; initial lineage={definition['initial_lineage']}; reference Z={definition['reference_z']}; D={definition['reference_diagonal_m']} m." for scope,definition in record.get('scope_definitions',{}).items()],
         'Every geometry is an actual horizontal section of realized DHE faces. No geometry or measurement is interpolated between section levels. Each operation has 11 levels, z(t)=zs+t(zt-zs), t=0,0.1,...,1. Source-interface ownership is taken from below.',

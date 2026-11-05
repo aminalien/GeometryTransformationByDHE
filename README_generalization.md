@@ -26,6 +26,12 @@ Use the mouse wheel over the **current top map** for cursor-centred zoom, or **Z
 
 ## Generalization operations
 
+**Level operations** lets you add several operations to the same ΔZ interval: for example simplify one selection and merge another. Use Add/Edit/Remove/Clear; a source feature can belong to only one row. Preview/Apply uses the table when nonempty and the existing editor when empty. A complete level is validated and applied together. Overlapping targets or incompatible transition regions reject the level without a partial commit.
+
+**Automatic settings / Run…** consolidates selected polygons into one current feature. It measures geometry/topology, progressively coarsens the scale, selects disjoint operations, and builds all levels privately. Only the final successful result replaces the map; intermediate levels remain in History. Choose an automatic/polygon/point/polyline final representation, optional class field, and advanced thresholds/limits. Cancel or any incomplete run preserves the original workspace. **Run summary…** explains the decisions and can save JSON. Manual quantitative evaluation remains separate.
+
+See [mixed-level and automatic methodology](AUTOMATIC_GENERALIZATION.md) for formulas, defaults, interfaces, and limitations. Restart the application to load these controls.
+
 All operations start from the **actual current DHE top section**. Planning preserves unrounded coordinates and removes only arithmetic-equivalent collinear nodes. Source boundaries are conformed wherever neighbours start or stop along an edge. Shared identities are not created by globally rounding coordinates or increasing a modelling tolerance.
 
 | Operation | Behaviour |

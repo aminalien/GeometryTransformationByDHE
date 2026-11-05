@@ -10,7 +10,8 @@ const state={scene:null,preview:null,section:null,revision:0,selected:new Set(),
   sliceSerial:0,sliceTimer:null,mapReady:false,miniReady:false,mode:null,drag:null,drawBounds:null,
   camera:null,modeCamera:null,config:null,upload:null,markers:[],custom:null,background:'osm',fitOnNext:true,
   sliceInFlight:false,sliceQueued:false,inputPreview:null,inputPreviewJob:null,miniFitPending:false,
-  topologyScene:null,edgeMap:new Map(),faceMap:new Map(),edgesByCell:new Map(),fallback:new Set(),mapWarnings:new Map()};
+  topologyScene:null,edgeMap:new Map(),faceMap:new Map(),edgesByCell:new Map(),fallback:new Set(),mapWarnings:new Map(),
+  levelActions:[],levelStep:null,jobId:null,automaticReport:null,autoInputs:{}};
 // Shared unit sphere: only the instance centres/colours/scales vary between cells.
 function unitSphere(){
   const positions=[],normals=[],indices=[],rows=16,cols=24;
@@ -88,7 +89,7 @@ async function api(path,body){
 }
 function setBusy(busy,label='Constructing DHE…'){
   state.busy=busy;$('busy-overlay').hidden=!busy;$('busy-label').textContent=label;
-  for(const id of ['apply','preview','undo','load-default','load-upload','draw-bbox','open-import','history'])$(id).disabled=busy;
+  for(const id of ['apply','preview','undo','load-default','load-upload','draw-bbox','open-import','history','level-add','level-update','level-remove','level-clear','level-actions','open-automatic','run-automatic'])$(id).disabled=busy;
   for(const id of ['operation','dz','tolerance','iterations','ratio','winner','initial-height'])$(id).disabled=busy;
 }
 async function waitJob(id){
@@ -115,6 +116,7 @@ async function runJob(path,parameters,label){
   setBusy(true,label);status(label);
   try{
     const {job_id}=await api(path,{revision:state.revision,...parameters});
+    state.jobId=job_id;$('cancel-automatic').hidden=path!=='/api/automatic';
     const result=await waitJob(job_id);
     if(result.preview_id){
       state.preview=await api('/api/scene?preview_id='+encodeURIComponent(result.preview_id));
@@ -123,10 +125,11 @@ async function runJob(path,parameters,label){
     }else{
       if(['/api/load-default','/api/load-upload','/api/osm'].includes(path)){state.selected.clear();state.fitOnNext=true;}
       state.preview=null;await refreshScene(true);status('Ready · '+(state.scene.operation?state.scene.operation.name.replaceAll('_',' '):'initial DHE extrusion'));
+      if(result.automatic_report){state.automaticReport=result.automatic_report;state.selected=new Set([result.automatic_report.final_index]);updateFeatureList();updateMini();render();showRunSummary();}
     }
     return result;
   }catch(error){if(state.inputPreview&&state.scene)fitData();status(error.message,true);$('import-message').textContent=error.message;throw error;}
-  finally{state.inputPreview=null;state.inputPreviewJob=null;setBusy(false);render();}
+  finally{state.inputPreview=null;state.inputPreviewJob=null;state.jobId=null;$('cancel-automatic').hidden=true;setBusy(false);render();}
 }
 function guard(action){return (...args)=>Promise.resolve().then(()=>action(...args)).catch(error=>{status(error.message,true);if($('import-dialog').open)$('import-message').textContent=error.message;});}
 
@@ -135,6 +138,9 @@ async function refreshScene(reset=false){
   if(!response.ok)throw new Error('Could not refresh the scene.');
   const scene=await response.json();const changed=!state.scene||state.scene.history[0]?.step_id!==scene.history[0]?.step_id||state.fitOnNext;
   state.scene=scene;state.preview=null;state.revision=scene.revision;
+  if(state.levelStep&&state.levelStep!==scene.history[scene.cursor].step_id){state.levelActions=[];state.levelStep=null;updateLevelTable();}
+  if(changed)state.automaticReport=null;
+  if(scene.automatic_report)state.automaticReport=scene.automatic_report;
   const active=new Set(scene.features.features.map(f=>f.properties.index));state.selected=new Set([...state.selected].filter(k=>active.has(k)));
   state.edge=null;$('discard-preview').hidden=true;
   $('dataset-name').textContent=scene.dataset;$('scene-subtitle').textContent=`${scene.cells} cells · transition Z ${scene.levels.z_b}–${scene.levels.z_t}`;
@@ -187,6 +193,49 @@ function operationParams(){
 }
 function operationFields(){
   const op=$('operation').value;$('smoothing-fields').hidden=op!=='smoothing';$('tolerance-field').hidden=op!=='simplification';$('winner-field').hidden=op!=='merging';$('operation-help').textContent=help[op];
+}
+
+function updateLevelTable(){
+  $('level-actions').replaceChildren(...state.levelActions.map((a,i)=>new Option(`${i+1}. ${a.operation}: ${a.selected.join(', ')}${a.winner?' → '+a.winner:''}`,i)));
+  $('preview').textContent=state.levelActions.length?'Preview level':'Preview';$('apply').textContent=state.levelActions.length?'Apply level':'Apply & top up ↗';
+}
+function editLevelAction(){
+  const a=state.levelActions[Number($('level-actions').value)];if(!a||state.busy)return;
+  discardPreview();$('operation').value=a.operation;operationFields();state.selected=new Set(a.selected);updateFeatureList();updateMini();render();
+  for(const key of ['tolerance','iterations','ratio'])$(key).value=a[key];if(a.winner!==null)$('winner').value=String(a.winner);
+}
+function storeLevelAction(edit=false){
+  if(state.busy)return;
+  const {dz,...action}=operationParams();const actions=state.levelActions.map(a=>({...a}));
+  const index=edit?Number($('level-actions').value):actions.length;
+  if(edit&&!actions[index])throw new Error('Choose a level action to update.');
+  const assigned=new Set(actions.flatMap((a,i)=>i===index?[]:a.selected));
+  const duplicate=action.selected.filter(k=>assigned.has(k));if(duplicate.length)throw new Error('Already assigned in this level: '+duplicate.join(', '));
+  actions[index]=action;state.levelActions=actions;state.levelStep=state.scene.history[state.scene.cursor].step_id;discardPreview();updateLevelTable();
+}
+function levelJob(preview){
+  return state.levelActions.length?runJob('/api/'+(preview?'preview-level':'apply-level'),{actions:state.levelActions,dz:number('dz')},'Constructing the joint level…'):
+    runJob('/api/'+(preview?'preview':'apply'),operationParams(),'Constructing the next DHE level…');
+}
+function automaticFields(){
+  const basic=new Set(['scale','scale_multiplier','dz','final_kind','class_field','max_levels']);
+  for(const [key,value] of Object.entries(state.config.automatic_defaults||{})){
+    if(basic.has(key))continue;
+    const label=document.createElement('label');label.textContent=key.replaceAll('_',' ');
+    const input=document.createElement('input');input.type='number';input.value=String(value);input.min='0';input.step=key.startsWith('max_')?'1':'any';
+    label.append(input);$('auto-advanced').append(label);state.autoInputs[key]=input;
+  }
+}
+function showRunSummary(){
+  const r=state.automaticReport;if(!r){status('No completed automatic run.');return;}
+  const lines=[`Final feature ${r.final_index} · ${r.final_geometry} · scale 1:${r.final_scale}`];
+  for(const [i,s] of r.steps.entries()){
+    lines.push(`\nLevel ${i+1}: Z ${s.z_s}–${s.z_t} · 1:${s.scale}`);
+    for(const a of s.actions)lines.push(`  ${a.operation} ${a.selected.join(', ')} · score ${a.score.toPrecision(4)} · ${a.reason}`);
+    lines.push('  Affected context: '+s.affected.join(', '));
+  }
+  lines.push(`\nRejected candidate sets: ${r.rejections.length}\nResidual cartographic violation: ${r.remaining_cartographic_violation}`);
+  $('run-summary-text').textContent=lines.join('\n');$('run-summary-dialog').showModal();
 }
 
 function addMiniLayers(){
@@ -447,8 +496,27 @@ for(const button of document.querySelectorAll('[data-tab]'))button.onclick=()=>{
 };
 $('operation').onchange=()=>{discardPreview();operationFields();};
 for(const id of ['dz','tolerance','iterations','ratio','winner'])$(id).addEventListener('input',discardPreview);
-$('preview').onclick=guard(()=>runJob('/api/preview',operationParams(),'Planning and validating preview…'));
-$('apply').onclick=guard(()=>runJob('/api/apply',operationParams(),'Constructing the next DHE level…'));
+$('preview').onclick=guard(()=>levelJob(true));
+$('apply').onclick=guard(()=>levelJob(false));
+$('level-add').onclick=guard(()=>storeLevelAction());$('level-update').onclick=guard(()=>storeLevelAction(true));
+$('level-actions').onchange=editLevelAction;
+$('level-remove').onclick=()=>{if(state.busy)return;state.levelActions.splice(Number($('level-actions').value),1);discardPreview();updateLevelTable();};
+$('level-clear').onclick=()=>{if(state.busy)return;state.levelActions=[];state.levelStep=null;discardPreview();updateLevelTable();};
+$('open-automatic').onclick=guard(()=>{
+  if(!state.selected.size)throw new Error('Select current polygons first.');
+  const previous=$('auto-class').value;const fields=[...new Set((state.scene?.features.features||[]).flatMap(f=>Object.keys(f.properties.attributes)))].sort();
+  $('auto-class').replaceChildren(new Option('Geometry / topology only',''),...fields.map(k=>new Option(k,k)));if(fields.includes(previous))$('auto-class').value=previous;
+  $('automatic-dialog').showModal();
+});
+$('run-automatic').onclick=guard(async()=>{
+  const settings={scale:number('auto-scale'),scale_multiplier:number('auto-multiplier'),dz:number('auto-dz'),
+    final_kind:$('auto-kind').value,class_field:$('auto-class').value,max_levels:number('auto-max-levels')};
+  for(const [key,input] of Object.entries(state.autoInputs)){const value=Number(input.value);if(!Number.isFinite(value)||value<0||(!key.endsWith('_weight')&&value===0))throw new Error('Enter a valid '+key);settings[key]=value;}
+  $('automatic-dialog').close();discardPreview();await runJob('/api/automatic',{selected:[...state.selected],settings},'Building automatic levels privately…');
+});
+$('cancel-automatic').onclick=guard(async()=>{if(!state.jobId)return;const result=await api('/api/jobs/'+state.jobId+'/cancel',{});status(result.message||'Cancellation requested; waiting for the current construction stage to finish.');});
+$('open-run-summary').onclick=showRunSummary;
+$('save-run-summary').onclick=()=>{if(!state.automaticReport)return;const url=URL.createObjectURL(new Blob([JSON.stringify(state.automaticReport,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='automatic-generalization-decisions.json';a.click();URL.revokeObjectURL(url);};
 $('discard-preview').onclick=discardPreview;
 $('clear-selection').onclick=()=>{if(state.busy)return;discardPreview();state.selected.clear();updateFeatureList();updateMini();render();};
 $('select-all').onclick=()=>{if(state.busy)return;discardPreview();state.selected=new Set((state.scene?.features.features||[]).filter(f=>f.properties.kind==='Polygon').map(f=>f.properties.index));updateFeatureList();updateMini();render();};
@@ -543,6 +611,7 @@ $('load-upload').onclick=guard(async()=>{
 operationFields();
 async function boot(){
   state.config=await api('/api/config');$('default-path').textContent=state.config.default_dataset;$('initial-height').value=state.config.initial_height;
+  automaticFields();
   for(const value of ['google-roadmap','google-satellite']){
     const option=$('basemap').querySelector(`option[value="${value}"]`);option.disabled=!state.config.google_available;
     if(option.disabled)option.textContent+=' (API key required)';

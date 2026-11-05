@@ -164,6 +164,13 @@ class OperationRecord:
     parameters: dict = field(default_factory=dict)
     diagnostics: dict = field(default_factory=dict)
     z_m: float | None = None
+    actions: tuple[dict, ...] = ()
+
+
+def operation_actions(record):
+    """Read legacy single operations and mixed-level records uniformly."""
+    if record is None:return ()
+    return tuple(SimpleNamespace(**a) for a in record.actions) if record.actions else (record,)
 
 
 @dataclass
@@ -779,8 +786,16 @@ class GeneralizationSession:
     def state(self):
         return self.history[self.cursor]
 
-    @diagnosed_transition
     def preview(self, operation, selected, *, dz=10., tolerance=1., iterations=1, ratio=.25, winner=None):
+        return self.preview_level([dict(operation=operation,selected=list(selected),winner=winner,
+            tolerance=tolerance,iterations=iterations,ratio=ratio)],dz=dz)
+
+    def preview_level(self, actions, *, dz=10.):
+        from generalization_levels import preview_level
+        return preview_level(self,actions,dz=dz)
+
+    @diagnosed_transition
+    def _preview_single(self, operation, selected, *, dz=10., tolerance=1., iterations=1, ratio=.25, winner=None):
         selected=tuple(sorted(set(map(int,selected))))
         state=self.state
         if not selected:

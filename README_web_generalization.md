@@ -39,6 +39,10 @@ Network failures try the Private.coffee public Overpass instance after the defau
 
 ## Generalize and inspect
 
+The **Level operations · one ΔZ** table supports independent operations in one source–target interval. Add each selection with its parameters, edit/remove rows, then Preview/Apply the complete level. Duplicate source assignments are rejected by the client and server. Emptying the table restores the existing single-operation behavior.
+
+**Automatic…** builds a complete selected-family consolidation in one background job and displays only its final result. Starting scale defaults to 1:10,000, with editable scale multiplier, ΔZ, final geometry, optional class constraint, thresholds and limits. The selected family becomes one logical feature; its historical DHE cells remain. Neighbours can receive normal geometry updates. Cancel, validation failure, or an unfinished run keeps the original scene and revision. Successful runs publish once and expose every new level in History. **Run summary** explains selected actions and provides a JSON download. See [selection rules and methodology](AUTOMATIC_GENERALIZATION.md).
+
 Select current polygons using the feature list, indices such as `1, 3-6`, or the **Current top** map. Click selects one; Shift-click adds/removes features. List checkboxes toggle individual features. **Box select** expands the current-top map for rectangle selection. The selection map always shows the active top representation, even while the main view slices earlier levels.
 
 Choose Simplification, Smoothing, Collapse to point, Collapse to polyline, Merging, or Aggregation. Tolerance, smoothing iterations/ratio, merge winner, and top-up ΔZ use the existing engine. Initial height defaults to **5**, and each operation adds **10** transition units unless changed. Preview constructs and validates a temporary model; Apply commits the matching preview or computes a new one. Changing the selection/parameters discards the displayed preview. Undo and History restore earlier states; applying there replaces the later branch.

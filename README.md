@@ -12,6 +12,11 @@ selection, and a prepared-footprint preview during construction. Slice features 
 plane have independent visibility controls; dual vertices can use shaded 3D spheres or dots.
 Install `requirements-web.txt` first. See [web setup and usage](README_web_generalization.md).
 
+Desktop and web now support **Level operations** (several disjoint assignments
+within one ΔZ interval) and final-only **Automatic generalization** of selected
+polygons. Automatic runs preserve the original workspace on failure and retain
+successful intermediate levels in History. See [rules and methodology](AUTOMATIC_GENERALIZATION.md).
+
 ## DHE boundary symmetry
 
 Within-cell boundary assembly uses `DHECore.SewComplex(a, b.S)` to sew both the

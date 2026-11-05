@@ -40,7 +40,7 @@ class Workspace:
         self.default_path=str(default_path);self.initial_height=initial_height
         self.session=None;self.scene=None;self.revision=0;self.preview=None;self.preview_scene=None;self.preview_key=None
         self.pool=ThreadPoolExecutor(max_workers=1,thread_name_prefix='DHE web worker')
-        self.lock=threading.RLock();self.jobs={};self.running=None;self.uploads=UploadStore()
+        self.lock=threading.RLock();self.jobs={};self.running=None;self.uploads=UploadStore();self.cancellations={}
 
     def check(self,revision):
         if revision!=self.revision:raise RevisionConflict('The workspace changed in another tab. Refresh the scene and try again.')
@@ -49,9 +49,10 @@ class Workspace:
         with self.lock:
             self.check(revision)
             if self.running:raise RevisionConflict('Another construction job is running. Wait for it to finish.')
-            token=uuid4().hex;self.running=token;self.jobs[token]=dict(id=token,status='running',action=action,stage='Queued')
+            token=uuid4().hex;self.running=token;self.jobs[token]=dict(id=token,status='running',action=action,stage='Queued',revision=revision)
+            cancel=threading.Event();self.cancellations[token]=cancel
             if len(self.jobs)>50:
-                old=next(k for k,v in self.jobs.items() if v['status']!='running');del self.jobs[old]
+                old=next(k for k,v in self.jobs.items() if v['status']!='running');del self.jobs[old];self.cancellations.pop(old,None)
         def work():
             outcome={}
             def progress(stage,data=None):
@@ -59,10 +60,10 @@ class Workspace:
                     self.jobs[token]['stage']=stage
                     if data is not None:self.jobs[token]['input_preview']=data
             try:
-                result=self.execute(action,revision,_progress=progress,**parameters)
+                result=self.execute(action,revision,_progress=progress,_cancelled=cancel.is_set,**parameters)
                 outcome=dict(status='complete',result=result)
             except Exception as exc:
-                detail=getattr(self.session,'last_diagnostic',None) if self.session and action in ('preview','apply') else None
+                detail=getattr(exc,'report',None) or (getattr(self.session,'last_diagnostic',None) if self.session and action in ('preview','apply','preview-level','apply-level') else None)
                 outcome=dict(status='failed',error=str(exc),diagnostic=detail)
             finally:
                 with self.lock:self.jobs[token].update(outcome);self.running=None
@@ -72,6 +73,7 @@ class Workspace:
     def execute(self,action,revision,**p):
         self.check(revision)
         progress=p.pop('_progress',lambda *args:None)
+        cancelled=p.pop('_cancelled',lambda:False)
         saved=_core()
         try:
             if self.session:_restore(self.session.core)
@@ -88,11 +90,24 @@ class Workspace:
                     self.session=candidate;self.scene=snapshot;self.revision+=1;self.clear_preview()
                 return dict(revision=self.revision)
             if not self.session:raise ValueError('Load a polygon dataset first.')
-            if action in ('preview','apply'):
+            if action=='automatic':
+                from copy import copy
+                from automatic_generalization import build_automatic_run,apply_automatic_run
+                run=build_automatic_run(self.session,p['selected'],p.get('settings'),cancelled=cancelled,progress=progress)
+                candidate=copy(self.session);apply_automatic_run(candidate,run)
+                progress('Preparing and validating final scene')
+                snapshot=WebScene(candidate,self.revision+1)
+                snapshot.payload['automatic_report']=run.report
+                with self.lock:
+                    if cancelled():raise ValueError('Automatic run cancelled; original workspace preserved.')
+                    self.check(revision);apply_automatic_run(self.session,run)
+                    self.revision+=1;self.scene=snapshot;self.clear_preview()
+                return dict(revision=self.revision,automatic_report=run.report)
+            if action in ('preview','apply','preview-level','apply-level'):
                 key=json.dumps(p,sort_keys=True);proposal=self.preview if self.preview_key==key else None
-                if proposal is None:proposal=self.session.preview(**p)
+                if proposal is None:proposal=self.session.preview_level(**p) if action.endswith('-level') else self.session.preview(**p)
                 _restore(proposal.core)
-                if action=='preview':
+                if action in ('preview','preview-level'):
                     token=uuid4().hex;snapshot=WebScene(self.session,self.revision,proposal=proposal,preview_id=token)
                     with self.lock:self.preview=proposal;self.preview_scene=snapshot;self.preview_key=key
                     return dict(revision=self.revision,preview_id=token)
@@ -201,6 +216,26 @@ class OperationInput(Payload):
 class HistoryInput(Payload):index:int=Field(ge=0)
 
 
+class LevelAction(BaseModel):
+    model_config=ConfigDict(extra='forbid',allow_inf_nan=False)
+    operation:str
+    selected:list[int]
+    tolerance:float=Field(default=1.,ge=0)
+    iterations:int=Field(default=1,ge=1,le=8)
+    ratio:float=Field(default=.25,gt=0,lt=.5)
+    winner:int|None=None
+
+
+class LevelInput(Payload):
+    actions:list[LevelAction]=Field(min_length=1)
+    dz:float=Field(default=10.,gt=0)
+
+
+class AutomaticInput(Payload):
+    selected:list[int]=Field(min_length=1)
+    settings:dict=Field(default_factory=dict)
+
+
 class SliceInput(Payload):
     orientation:str='Horizontal'
     value:float
@@ -242,7 +277,10 @@ def create_app(*,default_path=DEFAULT_WEB_DATA,initial_height=5.,autoload=True,w
     def index():return FileResponse(assets/'index.html')
 
     @app.get('/api/config')
-    def config():return dict(default_dataset=Path(default_path).name,initial_height=initial_height,google_available=bool(google.key))
+    def config():
+        from dataclasses import asdict
+        from automatic_generalization import AutomaticSettings
+        return dict(default_dataset=Path(default_path).name,initial_height=initial_height,google_available=bool(google.key),automatic_defaults=asdict(AutomaticSettings()))
 
     @app.get('/api/state')
     def state():
@@ -261,6 +299,15 @@ def create_app(*,default_path=DEFAULT_WEB_DATA,initial_height=5.,autoload=True,w
         with w.lock:
             if token not in w.jobs:raise HTTPException(404,'Job is missing or expired.')
             return {**{k:v for k,v in w.jobs[token].items() if k!='input_preview'},'has_input_preview':'input_preview' in w.jobs[token]}
+
+    @app.post('/api/jobs/{token}/cancel')
+    def cancel_job(token:str):
+        with w.lock:
+            if token not in w.jobs:raise HTTPException(404,'Job is missing or expired.')
+            if w.jobs[token]['action']!='automatic':raise ValueError('Cancellation is supported for automatic runs.')
+            if w.revision!=w.jobs[token]['revision']:return dict(status='complete',message='The result has already been published.')
+            if w.jobs[token]['status']=='running':w.cancellations[token].set()
+            return dict(status=w.jobs[token]['status'])
 
     @app.get('/api/jobs/{token}/input-preview')
     def input_preview(token:str):
@@ -285,6 +332,15 @@ def create_app(*,default_path=DEFAULT_WEB_DATA,initial_height=5.,autoload=True,w
 
     @app.post('/api/apply')
     def apply(p:OperationInput):return submit('apply',p)
+
+    @app.post('/api/preview-level')
+    def preview_level(p:LevelInput):return submit('preview-level',p)
+
+    @app.post('/api/apply-level')
+    def apply_level(p:LevelInput):return submit('apply-level',p)
+
+    @app.post('/api/automatic')
+    def automatic(p:AutomaticInput):return submit('automatic',p)
 
     @app.post('/api/history')
     def history(p:HistoryInput):return submit('history',p)

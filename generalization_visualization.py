@@ -28,6 +28,7 @@ from methodology_publication import PublicationSettings, save_formats, style
 from plane_slicing import PlaneSlicer, SlicePlane, _face_frame
 from shell_conformity import arithmetic_bound
 from three_d_style import style_3d,levels_from_record
+from generalization_model import operation_actions
 
 
 @dataclass(frozen=True)
@@ -97,8 +98,8 @@ class TransitionSnapshot:
         # Include earlier contributing cells in full-history views, including
         # intermediate aggregate IDs which are not original lineage members.
         for old in reversed([*preceding,state]):
-            if old.operation and old.operation.winner in owners:
-                owners.update(old.operation.selected)
+            for action in operation_actions(old.operation):
+                if action.winner in owners:owners.update(action.selected)
         names={k:f.label for old in [*preceding,state] for k,f in old.features.items()}
         faces=tuple(Boundary(f.owner,tuple(tuple(p) for p in f.points),f.part) for f in state.faces)
         outlines=_capture_history_outlines([*preceding,state],{} if outline_cache is None else outline_cache)

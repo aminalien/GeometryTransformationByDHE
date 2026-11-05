@@ -246,6 +246,58 @@ class WebApiTests(unittest.TestCase):
             self.assertEqual(loaded['status'],'complete',loaded)
             self.assertEqual(len(self.workspace.session.model.cells),3)
 
+    def test_joint_level_cache_duplicates_history_and_serialization(self):
+        self.load()
+        body=dict(actions=[dict(operation='point',selected=[1]),dict(operation='smoothing',selected=[3])],dz=10)
+        with patch.object(self.workspace.session,'preview_level',wraps=self.workspace.session.preview_level) as build:
+            self.assertEqual(self.job('/api/preview-level',body)['status'],'complete')
+            self.assertEqual(self.workspace.revision,1)
+            self.assertEqual(self.job('/api/apply-level',body)['status'],'complete')
+            self.assertEqual(build.call_count,1)
+        scene=self.client.get('/api/scene').json()
+        self.assertEqual(scene['operation']['name'],'batch');self.assertEqual(len(scene['operation']['actions']),2)
+        self.assertEqual(scene['levels']['z_t'],15);self.assertEqual(len(scene['history']),2)
+        revision=self.workspace.revision;state=self.workspace.session.state
+        bad=self.job('/api/apply-level',dict(actions=[dict(operation='point',selected=[2]),dict(operation='smoothing',selected=[2])]))
+        self.assertEqual(bad['status'],'failed');self.assertEqual(self.workspace.revision,revision);self.assertIs(self.workspace.session.state,state)
+        self.assertEqual(self.job('/api/history',dict(index=0))['status'],'complete')
+
+    def test_automatic_final_only_publication_and_failed_final_scene_rollback(self):
+        self.load([box(0,0,5,5),box(8,0,13,5),box(30,0,35,5)])
+        base=self.workspace.session.state;revision=self.workspace.revision
+        original_scene=self.workspace.scene
+        with patch('web_generalization_app.WebScene',side_effect=ValueError('scene failure before publication')):
+            result=self.job('/api/automatic',dict(selected=[1,2,3],settings=dict(final_kind='polygon')))
+        self.assertEqual(result['status'],'failed');self.assertIs(self.workspace.session.state,base)
+        self.assertIs(self.workspace.scene,original_scene);self.assertEqual(self.workspace.revision,revision)
+        result=self.job('/api/automatic',dict(selected=[1,2,3],settings=dict(final_kind='polygon')))
+        self.assertEqual(result['status'],'complete',result)
+        self.assertEqual(self.workspace.revision,revision+1)
+        scene=self.client.get('/api/scene').json()
+        self.assertEqual(len(scene['features']['features']),1);self.assertEqual(scene['automatic_report']['status'],'complete')
+        self.assertEqual(len(scene['history']),len(result['result']['automatic_report']['steps'])+1)
+        self.assertEqual(self.job('/api/history',dict(index=0))['status'],'complete')
+        self.assertEqual(len(self.client.get('/api/scene').json()['features']['features']),3)
+
+    def test_automatic_cancel_preserves_loaded_scene(self):
+        self.load([box(0,0,5,5),box(8,0,13,5)])
+        entered=Event();release=Event();base=self.workspace.session.state;revision=self.workspace.revision
+        from automatic_generalization import build_automatic_run
+        def delayed(*args,**kwargs):
+            entered.set();release.wait(10);return build_automatic_run(*args,**kwargs)
+        try:
+            with patch('automatic_generalization.build_automatic_run',side_effect=delayed):
+                token=self.client.post('/api/automatic',json=dict(revision=revision,selected=[1,2])).json()['job_id']
+                self.assertTrue(entered.wait(5))
+                self.assertEqual(self.client.get('/api/state').json()['revision'],revision)
+                self.assertEqual(len(self.client.get('/api/scene').json()['features']['features']),2)
+                self.assertEqual(self.client.post('/api/jobs/'+token+'/cancel',json={}).status_code,200)
+                release.set();deadline=time.monotonic()+15
+                while self.client.get('/api/jobs/'+token).json()['status']=='running' and time.monotonic()<deadline:time.sleep(.01)
+                self.assertEqual(self.client.get('/api/jobs/'+token).json()['status'],'failed')
+        finally:release.set()
+        self.assertEqual(self.workspace.revision,revision);self.assertIs(self.workspace.session.state,base)
+
     def test_preview_apply_cache_undo_failed_load_and_stale_requests(self):
         self.load();w=self.workspace;source=w.session.state
         params=dict(operation='smoothing',selected=[1],dz=10,tolerance=1,iterations=1,ratio=.25,winner=None)

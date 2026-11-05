@@ -174,6 +174,8 @@ class GeneralizationWindow:
         row=ttk.Frame(group);row.pack(fill="x",pady=5)
         self.preview_button=ttk.Button(row,text="Preview",command=lambda:self.compute(False));self.preview_button.pack(side="left",expand=True,fill="x")
         self.apply_button=ttk.Button(row,text="Apply",command=lambda:self.compute(True));self.apply_button.pack(side="left",expand=True,fill="x")
+        from generalization_workflow_controls import WorkflowControls
+        self.workflow=WorkflowControls(self)
         group=self._group("History")
         self.history_var=tk.StringVar()
         self.history_combo=ttk.Combobox(group,textvariable=self.history_var,state="readonly")
@@ -233,6 +235,7 @@ class GeneralizationWindow:
         self._close_inspector()
         self.busy=True
         self.preview_button.configure(state="disabled");self.apply_button.configure(state="disabled")
+        self.workflow.busy(True)
         self.status.set(message)
         def work():
             try:self.messages.put((callback,function(),None))
@@ -241,6 +244,7 @@ class GeneralizationWindow:
 
     def _poll(self):
         if self.closed:return
+        if self.busy and self.workflow.automatic_running:self.status.set(self.workflow.progress_message)
         try:
             callback,result,error=self.messages.get_nowait()
         except queue.Empty:
@@ -248,10 +252,13 @@ class GeneralizationWindow:
         else:
             self.busy=False
             self.preview_button.configure(state="normal");self.apply_button.configure(state="normal")
+            self.workflow.busy(False)
             if error:
+                if self.session and getattr(error,'report',None):self.session.last_diagnostic=error.report
                 self.status.set("Model unchanged: "+str(error))
-                from tkinter import messagebox
-                messagebox.showerror("Operation could not be completed",str(error),parent=self.root)
+                if getattr(error,'report',{}).get('classification')!='automatic_run_cancelled':
+                    from tkinter import messagebox
+                    messagebox.showerror("Operation could not be completed",str(error),parent=self.root)
             else:
                 try:callback(result)
                 except Exception as exc:
@@ -278,6 +285,7 @@ class GeneralizationWindow:
 
     def _loaded(self,session):
         self._close_inspector()
+        self.workflow.report=None
         self.session=session;self.proposal=None;self.selected=set();self.face_index=0
         self.evaluation_journal.start_session(session.data,session.origin,len(session.history))
         if self.evaluation_window and not self.evaluation_window.closed:self.evaluation_window.clear()
@@ -383,9 +391,10 @@ class GeneralizationWindow:
         try:
             operation=OPERATIONS[self.operation.get()]
             kwargs=dict(dz=float(self.variables["dz"].get()))
-            if operation=="simplification":kwargs["tolerance"]=float(self.variables["tolerance"].get())
-            if operation=="smoothing":kwargs.update(iterations=int(self.variables["iterations"].get()),ratio=float(self.variables["ratio"].get()))
-            if operation=="merging":kwargs["winner"]=int(self.winner.get())
+            if not self.workflow.actions:
+                if operation=="simplification":kwargs["tolerance"]=float(self.variables["tolerance"].get())
+                if operation=="smoothing":kwargs.update(iterations=int(self.variables["iterations"].get()),ratio=float(self.variables["ratio"].get()))
+                if operation=="merging":kwargs["winner"]=int(self.winner.get())
             selected=tuple(self.selected)
         except ValueError as exc:self.status.set("Invalid parameter: "+str(exc));return
         def complete(proposal):
@@ -399,7 +408,8 @@ class GeneralizationWindow:
                 self.draw(fit=True)
                 self.status.set("Validated preview. Affected: "+", ".join(map(str,proposal.affected))+". "+" ".join(proposal.notes))
         revision=self.revision
-        self._start(lambda:self.session.preview(operation,selected,**kwargs),complete,"Planning, constructing, and validating the complete batch…")
+        actions=[dict(a) for a in self.workflow.actions]
+        self._start(lambda:self.session.preview_level(actions,dz=kwargs['dz']) if actions else self.session.preview(operation,selected,**kwargs),complete,"Planning, constructing, and validating the complete batch…")
 
     def _apply(self,proposal):
         self._close_inspector()
@@ -426,6 +436,7 @@ class GeneralizationWindow:
         if self.evaluation_window and not self.evaluation_window.closed:self.evaluation_window.save()
 
     def _refresh(self):
+        self.workflow.clear(notify=False)
         self.syncing=True
         self.tree.delete(*self.tree.get_children())
         for k,f in sorted(self.session.state.features.items()):
@@ -688,6 +699,7 @@ class GeneralizationWindow:
         if self.evaluation_pending:
             self.close_after_evaluation=True
             self.status.set('Finishing the explicitly requested evaluation save before closing…');return
+        self.workflow.cancel.set()
         self.closed=True
         if self.overlap_review and not self.overlap_review.closed:self.overlap_review.cancel()
         if self.evaluation_window:self.evaluation_window.close()
