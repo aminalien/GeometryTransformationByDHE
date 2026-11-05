@@ -402,7 +402,7 @@ def realize(faces, origin):
             for uses in pairs.values():
                 if len(uses) != 2:
                     raise ValueError(f"Feature {owner} has an unpaired DHE edge.")
-                dhe.Sew(uses[0], uses[1].S)
+                dhe.SewComplex(uses[0], uses[1].S)
             cells.append(ExtrudedCell(str(owner), seeds[0], dual))
         shared = []
         for seeds in matches.values():

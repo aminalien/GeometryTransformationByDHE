@@ -78,6 +78,10 @@ class SnapshotTests(unittest.TestCase):
             realization = dict(counts["realize"])
             for name in ("MEVVFS","MEV","MEF","Sew"):
                 self.assertGreater(realization[name],0)
+            self.assertEqual(realization["Sew"] % 2, 0)
+            seams = [e for e in data.events if e.operator == "Sew"]
+            self.assertEqual({e.side for e in seams}, {"internal", "exterior"})
+            self.assertEqual(len(seams), 2)
             self.assertGreater(realization.get('JoinByFace',0),0)
             prep = dict(counts["prepare"])
             self.assertEqual(prep.get("MVE",0)>0,case=="p2p")

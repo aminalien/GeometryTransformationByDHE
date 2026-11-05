@@ -12,6 +12,24 @@ selection, and a prepared-footprint preview during construction. Slice features 
 plane have independent visibility controls; dual vertices can use shaded 3D spheres or dots.
 Install `requirements-web.txt` first. See [web setup and usage](README_web_generalization.md).
 
+## DHE boundary symmetry
+
+Within-cell boundary assembly uses `DHECore.SewComplex(a, b.S)` to sew both the
+internal half-edge pair and its exterior counterparts. This helper composes two
+existing `Sew` calls; primitive `Sew` and the specialized `JoinByFace` sequence
+retain their meanings. The correction is shared by the paper transitions,
+aggregation, desktop generalization and web generalization.
+
+`validate_model` checks the live internal/exterior complex and its dual records,
+including reciprocal symmetry, face/vertex traversal, ownership, and references
+to live records. Disconnected exterior components are allowed. Geometry,
+bounded-cell counts, and the separate lower cells in aggregation are preserved.
+Restart running applications and rebuild their models to use the corrected
+topology; existing in-memory history is not silently rewritten.
+
+Run `python -B -m unittest test_complex_sewing -v` with the project interpreter
+for focused symmetry and unchanged-geometry regression checks.
+
 ## Desktop viewers
 
 Run `main.py` in PyCharm, or:

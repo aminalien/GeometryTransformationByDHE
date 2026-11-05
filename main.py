@@ -248,7 +248,8 @@ def build_model(
 
 
 def validate_model(model: ExtrusionModel) -> list[dict]:
-    """Check closed cells, pointer consistency, and reciprocal shared-wall links."""
+    """Check bounded/exterior/dual topology, closed cells and shared interfaces."""
+    dhe.validate_complex_topology(((cell.seed, cell.dual_vertex) for cell in model.all_cells), model.exterior)
     summaries = []
     for cell in model.all_cells:
         edges = dhe.Cell(cell.seed)

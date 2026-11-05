@@ -196,6 +196,7 @@ def ComplexSplice(e1, e2):
 
 
 def Sew(e1, e2Sym):
+    """Primitive one-side sew; use SewComplex for within-cell shell assembly."""
     e1Sym = e1.S
     e2 = e2Sym.S
     e1PrevV = e1.PrevV()
@@ -205,6 +206,94 @@ def Sew(e1, e2Sym):
     Snap(e1, e2Sym)
     Splice(e1PrevV, e2SymPrevV)
     Splice(e1SymPrevV, e2PrevV)
+
+
+def SewComplex(e1, e2Sym):
+    """Sew matching within-cell uses and their opposite-side counterparts.
+
+    Like Sew(a, b.S), the second argument is the symmetric of the second
+    boundary use. Capture both opposite-side uses before the first Sew changes
+    the links. This helper composes two existing Sew operations; JoinByFace
+    retains its specialized primitive Sew/Snap sequence.
+    """
+    try:
+        e2 = e2Sym.S
+        opposite1, opposite2 = e1.Adjacent(), e2.Adjacent()
+        pairs = ((e1, e2), (opposite1, opposite2))
+        for a, b in pairs:
+            if a is b or a.S.S is not a or b.S.S is not b:
+                raise ValueError("SewComplex requires distinct uses with reciprocal symmetric pointers.")
+            if a.D.D is not a or b.D.D is not b or a.D.V is not b.D.V:
+                raise ValueError("SewComplex requires matching uses belonging to the same cell on each side.")
+            if a.V is not b.S.V or a.S.V is not b.V:
+                raise ValueError("SewComplex requires opposite endpoints using the same primal vertices.")
+        if e1.D.V is opposite1.D.V:
+            raise ValueError("SewComplex requires distinct incident cells across the boundary.")
+    except AttributeError as exc:
+        raise ValueError("SewComplex received incomplete half-edge topology.") from exc
+    # Skip completed pairings so this can also repair an interior-only seam.
+    for first, second in pairs:
+        if first.S is not second:
+            Sew(first, second.S)
+
+
+def validate_complex_topology(cell_seeds, exterior):
+    """Check the live bounded cells, exterior counterparts and dual records.
+
+    cell_seeds supplies (seed, interior_dual_vertex) pairs. The exterior may
+    have multiple boundary components; no Euler characteristic is imposed on
+    the combined exterior. Unreachable construction/retired records in the
+    global ledger are not considered part of the live complex.
+    """
+    cell_seeds = tuple(cell_seeds)
+    owners = {owner for _, owner in cell_seeds}
+    if exterior in owners or len(owners) != len(cell_seeds):
+        raise ValueError("Bounded cells must have distinct dual vertices, separate from the exterior.")
+    try:
+        interior = set()
+        # Bounded graph walks reject ownership leaks before legacy Cell/face
+        # traversals, which assume that every face closes at its starting use.
+        for seed, owner in cell_seeds:
+            pending, seen = [seed], set()
+            while pending:
+                edge = pending.pop()
+                if edge in seen:
+                    continue
+                if edge is None or edge.D is None or edge.D.V is not owner:
+                    raise ValueError(f"Cell {owner.i}: inconsistent interior dual vertex.")
+                if edge.NF is None or edge.S is None or edge.NV is None:
+                    raise ValueError(f"Cell {owner.i}: incomplete boundary pointers.")
+                seen.add(edge)
+                pending.extend((edge.NF, edge.S))
+            interior.update(seen)
+        primal = interior | {edge.Adjacent() for edge in interior}
+        for edge in primal - interior:
+            if edge.D.V is not exterior:
+                raise ValueError("An adjacent half-edge does not belong to a live cell or the exterior.")
+        records = primal | {edge.D for edge in primal}
+        for edge in records:
+            side = "primal" if edge in primal else "dual"
+            if edge in killdhe:
+                raise ValueError(f"A live {side} half-edge is marked retired.")
+            if edge.V is None or any(p not in records for p in (edge.S, edge.D, edge.NF, edge.NV)):
+                raise ValueError(f"A live {side} half-edge references an unsewn or non-live record.")
+            if edge.S.S is not edge or edge.D.D is not edge:
+                raise ValueError(f"A live {side} half-edge has broken symmetric/dual pointers.")
+            if edge.NF.V is not edge.S.V or edge.NV.V is not edge.V:
+                raise ValueError(f"A live {side} half-edge has discontinuous face/vertex incidence.")
+            if edge.PrevF().NF is not edge or edge.NF.PrevF() is not edge:
+                raise ValueError(f"A live {side} half-edge has inconsistent face traversal.")
+            if edge.PrevV().NV is not edge or edge.NV.PrevV() is not edge:
+                raise ValueError(f"A live {side} half-edge has inconsistent vertex traversal.")
+        for edge in primal:
+            if edge.S.D.V is not edge.D.V or edge.NF.D.V is not edge.D.V:
+                raise ValueError("A symmetric/face traversal changes its incident cell.")
+            if edge.Adjacent().Adjacent() is not edge:
+                raise ValueError("A face has nonreciprocal internal/exterior adjacency.")
+            if edge.NF.Adjacent() is not edge.Adjacent().PrevF():
+                raise ValueError("Opposite face boundaries are not reverse cycles.")
+    except AttributeError as exc:
+        raise ValueError("The live DHE complex contains incomplete pointers.") from exc
 
 
 def MakeDegenerateEdge(P, D):
@@ -523,6 +612,8 @@ def JoinByFace(e1, e2):
         # print("inside", Listf1[i].info, Listf2[i].info)
         # print(Listf2[i].i)
         if Listf1[i] != Listf2[i].S:
+            # This operator has its own dual/interface Snap sequence below.
+            # SewComplex closes within-cell shells and is not a substitute here.
             Sew(Listf1[i], Listf2[i].S);
 
     for i in range(len(Listf1)):

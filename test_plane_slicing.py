@@ -112,7 +112,7 @@ class PlaneSlicingTests(unittest.TestCase):
                 for edge in dhe.face_edges(seed):
                     pairs[frozenset((edge.V, edge.S.V))].append(edge)
         for first, second in pairs.values():
-            dhe.Sew(first, second.S)
+            dhe.SewComplex(first, second.S)
         model = app.ExtrusionModel([app.ExtrudedCell("box", seeds[0], dual)],
                                    self.exterior, (0, 0), [])
         app.validate_model(model)

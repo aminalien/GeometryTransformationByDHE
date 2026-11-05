@@ -521,7 +521,7 @@ def build_transition_layer(model: ExtrusionModel, target_z: float = 10.0, *,
             for edge in face_edges(seed):
                 edge_pairs[frozenset((edge.V, edge.S.V))].append(edge)
         for first, second in edge_pairs.values():
-            dhe.Sew(first, second.S)
+            dhe.SewComplex(first, second.S)
         cells.append(type(original)(owner, cell_facets[0].seed, dual, owner))
     shared = []
     for matching in matching_faces.values():

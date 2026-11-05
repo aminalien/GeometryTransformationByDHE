@@ -45,7 +45,7 @@ STAGES = {
         StageSpec("regions", "Active/inactive regions", True, "Classify S−T, T−S, common S∩T and background; cell ownership stays fixed."),
         StageSpec("triangulation", "Flat triangulation", True, "Constrained diagonals are realized with MEF in active regions only."),
         StageSpec("inclined", "Inclined facet plans", False, "Boundary-chain strips and opposite neighbor interfaces are planned; they are not sewn DHE faces."),
-        StageSpec("final", "Final DHE", True, "Reconstruct surviving boundaries with MEVVFS/MEV/MEF; Sew and JoinByFace connect the final cells."),
+        StageSpec("final", "Final DHE", True, "Reconstruct boundaries with MEVVFS/MEV/MEF; SewComplex sews internal/exterior uses, then JoinByFace connects shared interfaces."),
     ),
     "point": (
         StageSpec("input", "Source and target", True, "Constructed base cells and an interior centroid target at the upper level."),

@@ -223,16 +223,22 @@ definitions. Stage 5 freezes actual realized faces and extracts sections with
 `MEVVFS` initializes a complex edge using supplied primal/cell/exterior vertices;
 `MEV` attaches a supplied vertex, and `MEF` closes the selected boundary chain.
 The three construction panels concern one representative transition face and
-are not yet a closed cell. `Sew` connects compatible within-cell uses.
+are not yet a closed cell. `SewComplex` captures internal and exterior
+counterparts before rewiring and composes two primitive `Sew` calls. Both
+actual calls are traced and counted as `Sew`; representative events identify
+their `internal` or `exterior` side, and the seam panel distinguishes them.
+The helper is not presented as a new Euler operator.
 `JoinByFace` subsequently connects matching interfaces in single-source cases
 while retaining distinct cell dual identities. Aggregation also uses JoinByFace
 to connect the retained lower sources to one upper aggregate, without dual
-contraction or KEF. The operation counts exclude calls nested inside another
-core operation, so a Sew nested in JoinByFace is not counted twice.
+contraction or KEF. Primitive calls nested inside `JoinByFace` and the other
+Euler constructors remain excluded from the top-level counts. The two `Sew`
+calls composed by the boundary-sewing helper are included explicitly.
 
 Dual associations are checked from `e.D.V` and `e.Adjacent().D.V`; coordinates
 are the actual dual-vertex coordinates. They are not a computed Voronoi dual.
-Primal and dual pointers are checked through the production validators.
+Primal and dual pointers, exterior symmetry, live-reference closure and
+reciprocal face/vertex traversals are checked through the production validators.
 The adapter restores the caller's core globals, counters and profiling hook in
 finally blocks. It is intended for sequential desktop/headless use, not concurrent
 construction in multiple threads. Snapshots contain no live DHE records.

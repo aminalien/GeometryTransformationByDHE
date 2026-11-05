@@ -82,6 +82,8 @@ The key is never committed, returned by `/api/config`, or inserted in browser ti
 
 The import and scene adapters are `web_generalization_data.py` and `web_generalization_scene.py`. Application assets are under `web_generalization/`. API endpoints include `/api/state`, `/api/scene`, `/api/jobs/{id}`, `/api/uploads`, `/api/load-default`, `/api/load-upload`, `/api/osm`, `/api/preview`, `/api/apply`, `/api/history`, `/api/slice`, and `/api/select-box`.
 
+The shared construction engine now uses `SewComplex` to compose internal and exterior `Sew` pairings for every within-cell seam. Its strengthened model validator audits live exterior and dual links as well as bounded-cell topology. Shared interfaces continue to use the specialized `JoinByFace` sequence; aggregation retains distinct lower source dual vertices. This does not change scene/API schemas, geometry, or bounded-cell counts. Restart the server and reload the dataset to replace models constructed by an older running process; existing in-memory history is not silently changed.
+
 Run the portable integration tests:
 
 ```powershell

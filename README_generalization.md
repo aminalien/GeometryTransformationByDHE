@@ -53,7 +53,9 @@ Smooth merging preserves the historical cells and ownership below the source lev
 
 ## DHE construction and methodological scope
 
-The workspace reuses the paper's boundary-chain strips, collapse-strip helpers, and straight-skeleton aggregation geometry when their preconditions hold. It adds a conforming vertical-interval arrangement to support exterior space, multiple sources, and repeated levels. Genuine shared interfaces use `JoinByFace`; faces within each shell use `Sew`, following `MEVVFS`, `MEV`, and `MEF` face construction. No existing Euler operator was changed.
+The workspace reuses the paper's boundary-chain strips, collapse-strip helpers, and straight-skeleton aggregation geometry when their preconditions hold. It adds a conforming vertical-interval arrangement to support exterior space, multiple sources, and repeated levels. Genuine shared interfaces use `JoinByFace`; faces within each shell use `SewComplex(a, b.S)`, following `MEVVFS`, `MEV`, and `MEF` face construction. This helper captures the opposite-side uses before rewiring and composes the existing `Sew` operation twice: once for internal uses and once for their exterior counterparts. Primitive `Sew` and `JoinByFace` semantics are preserved; the helper is not a new Euler operator.
+
+Live validation checks both bounded and exterior primal half-edges and their dual records. It rejects missing symmetric partners, non-live/retired references, broken face/vertex traversal, ownership leaks, and nonreciprocal adjacency. The exterior can have disconnected boundary components and is not counted as a bounded cell. The correction changes connectivity, not the planned geometry or retained source-cell identities. Restart/rebuild models created by older running processes; in-memory history is not migrated automatically.
 
 Temporary planar DHE triangulation is not a prerequisite in this workspace. Final transition facets are real DHE faces. Nested or complex polygon active regions that cannot use the paper's two-crossing strip are triangulated geometrically and lifted by
 

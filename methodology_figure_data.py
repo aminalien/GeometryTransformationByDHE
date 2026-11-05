@@ -117,6 +117,7 @@ class Event:
     facet: tuple = ()
     owner: str = ""
     verified: bool = False
+    side: str = ""
 
 
 @dataclass(frozen=True)
@@ -158,8 +159,9 @@ def isolated_core():
 class OperatorTrace:
     """Observe actual calls, including entry arguments that JoinByFace rebinds.
 
-    Only direct calls from the preparation/realization modules are counted;
-    Sew calls internal to JoinByFace are deliberately excluded from this count.
+    Calls from preparation/realization modules, including both primitive Sew
+    calls composed by SewComplex, are counted. Sew calls internal to JoinByFace
+    are deliberately excluded from this count.
     Tracing records coordinates immediately, before retirement can occur.
     """
     def __init__(self, labels, phase):
@@ -191,6 +193,10 @@ class OperatorTrace:
         if name not in names or frame.f_globals.get("__name__") != "DHECore":
             return
         caller = frame.f_back
+        side = ""
+        if name == "Sew" and caller.f_globals.get("__name__") == "DHECore" and caller.f_code.co_name == "SewComplex":
+            side = "internal" if frame.f_locals["e1"].D.V is caller.f_locals["e1"].D.V else "exterior"
+            caller = caller.f_back
         if caller.f_globals.get("__name__") not in {
             "top_face_overlay", "active_region_triangulation", "transition_layer", "aggregation_layer",'generalization_model'
         }:
@@ -223,12 +229,12 @@ class OperatorTrace:
             elif name == "Sew":
                 a, b = loc["e1"], loc["e2Sym"].S
                 before, after, refs = (xyz(a.V), xyz(a.S.V)), (xyz(b.V), xyz(b.S.V)), (a, b)
-            self.pending[id(frame)] = (before, after, refs, selected, owner)
+            self.pending[id(frame)] = (before, after, refs, selected, owner, side)
         elif event == "return":
             stored = self.pending.pop(id(frame), None)
             if stored is None:
                 return
-            before, after, refs, selected, owner = stored
+            before, after, refs, selected, owner, side = stored
             facet, verified = (), result is not None
             if name == "JoinByFace":
                 a, b = refs
@@ -236,7 +242,7 @@ class OperatorTrace:
                 facet = points(a)
             elif name == "Sew":
                 a, b = refs
-                verified = (before == tuple(reversed(after)) and a.S.S is a and b.S.S is b
+                verified = (before == tuple(reversed(after)) and a.S is b and b.S is a
                             and a.D.D is a and b.D.D is b)
             elif name == "MEF":
                 facet = points(result.S)
@@ -260,8 +266,8 @@ class OperatorTrace:
                     or (selected and name in {"MEVVFS", "MEV", "MEF"})
                     or name in {"Sew", "JoinByFace"})
             if keep and (name in {"MEVVFS", "MEV", "MEF"} and selected
-                         or not any(e.operator == name for e in self.events)):
-                self.events.append(Event(name, before, after, facet, owner, verified))
+                         or not any(e.operator == name and e.side == side for e in self.events)):
+                self.events.append(Event(name, before, after, facet, owner, verified, side))
 
 
 def _base(sources):
@@ -341,13 +347,15 @@ def _construction_panels(events, final, model, labels):
                             descriptions[name], facets=facets, lines=lines, default_3d=True,
                             dimensions=("2D", "3D"), topology=True,
                             checks=("Observed operator return and local incidence checked",)))
-    sew = next(e for e in events if e.operator == "Sew")
-    seams = [Line(sew.before, GREEN, "Sew: matching within-cell uses", "construction")]
+    seams = [Line(e.before, PURPLE if e.side == "exterior" else GREEN,
+                  f"Sew: {e.side or 'internal'} boundary uses", "construction",
+                  "--" if e.side == "exterior" else "-") for e in events if e.operator == "Sew"]
     for a, b in model.shared_walls:
         ring = points(a)
         seams.append(Line(ring + (ring[0],), PURPLE, "JoinByFace: shared interface", "construction", "--"))
-    note = ("Sew closes individual cells; JoinByFace connects retained lower sources to the upper aggregate without dual contraction."
-            if model.aggregation else "Sew connects within-cell uses; JoinByFace connects matching faces while retaining distinct cell duals.")
+    note = ("SewComplex composes Sew for internal uses and exterior counterparts; "
+            + ("JoinByFace connects retained lower sources to the upper aggregate without dual contraction."
+               if model.aggregation else "JoinByFace connects matching faces while retaining distinct cell duals."))
     panels.append(Panel("seams_interfaces", "Sewn boundaries and cell interfaces", "DHECore.Sew" +
                         ("; DHECore.JoinByFace" if model.shared_walls else ""), note,
                         facets=final, lines=tuple(seams), default_3d=True, dimensions=("2D", "3D"),
