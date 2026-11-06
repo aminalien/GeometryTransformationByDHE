@@ -1,15 +1,17 @@
 """Manual LTS analysis and explicit export; opening the window measures nothing."""
 import json
+from copy import deepcopy
 from pathlib import Path
+from uuid import uuid4
 
-from lts_evaluation import evaluate_history,load_reports,save_report,profile_figure
+from lts_evaluation import evaluate_history,load_reports,save_report,profile_figure,profile_comparison_figure
 
 
 class EvaluationWindow:
     def __init__(self,workspace):
         import tkinter as tk
         from tkinter import ttk
-        self.workspace=workspace;self.closed=False;self.record=None;self.records=[];self.tables={}
+        self.workspace=workspace;self.closed=False;self.record=None;self.records=[];self.tables={};self.comparison_window=None
         self.root=tk.Toplevel(workspace.root);self.root.title('Quantitative Evaluation - DHE LTS')
         self.root.geometry('1250x720');self.root.protocol('WM_DELETE_WINDOW',self.close)
         body=ttk.Frame(self.root,padding=10);body.pack(fill='both',expand=True)
@@ -19,6 +21,8 @@ class EvaluationWindow:
         ttk.Button(row,text='Evaluate',command=self.run).pack(side='left',padx=5)
         ttk.Button(row,text='Save results',command=self.save).pack(side='left')
         ttk.Button(row,text='Plot / export profiles',command=self.plot).pack(side='left',padx=5)
+        self.overlay_profiles=tk.BooleanVar(value=False)
+        ttk.Checkbutton(row,text='Overlay two profiles',variable=self.overlay_profiles).pack(side='left',padx=4)
         ttk.Label(row,text='Result scope').pack(side='left')
         self.scope=tk.StringVar(value='All');self.scope_menu=ttk.Combobox(row,textvariable=self.scope,state='readonly',width=20)
         self.scope_menu.pack(side='left');self.scope_menu.bind('<<ComboboxSelected>>',lambda e:self.display())
@@ -178,6 +182,10 @@ class EvaluationWindow:
         w.evaluation_pending=True;w._start(write,done,'Saving the explicitly requested evaluation…')
 
     def plot(self):
+        if self.overlay_profiles.get():
+            if self.comparison_window is None:self.comparison_window=ProfileComparisonWindow(self)
+            else:self.comparison_window.refresh();self.comparison_window.root.lift()
+            return
         if not self.record or self.record.get('schema_version')!=2:return
         from tkinter import filedialog
         from methodology_publication import save_formats
@@ -199,6 +207,28 @@ class EvaluationWindow:
             self.status.configure(text=f'Exported {len(files)} profile figure files for {scope}.')
         except (ValueError,OSError,RuntimeError) as exc:self.status.configure(text='Profile export failed: '+str(exc))
 
+    def export_comparison(self,first_record,first_scope,second_record,second_scope):
+        from tkinter import filedialog
+        from methodology_publication import save_formats
+        parent=self.comparison_window.root if self.comparison_window else self.root
+        path=filedialog.askdirectory(parent=parent,title='Export two-profile comparison (SVG/PDF/PNG + JSON)')
+        if not path:return False
+        try:
+            first_record,second_record=deepcopy((first_record,second_record))
+            figure,settings=profile_comparison_figure(first_record,first_scope,second_record,second_scope)
+            identifier=uuid4().hex;stem='lts_profile_comparison_'+identifier
+            metadata=figure._profile_comparison
+            try:files,formats,_=save_formats(figure,Path(path),stem,settings)
+            finally:figure.clear()
+            metadata.update(comparison_id=identifier,publication=settings.values,exports=formats)
+            (Path(path)/(stem+'.json')).write_text(json.dumps(metadata,indent=2,ensure_ascii=False,allow_nan=False)+'\n',encoding='utf-8')
+            empty=[p['profile'] for p in metadata['profiles'] if not any(p['valid_samples'].values())]
+            warning=f" No valid plotted values for profile(s) {', '.join(empty)}; N/A gaps retained." if empty else ''
+            self.status.configure(text=f'Exported {len(files)} comparison figure files and JSON metadata to {path}.'+warning)
+            return True
+        except (ValueError,OSError,RuntimeError) as exc:
+            self.status.configure(text='Profile comparison failed: '+str(exc));return False
+
     def on_history_changed(self):
         if not self.closed:
             self._refresh_features()
@@ -207,4 +237,98 @@ class EvaluationWindow:
     def clear(self):self.on_history_changed()
 
     def close(self):
-        if not self.closed:self.closed=True;self.root.destroy()
+        if not self.closed:
+            if self.comparison_window:self.comparison_window.close()
+            self.closed=True;self.root.destroy()
+
+
+class ProfileComparisonWindow:
+    """Choose measured scopes from current, in-memory or saved reports."""
+    def __init__(self,owner):
+        import tkinter as tk
+        from tkinter import ttk
+        self.owner=owner;self.closed=False;self.records=[];self.report_menus=[];self.scope_menus=[]
+        self.root=tk.Toplevel(owner.root);self.root.title('Overlay two measured profiles')
+        self.root.transient(owner.root);self.root.protocol('WM_DELETE_WINDOW',self.close)
+        body=ttk.Frame(self.root,padding=12);body.pack(fill='both',expand=True)
+        ttk.Label(body,text='Choose two distinct profiles. Actual Z and each profile\'s original reference are preserved.').pack(anchor='w')
+        for i,letter in enumerate(('A (blue)','B (orange)')):
+            group=ttk.LabelFrame(body,text='Profile '+letter,padding=8);group.pack(fill='x',pady=6)
+            report=ttk.Combobox(group,state='readonly',width=100);report.pack(fill='x')
+            scope=ttk.Combobox(group,state='readonly',width=100);scope.pack(fill='x',pady=(4,0))
+            report.bind('<<ComboboxSelected>>',lambda e,index=i:self._report_changed(index))
+            scope.bind('<<ComboboxSelected>>',lambda e:self.validate())
+            self.report_menus.append(report);self.scope_menus.append(scope)
+        controls=ttk.Frame(body);controls.pack(fill='x')
+        ttk.Button(controls,text='Reload saved reports',command=self.refresh).pack(side='left')
+        self.export_button=ttk.Button(controls,text='Export comparison',command=self.export)
+        self.export_button.pack(side='right')
+        self.message=tk.StringVar()
+        ttk.Label(body,textvariable=self.message,wraplength=780).pack(fill='x',pady=(8,0))
+        self.refresh()
+
+    @staticmethod
+    def scopes(record):
+        names={r['scope'] for r in record.get('tables',{}).get('sections',[])}
+        return sorted(names,key=lambda name:(name.startswith('Combined ') or name=='Affected context',name))
+
+    def selection(self,index):
+        i=self.report_menus[index].current();scope=self.scope_menus[index].get()
+        if 0<=i<len(self.records) and scope in self.scopes(self.records[i]):return self.records[i],scope
+        return None
+
+    def _report_changed(self,index,preferred=None):
+        i=self.report_menus[index].current()
+        scopes=self.scopes(self.records[i]) if 0<=i<len(self.records) else []
+        menu=self.scope_menus[index];old=menu.get();menu.configure(values=scopes)
+        choice=preferred if preferred in scopes else old if old in scopes else scopes[0] if scopes else ''
+        menu.set(choice);self.validate()
+
+    def refresh(self):
+        previous=[self.selection(i) for i in range(2)]
+        loaded,warnings=load_reports(self.owner.workspace.variables['evaluation_folder'].get())
+        current=self.owner.record;available={}
+        for record in [*self.owner.records,*self.owner.workspace.evaluation_journal.records.values(),*loaded,current]:
+            if record and record.get('schema_version')==2 and self.scopes(record):available[record['evaluation_id']]=record
+        current_id=current.get('evaluation_id') if current else None
+        self.records=sorted(available.values(),key=lambda r:(r['evaluation_id']!=current_id,
+                            r.get('created_utc',''),r['evaluation_id']))
+        labels=[]
+        for record in self.records:
+            source='Current' if record['evaluation_id']==current_id else 'Saved' if record.get('_path') else 'In memory'
+            labels.append(f"{source} | {Path(record['dataset']['source']).name} | {record.get('mode')} | {record.get('created_utc','')[:19]} | {record['evaluation_id'][:8]}")
+        for i,menu in enumerate(self.report_menus):
+            menu.configure(values=labels)
+            old=previous[i]
+            selected=next((j for j,r in enumerate(self.records) if old and r['evaluation_id']==old[0]['evaluation_id']),0)
+            if labels:menu.current(selected)
+            else:menu.set('')
+            self._report_changed(i,old[1] if old else self.owner.scope.get() if i==0 else None)
+        if not previous[1] and self.records:
+            first=self.selection(0)
+            alternatives=[(j,scope) for j,r in enumerate(self.records) for scope in self.scopes(r)
+                          if first and (r['evaluation_id'],scope)!=(first[0]['evaluation_id'],first[1])]
+            if alternatives:
+                j,scope=alternatives[0];self.report_menus[1].current(j);self._report_changed(1,scope)
+        self.validate()
+        if warnings:self.message.set(self.message.get()+f' Skipped {len(warnings)} unreadable saved report(s).')
+
+    def validate(self):
+        choices=[self.selection(i) for i in range(2)]
+        valid=all(choices) and (choices[0][0]['evaluation_id'],choices[0][1])!=(choices[1][0]['evaluation_id'],choices[1][1])
+        self.export_button.configure(state='normal' if valid else 'disabled')
+        count=sum(len(self.scopes(r)) for r in self.records)
+        message='Each profile uses one color across all metric panels and History steps.' if valid else 'Choose two distinct measured profiles.'
+        if count==0:message='No measured profiles found. Evaluate features or load saved version-2 reports with transition samples.'
+        elif count==1:message='Only one measured profile is available. Evaluate another feature or load another saved evaluation.'
+        self.message.set(message)
+        return bool(valid)
+
+    def export(self):
+        if not self.validate():return
+        a,b=self.selection(0),self.selection(1)
+        self.owner.export_comparison(a[0],a[1],b[0],b[1]);self.message.set(self.owner.status.cget('text'))
+
+    def close(self):
+        if not self.closed:
+            self.closed=True;self.owner.comparison_window=None;self.root.destroy()

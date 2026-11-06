@@ -18,6 +18,10 @@ Each distinct requested family (or exact ID when unchecked) receives an individu
 
 Individual family polygon metrics are N/A when the actual representation is collapsed or missing. Combined scopes report polygonal coverage totals, with point counts and line lengths separate. Complexity counts and shell checks use selected family cells; shared-interface checks include the real counterpart without adding that counterpart to selected counts. The live primal/dual audit always validates the complete stored complex and is explicitly labelled as global context. Existing report schemas and metric formulas remain unchanged; feature-selection metadata and scoped complexity rows are additive.
 
+### Comparing two measured profiles
+
+**Overlay two profiles** selects two distinct evaluation/scope pairs from the current result or saved version-2 evaluations. One figure overlays them in blue and orange across the area-change, perimeter-change and sampled-NHD panels. The measured values and actual Z coordinates are retained, including different Z ranges, separate History-step segments and N/A gaps. No section geometry or metric is recalculated and no temporal alignment or interpolation is introduced. Each profile retains its own reference geometry and normalization, so differing reference Z levels and bounding-box diagonals are disclosed in the figure and export metadata. The comparison JSON preserves source evaluation IDs, datasets, scope definitions, feature-selection policies, reference details and plotted samples, including for an unsaved current evaluation. This is a graphical comparison of existing measurements, not a new combined-feature evaluation or a common-baseline error estimate.
+
 ## 2. Actual representations and dimensional conventions
 
 All evaluated representations are horizontal sections reconstructed from immutable, realized DHE boundary records. Historical models are not reallocated, and global DHE topology is not restored or mutated for evaluation. The current model is also audited through its live primal and dual relationships. No target or section geometry is numerically interpolated from endpoint measurements.

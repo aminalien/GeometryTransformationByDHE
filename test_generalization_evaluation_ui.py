@@ -15,7 +15,11 @@ class EvaluationControlTests(unittest.TestCase):
     def setUp(self):
         import tkinter as tk
         from generalization_session import GeneralizationWindow
-        self.root=tk.Tk();self.root.withdraw();self.window=GeneralizationWindow(root=self.root,autoload=False)
+        self.root=tk.Tk();self.root.withdraw()
+        original=tk.Toplevel.__init__
+        def hidden(top,*args,**kwargs):original(top,*args,**kwargs);top.withdraw()
+        self.hidden_windows=patch.object(tk.Toplevel,'__init__',hidden);self.hidden_windows.start()
+        self.window=GeneralizationWindow(root=self.root,autoload=False)
         self.temp=tempfile.TemporaryDirectory();self.window.variables['evaluation_folder'].set(self.temp.name)
         self.window._loaded(session([box(0,0,10,5),box(14,0,24,5),box(30,0,40,5)]))
         self.errors=[];self.error_patch=patch('tkinter.messagebox.showerror',side_effect=lambda *a,**k:self.errors.append(a))
@@ -28,7 +32,7 @@ class EvaluationControlTests(unittest.TestCase):
 
     def tearDown(self):
         if not self.window.closed:self.wait();self.window.close()
-        self.error_patch.stop();self.temp.cleanup()
+        self.error_patch.stop();self.hidden_windows.stop();self.temp.cleanup()
 
     def apply(self,operation='Smoothing',selection=(1,)):
         self.window._select(set(selection));self.window.operation.set(operation)
@@ -126,6 +130,77 @@ class EvaluationControlTests(unittest.TestCase):
         e.show(family);self.assertIn('policy: full feature family',e.info.cget('text'))
         e.feature_mode.set('All features');e._feature_mode_changed()
         self.assertIn('disabled',e.family_check.state())
+        self.assertEqual(self.errors,[])
+
+    def test_profile_overlay_current_saved_sources_exports_and_read_only(self):
+        import json
+        from copy import deepcopy
+        from generalization_model import _core
+        from lts_evaluation import profile_comparison_figure
+        w=self.window;self.apply();w.review_evaluations();e=w.evaluation_window
+        self.assertFalse(e.overlay_profiles.get())
+        w._select({1,3});e.use_workspace_selection();e.consider_feature_family.set(False)
+        e.run();self.wait();first=e.record;e.save();self.wait()
+        self.apply('Collapse to point',(3,));e.run();self.wait();second=e.record;e.save();self.wait()
+        original=deepcopy(second);core=_core();state=w.session.state
+        e.overlay_profiles.set(True);e.plot();self.root.update();dialog=e.comparison_window
+        self.assertEqual(dialog.selection(0)[0]['evaluation_id'],second['evaluation_id'])
+        self.assertEqual(dialog.selection(1)[0]['evaluation_id'],second['evaluation_id'])
+        self.assertNotEqual(dialog.selection(0)[1],dialog.selection(1)[1])
+        dialog.scope_menus[1].set(dialog.selection(0)[1]);dialog.validate()
+        self.assertIn('disabled',dialog.export_button.state())
+        dialog.scope_menus[1].set('Feature 3');dialog.validate()
+        output=Path(self.temp.name)/'comparisons';output.mkdir()
+        def small_figure(*args):
+            figure,settings=profile_comparison_figure(*args);settings['export']['dpi']=60
+            return figure,settings
+        with patch('lts_evaluation_viewer.evaluate_history',side_effect=AssertionError('Plot recomputed evaluation')), \
+             patch('lts_evaluation_viewer.profile_comparison_figure',side_effect=small_figure), \
+             patch('tkinter.filedialog.askdirectory',return_value=str(output)):
+            dialog.export()
+        self.assertEqual({p.suffix for p in output.iterdir()},{'.svg','.pdf','.png','.json'})
+        current=json.loads(next(output.glob('*.json')).read_text(encoding='utf-8'))
+        self.assertEqual([p['evaluation_id'] for p in current['profiles']],[second['evaluation_id']]*2)
+        self.assertEqual(current['alignment'],'actual_z')
+        self.assertEqual(current['profiles'][0]['feature_selection']['policy'],'exact_ids')
+        saved_index=next(i for i,r in enumerate(dialog.records) if r['evaluation_id']==first['evaluation_id'])
+        dialog.report_menus[1].current(saved_index);dialog._report_changed(1,'Feature 3')
+        with patch('tkinter.filedialog.askdirectory',return_value=str(output)), \
+             patch('methodology_publication.save_formats',return_value=([],{},{})):
+            dialog.export()
+        exported=[json.loads(p.read_text(encoding='utf-8')) for p in output.glob('*.json')]
+        mixed=next(r for r in exported if r['profiles'][1]['evaluation_id']==first['evaluation_id'])
+        self.assertEqual([p['z_range'] for p in mixed['profiles']],[[15,25],[5,15]])
+        self.assertTrue(Path(mixed['profiles'][1]['saved_report']).samefile(first['_path']))
+        self.assertIs(e.record,second);self.assertEqual(second,original)
+        # A fresh review can compare two saved reports without a current result.
+        dialog.close();e.record=None;e.records=[];w.evaluation_journal.records.clear()
+        e.plot();self.root.update();dialog=e.comparison_window
+        self.assertEqual(len(dialog.records),2)
+        self.assertTrue(all(label.startswith('Saved') for label in dialog.report_menus[0]['values']))
+        for menu_index,record in enumerate((first,second)):
+            i=next(i for i,r in enumerate(dialog.records) if r['evaluation_id']==record['evaluation_id'])
+            dialog.report_menus[menu_index].current(i);dialog._report_changed(menu_index,'Feature 1')
+        with patch('tkinter.filedialog.askdirectory',return_value=str(output)), \
+             patch('methodology_publication.save_formats',return_value=([],{},{})):
+            dialog.export()
+        exported=[json.loads(p.read_text(encoding='utf-8')) for p in output.glob('*.json')]
+        self.assertTrue(any([p['evaluation_id'] for p in r['profiles']]==[first['evaluation_id'],second['evaluation_id']] for r in exported))
+        self.assertIs(w.session.state,state);self.assertEqual(_core(),core);self.assertEqual(self.errors,[])
+
+    def test_profile_overlay_no_samples_legacy_and_cancel(self):
+        w=self.window;w.review_evaluations();e=w.evaluation_window
+        e.records=[dict(schema_version=1,evaluation_id='legacy')]
+        e.overlay_profiles.set(True);e.plot();self.root.update();dialog=e.comparison_window
+        self.assertFalse(dialog.records);self.assertIn('disabled',dialog.export_button.state())
+        self.assertIn('No measured profiles',dialog.message.get())
+        with patch('tkinter.filedialog.askdirectory') as directory:dialog.export();directory.assert_not_called()
+        self.assertEqual(list(Path(self.temp.name).iterdir()),[])
+        dialog.close();self.apply();w._select({1,3});e.use_workspace_selection();e.run();self.wait()
+        e.plot();self.root.update()
+        with patch('tkinter.filedialog.askdirectory',return_value=''):
+            e.comparison_window.export()
+        self.assertEqual(list(Path(self.temp.name).iterdir()),[])
         self.assertEqual(self.errors,[])
 
     def test_six_operation_requests_save_failure_and_retry(self):

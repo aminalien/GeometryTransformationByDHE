@@ -426,3 +426,79 @@ def profile_figure(record,scope):
                 ax.set_ylabel(title);ax.set_facecolor('white');ax.grid(False)
         axes[-1].set_xlabel('Transition Z');axes[0].legend(fontsize=8);fig.suptitle(scope);fig.tight_layout()
         return fig,settings
+
+
+PROFILE_COMPARISON_COLORS=('#0072B2','#D55E00')
+PROFILE_METRICS=(('area_change_pct','Polygon area\nchange (%)'),
+                 ('perimeter_change_pct','Polygon perimeter\nchange (%)'),
+                 ('normalized_hausdorff','Sampled normalized\nHausdorff'))
+
+
+def profile_comparison_figure(first_record,first_scope,second_record,second_scope):
+    """Overlay two measured profiles at actual Z, retaining each reference.
+
+    No evaluation, interpolation, baseline conversion or source mutation is
+    performed. Export metadata also contains the plotted samples, so an
+    unsaved current evaluation can still produce a reproducible figure.
+    """
+    from copy import deepcopy
+    from textwrap import shorten
+    from matplotlib.figure import Figure
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.lines import Line2D
+    from methodology_publication import PublicationSettings,style
+    import matplotlib as mpl
+    if (first_record.get('evaluation_id'),first_scope)==(second_record.get('evaluation_id'),second_scope):
+        raise ValueError('Choose two distinct evaluation/scope profiles.')
+    profiles=[]
+    for letter,record,scope,color in zip(('A','B'),(first_record,second_record),(first_scope,second_scope),PROFILE_COMPARISON_COLORS):
+        if record.get('schema_version')!=2 or not record.get('evaluation_id'):
+            raise ValueError('Profile comparison requires version-2 evaluations with section profiles.')
+        rows=[r for r in record.get('tables',{}).get('sections',[]) if r.get('scope')==scope]
+        if not rows:raise ValueError(f'Profile {letter}: no measured transition samples for {scope}.')
+        try:
+            if any(not isfinite(r['z']) or any(r[k] is not None and not isfinite(r[k]) for k,_ in PROFILE_METRICS) for r in rows):
+                raise ValueError('Nonfinite sample.')
+            rows=sorted(rows,key=lambda r:(r['step'],r['z'],r.get('t',0)))
+        except (KeyError,TypeError,ValueError) as exc:
+            raise ValueError(f'Profile {letter}: invalid measured profile samples.') from exc
+        definition=record.get('scope_definitions',{}).get(scope,{})
+        profiles.append(dict(profile=letter,evaluation_id=record['evaluation_id'],session_id=record.get('session_id'),
+            created_utc=record.get('created_utc'),mode=record.get('mode'),scope=scope,color=color,
+            dataset=deepcopy(record.get('dataset',{})),saved_report=record.get('_path'),
+            source_step_id=record.get('source_step_id'),end_step_id=record.get('end_step_id'),
+            scope_definition=deepcopy(definition),feature_selection=deepcopy(record.get('feature_selection')),
+            measurement_settings=deepcopy(record.get('settings',{})),
+            reference_z=definition.get('reference_z',rows[0].get('reference_z')),
+            reference_diagonal_m=definition.get('reference_diagonal_m',rows[0].get('hd_reference_diagonal_m')),
+            z_range=[min(r['z'] for r in rows),max(r['z'] for r in rows)],
+            valid_samples={k:sum(r[k] is not None for r in rows) for k,_ in PROFILE_METRICS},samples=deepcopy(rows)))
+    settings=PublicationSettings()
+    with mpl.rc_context(style(settings)):
+        fig=Figure(figsize=(10,8));FigureCanvasAgg(fig);fig._publication_artists={}
+        axes=fig.subplots(3,1,sharex=True);handles=[];notes=[]
+        for profile in profiles:
+            rows=profile['samples'];color=profile['color'];letter=profile['profile']
+            for step in sorted({r['step'] for r in rows}):
+                part=[r for r in rows if r['step']==step]
+                for ax,(key,title) in zip(axes,PROFILE_METRICS):
+                    line=ax.plot([r['z'] for r in part],[np.nan if r[key] is None else r[key] for r in part],
+                                 '.-',color=color)[0]
+                    line.set_gid(f'profile-{letter}-step{step}-{key}')
+                    ax.set_ylabel(title);ax.set_facecolor('white');ax.grid(False)
+            dataset=Path(profile['dataset'].get('source','Unknown dataset')).name
+            label=f"{letter}: {shorten(profile['scope'],width=45)}\n{shorten(dataset,width=32)} | {profile['evaluation_id'][:8]}"
+            handles.append(Line2D([],[],color=color,marker='.',label=label))
+            def value(v):return 'N/A' if v is None else f'{v:g}'
+            empty='; no valid plotted values' if not any(profile['valid_samples'].values()) else ''
+            notes.append(f"{letter}: reference Z={value(profile['reference_z'])}; D={value(profile['reference_diagonal_m'])} m{empty}")
+        lower=min(p['z_range'][0] for p in profiles);upper=max(p['z_range'][1] for p in profiles)
+        pad=max(upper-lower,1.)*.025;axes[-1].set_xlim(lower-pad,upper+pad)
+        axes[-1].set_xlabel('Transition Z')
+        fig.suptitle('Feature profile comparison',y=.98)
+        fig.legend(handles=handles,loc='upper center',bbox_to_anchor=(.5,.94),ncol=2,fontsize=8,frameon=False)
+        fig.text(.5,.075,'Each profile retains its own reference and normalization.',ha='center',fontsize=8)
+        fig.text(.5,.035,'\n'.join(notes),ha='center',fontsize=8)
+        fig.tight_layout(rect=(0,.13,1,.91),h_pad=1.4)
+        fig._profile_comparison=dict(kind='profile_comparison',alignment='actual_z',profiles=profiles)
+        return fig,settings
