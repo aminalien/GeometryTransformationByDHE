@@ -173,8 +173,9 @@ def _case_descriptor(operation,source,target):
     return 'Target hull deviation (%)',100*hull.symmetric_difference(target).area/hull.area
 
 
-def feature_family_scopes(states,feature_ids):
-    """Resolve complete connected lineage families within this history prefix."""
+def feature_family_scopes(states,feature_ids,*,consider_feature_family=True):
+    """Resolve full families or exact IDs within this active history prefix."""
+    if not isinstance(consider_feature_family,bool):raise ValueError('Consider feature family must be a boolean.')
     registry={}
     for state in states:
         for k,f in state.features.items():registry.setdefault(k,set()).update(f.lineage)
@@ -192,19 +193,21 @@ def feature_family_scopes(states,feature_ids):
         for ancestor in lineage:parent[root(ancestor)]=root(k)
     groups={}
     for k in requested:
-        keys=tuple(sorted(n for n in registry if root(n)==root(k)))
+        keys=tuple(sorted(n for n in registry if root(n)==root(k))) if consider_feature_family else (k,)
         groups.setdefault(keys,[]).append(k)
     scopes={};families={}
     for keys,ids in groups.items():
-        name='Feature family '+', '.join(map(str,ids))
+        name=('Feature family ' if consider_feature_family else 'Feature ')+', '.join(map(str,ids))
         scopes[name]=(set(keys),False)
         families[name]=dict(requested_ids=ids,cell_ids=list(keys),
                             initial_lineage=sorted(set().union(*(registry[k] for k in keys))))
     combined=set().union(*(keys for keys,_ in scopes.values()))
     combined_name=next(iter(scopes))
     if len(scopes)>1:
-        combined_name='Combined selected families';scopes[combined_name]=(combined,True)
-    return scopes,dict(policy='full_family',requested_ids=requested,families=families,
+        combined_name='Combined selected families' if consider_feature_family else 'Combined selected features'
+        scopes[combined_name]=(combined,True)
+    return scopes,dict(policy='full_family' if consider_feature_family else 'exact_ids',
+                       consider_feature_family=consider_feature_family,requested_ids=requested,families=families,
                        combined_scope=combined_name,expanded_cell_ids=sorted(combined-set(requested)))
 
 
@@ -216,9 +219,10 @@ def _matching_action(state,source_keys,target_keys):
     return None
 
 
-def evaluate_history(history,end_index,mode,live_model,dataset,session_id,*,relative_spacing=.001,max_samples=200000,feature_ids=None):
+def evaluate_history(history,end_index,mode,live_model,dataset,session_id,*,relative_spacing=.001,max_samples=200000,feature_ids=None,consider_feature_family=True):
     """Explicit request only. History must be the active prefix; no DHE allocation."""
     started=perf_counter()
+    if not isinstance(consider_feature_family,bool):raise ValueError('Consider feature family must be a boolean.')
     if mode not in ('last_operation','whole_history'):raise ValueError('Choose Last operation or Whole history.')
     states=list(history[:end_index+1])
     if not states:raise ValueError('No history state to evaluate.')
@@ -246,7 +250,7 @@ def evaluate_history(history,end_index,mode,live_model,dataset,session_id,*,rela
         scopes['Affected context']=(set(op.affected)|set(op.selected),True)
     selection=None;scope_metadata={};descriptor_actions={}
     if feature_ids is not None:
-        scopes,selection=feature_family_scopes(states,feature_ids)
+        scopes,selection=feature_family_scopes(states,feature_ids,consider_feature_family=consider_feature_family)
         for name,(keys,_) in scopes.items():
             ids=selection['families'].get(name,{}).get('requested_ids',selection['requested_ids'])
             scope_metadata[name]=dict(requested_feature_ids=ids,family_cell_ids=sorted(keys))
@@ -329,12 +333,12 @@ def evaluate_history(history,end_index,mode,live_model,dataset,session_id,*,rela
 def analysis_report(record):
     lines=['# LTS quantitative analysis report','',f"Mode: {record['mode']}. End state: {record['end_step_id']} (history index {record['end_index']}).",
         f"Dataset: {record['dataset']['source']}. Fingerprint: {record['dataset']['fingerprint']}.",
-        *([f"Feature selection: requested IDs {record['feature_selection']['requested_ids']}; policy full family; additional family cell IDs {record['feature_selection']['expanded_cell_ids']}."] if record.get('feature_selection') else []),
+        *([f"Feature selection: requested IDs {record['feature_selection']['requested_ids']}; policy {record['feature_selection']['policy']}; additional family cell IDs {record['feature_selection']['expanded_cell_ids']}."] if record.get('feature_selection') else []),
         '', '## Applied operations and parameters',
         *[f"- Step {o['step']} ({o['step_id']}): {o['name']}; selected={o['selected']}; affected={o['affected']}; winner={o['winner']}; parameters={o['parameters']}; Zs={o['z_s']}, Zt={o['z_t']}, Zm={o['z_m']}." for o in record['operations']],
         *[f"- Step {o['step']}, action {i}: {a['name']}; selected={a['selected']}; winner={a['winner']}; parameters={a['parameters']}." for o in record['operations'] if o['name']=='batch' for i,a in enumerate(o.get('actions',()),1)],
         '', '## Definitions and comparison inputs',
-        *[f"- {scope}: family cell IDs={definition['cell_ids']}; initial lineage={definition['initial_lineage']}; reference Z={definition['reference_z']}; D={definition['reference_diagonal_m']} m." for scope,definition in record.get('scope_definitions',{}).items()],
+        *[f"- {scope}: measured cell IDs={definition['cell_ids']}; initial lineage={definition['initial_lineage']}; reference Z={definition['reference_z']}; D={definition['reference_diagonal_m']} m." for scope,definition in record.get('scope_definitions',{}).items()],
         'Every geometry is an actual horizontal section of realized DHE faces. No geometry or measurement is interpolated between section levels. Each operation has 11 levels, z(t)=zs+t(zt-zs), t=0,0.1,...,1. Source-interface ownership is taken from below.',
         'Area A is polygonal coverage in m². Perimeter P sums polygon-feature boundaries in m (shared boundaries count per feature). Signed differences are ΔA=A−Aref and ΔP=P−Pref; percentages are 100ΔA/Aref and 100ΔP/Pref. For individual collapsed targets these polygon metrics are N/A. Whole-map coverage totals exclude points and polylines; their counts and line lengths are reported separately.',
         'Displacement compares polygon boundaries, line geometries, and points. The symmetric sampled Hausdorff Hh is the largest sampled point-to-original-geometry distance in either direction. NHD=Hh/D, where D is the fixed reference bounding-box diagonal. Maximum sample spacing h=D·relative_hd_spacing; the sampling-only continuous-distance bound is Hh≤H≤Hh+h/2. Floating-point errors are separate. A budget overflow yields N/A without coarsening.',

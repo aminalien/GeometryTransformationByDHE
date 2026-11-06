@@ -18,12 +18,60 @@ from test_generalization import session
 from top_face_overlay import cell_volume
 
 
-def evaluate(s,mode='last_operation',index=None,feature_ids=None):
+def evaluate(s,mode='last_operation',index=None,feature_ids=None,**kwargs):
     j=EvaluationJournal();j.start_session(s.data,s.origin)
-    return evaluate_history(s.history,s.cursor if index is None else index,mode,s.model,j.dataset,j.session_id,feature_ids=feature_ids)
+    return evaluate_history(s.history,s.cursor if index is None else index,mode,s.model,j.dataset,j.session_id,feature_ids=feature_ids,**kwargs)
 
 
 class FeatureSelectionTests(unittest.TestCase):
+    def test_exact_ids_keep_retired_and_winner_scopes_separate(self):
+        s=session([box(0,0,5,5),box(5,0,10,5),box(30,0,35,5)])
+        s.apply(s.preview('merging',[1,2],winner=1));before=s.state;ledger=tuple(dhe.dhe)
+        default=evaluate(s,feature_ids=[1,2])
+        self.assertEqual(default['tables'],evaluate(s,feature_ids=[1,2],consider_feature_family=True)['tables'])
+        exact=evaluate(s,feature_ids=[2,1,2],consider_feature_family=False)
+        self.assertEqual(set(exact['scope_definitions']),{'Feature 1','Feature 2','Combined selected features'})
+        self.assertEqual(exact['feature_selection']['policy'],'exact_ids')
+        self.assertFalse(exact['feature_selection']['consider_feature_family'])
+        self.assertEqual(exact['feature_selection']['expanded_cell_ids'],[])
+        self.assertEqual(exact['scope_definitions']['Feature 1']['cell_ids'],[1])
+        end={r['scope']:r for r in exact['tables']['summary'] if r['step']==1}
+        self.assertEqual(end['Feature 1']['area_m2'],50)
+        self.assertEqual(end['Feature 1']['area_change'],25)
+        self.assertEqual(end['Feature 2']['geometry_type'],'Empty');self.assertIsNone(end['Feature 2']['area_m2'])
+        self.assertIsNone(end['Feature 2']['normalized_hausdorff'])
+        self.assertEqual(end['Combined selected features']['area_m2'],50)
+        self.assertEqual(len(exact['tables']['sections']),33)
+        self.assertIs(s.state,before);self.assertEqual(tuple(dhe.dhe),ledger)
+
+    def test_exact_aggregate_has_no_fabricated_ancestor_reference_and_roundtrips(self):
+        import csv,json
+        s=session([box(0,0,2,2),box(4,0,6,2),box(20,0,22,2)])
+        s.apply(s.preview('aggregation',[1,2]));aggregate=s.state.operation.winner
+        exact=evaluate(s,'whole_history',feature_ids=[aggregate],consider_feature_family=False)
+        name=f'Feature {aggregate}'
+        self.assertEqual(exact['scope_definitions'][name]['cell_ids'],[aggregate])
+        self.assertEqual(exact['tables']['summary'][0]['geometry_type'],'Empty')
+        self.assertEqual(exact['tables']['summary'][-1]['area_m2'],12)
+        self.assertIsNone(exact['tables']['summary'][-1]['area_change'])
+        self.assertIsNone(exact['tables']['summary'][-1]['normalized_hausdorff'])
+        retired=evaluate(s,feature_ids=[1,2],consider_feature_family=False)
+        self.assertEqual(retired['tables']['summary'][-1]['area_m2'],0)
+        with tempfile.TemporaryDirectory() as folder:
+            path=save_report(exact,folder);loaded,warnings=load_reports(folder)
+            self.assertFalse(warnings);self.assertEqual(loaded[0]['feature_selection'],exact['feature_selection'])
+            self.assertIn('policy exact_ids',path.with_name('analysis_report.md').read_text(encoding='utf-8'))
+            with path.with_name('summary.csv').open(encoding='utf-8-sig',newline='') as stream:rows=list(csv.DictReader(stream))
+            self.assertEqual(json.loads(rows[0]['family_cell_ids']),[aggregate])
+            figure,_=profile_figure(loaded[0],name);figure.clear()
+            old=evaluate(s,feature_ids=[1]);old['feature_selection'].pop('consider_feature_family')
+            save_report(old,folder);self.assertEqual(len(load_reports(folder)[0]),2)
+        s.go(0)
+        with self.assertRaises(ValueError):evaluate(s,'whole_history',feature_ids=[aggregate],consider_feature_family=False)
+        self.assertNotIn('feature_selection',evaluate(s,'whole_history',consider_feature_family=False))
+        for value in (None,0,'false'):
+            with self.assertRaises(ValueError):evaluate(s,'whole_history',feature_ids=[1],consider_feature_family=value)
+
     def test_individual_combined_unaffected_collapse_and_read_only(self):
         s=session();s.apply(s.preview('point',[1]));before=s.state;ledger=tuple(dhe.dhe);history=tuple(s.history)
         with patch.object(dhe,'MEVVFS',side_effect=AssertionError('Evaluation allocated DHE')):

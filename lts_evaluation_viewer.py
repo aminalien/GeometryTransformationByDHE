@@ -30,7 +30,10 @@ class EvaluationWindow:
         choice=ttk.Combobox(choices,textvariable=self.feature_mode,values=('All features','Choose features'),state='readonly',width=20)
         choice.pack(side='left');choice.bind('<<ComboboxSelected>>',lambda e:self._feature_mode_changed())
         ttk.Button(choices,text='Use workspace selection',command=self.use_workspace_selection).pack(side='left',padx=5)
-        ttk.Label(choices,text='Custom selection follows complete merge/aggregation families; repeated families are counted once.').pack(side='left')
+        self.consider_feature_family=tk.BooleanVar(value=True)
+        self.family_check=ttk.Checkbutton(choices,text='Consider feature family',variable=self.consider_feature_family)
+        self.family_check.pack(side='left',padx=5)
+        ttk.Label(selection,text='Checked: include ancestors and merged results. Unchecked: measure only the chosen IDs.').pack(anchor='w')
         self.feature_list=tk.Listbox(selection,selectmode='extended',exportselection=False,height=4)
         scrollbar=ttk.Scrollbar(selection,command=self.feature_list.yview)
         self.feature_list.configure(yscrollcommand=scrollbar.set)
@@ -61,7 +64,8 @@ class EvaluationWindow:
         if path:self.workspace.variables['evaluation_folder'].set(path)
 
     def _feature_mode_changed(self):
-        self.feature_list.configure(state='normal' if self.feature_mode.get()=='Choose features' else 'disabled')
+        state='normal' if self.feature_mode.get()=='Choose features' else 'disabled'
+        self.feature_list.configure(state=state);self.family_check.configure(state=state)
 
     def _refresh_features(self):
         selected={self.feature_indices[i] for i in self.feature_list.curselection()}
@@ -96,8 +100,10 @@ class EvaluationWindow:
         mode='last_operation' if self.mode.get()=='Last operation' else 'whole_history'
         states=tuple(w.session.history[:w.session.cursor+1]);model=w.session.model
         dataset=dict(w.evaluation_journal.dataset);session_id=w.evaluation_journal.session_id
+        consider_feature_family=self.consider_feature_family.get()
         def measure():
-            try:return evaluate_history(states,len(states)-1,mode,model,dataset,session_id,feature_ids=feature_ids)
+            try:return evaluate_history(states,len(states)-1,mode,model,dataset,session_id,feature_ids=feature_ids,
+                                        consider_feature_family=consider_feature_family)
             except Exception as exc:return dict(_analysis_error=f'{type(exc).__name__}: {exc}')
         def done(record):
             if '_analysis_error' in record:
@@ -117,7 +123,8 @@ class EvaluationWindow:
         self.info.configure(text=f"{'Legacy automatic evaluation' if legacy else record['mode']} | {record['dataset']['source']} | end step {record.get('end_index',record.get('history_step'))} | {record['evaluation_id']}")
         selection=record.get('feature_selection')
         if selection:
-            self.info.configure(text=self.info.cget('text')+f"\nRequested IDs: {selection['requested_ids']}; additional family cell IDs: {selection['expanded_cell_ids']}. Full-complex live validation is global context.")
+            policy='exact IDs' if selection.get('policy')=='exact_ids' else 'full feature family'
+            self.info.configure(text=self.info.cget('text')+f"\nRequested IDs: {selection['requested_ids']}; policy: {policy}; additional family cell IDs: {selection['expanded_cell_ids']}. Full-complex live validation is global context.")
         if not legacy and any(r['missing_logical_features'] for r in record['tables']['structure']):
             self.info.configure(text=self.info.cget('text')+'\nSome logical features are absent from actual DHE sections; see Complexity / validation and the report.')
         self.display();self.status.configure(text='Saved: '+record['_path'] if record.get('_path') else 'Measured result is not saved. Click Save results to export tables and explanatory report.')

@@ -98,6 +98,36 @@ class EvaluationControlTests(unittest.TestCase):
         self.assertFalse(e.feature_list.curselection())
         self.assertEqual(self.errors,[])
 
+    def test_optional_family_checkbox_captures_policy_without_remeasuring(self):
+        import json
+        w=self.window;self.apply('Aggregation',(1,2));aggregate=w.session.state.operation.winner
+        w.review_evaluations();e=w.evaluation_window
+        self.assertTrue(e.consider_feature_family.get());self.assertIn('disabled',e.family_check.state())
+        w._select({aggregate});e.use_workspace_selection();self.assertNotIn('disabled',e.family_check.state())
+        e.run();self.wait();family=e.record
+        self.assertEqual(family['feature_selection']['expanded_cell_ids'],[1,2])
+        e.consider_feature_family.set(False);self.root.update()
+        self.assertIs(e.record,family)
+        e.run();e.consider_feature_family.set(True);self.wait();exact=e.record
+        self.assertEqual(exact['feature_selection']['policy'],'exact_ids')
+        self.assertFalse(exact['feature_selection']['consider_feature_family'])
+        self.assertEqual(exact['feature_selection']['expanded_cell_ids'],[])
+        self.assertIn('policy: exact IDs',e.info.cget('text'))
+        self.assertEqual(set(exact['scope_definitions']),{f'Feature {aggregate}'})
+        e.save();self.wait()
+        self.assertEqual(json.loads(Path(exact['_path']).read_text())['feature_selection']['policy'],'exact_ids')
+        with patch('tkinter.filedialog.askdirectory',return_value=self.temp.name), \
+             patch('methodology_publication.save_formats',return_value=([],{},{})):
+            e.plot()
+        metadata=json.loads(next(Path(self.temp.name).glob('lts_profile_*.json')).read_text())
+        self.assertEqual(metadata['feature_selection']['policy'],'exact_ids')
+        self.assertEqual(metadata['scope_definition']['cell_ids'],[aggregate])
+        family['feature_selection'].pop('consider_feature_family')
+        e.show(family);self.assertIn('policy: full feature family',e.info.cget('text'))
+        e.feature_mode.set('All features');e._feature_mode_changed()
+        self.assertIn('disabled',e.family_check.state())
+        self.assertEqual(self.errors,[])
+
     def test_six_operation_requests_save_failure_and_retry(self):
         w=self.window;w.review_evaluations();e=w.evaluation_window
         cases=[('Simplification',{1}),('Smoothing',{1}),('Collapse to point',{3}),
