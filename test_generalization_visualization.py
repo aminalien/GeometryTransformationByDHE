@@ -17,7 +17,7 @@ from shapely.ops import unary_union
 import DHECore as dhe
 from generalization_model import _core
 from generalization_visualization import (TransitionSnapshot,ViewSettings,clip_ring,export_transition,
-    render_slices,render_transition,view_bounds,visible_owners,visible_outlines,resolve_slice_levels)
+    render_slices,render_transition,view_bounds,visible_owners,visible_outlines,resolve_slice_levels,dual_geometry)
 from methodology_publication import PublicationSettings
 from plane_slicing import PlaneSlicer,SlicePlane
 from test_generalization import session
@@ -85,6 +85,37 @@ class PublicationViewTests(unittest.TestCase):
         cls.session=session()
         cls.proposal=cls.session.preview('merging',[1,2],winner=1)
         cls.snapshot=TransitionSnapshot.capture(cls.proposal.state,[cls.session.state])
+
+    def test_dual_illustration_adjacency_filters_and_independent_toggles(self):
+        core=_core();faces=self.snapshot.faces
+        options=ViewSettings(scope='all',z_b=5)
+        centres,links=dual_geometry(self.snapshot,options)
+        self.assertEqual(set(centres),{1,2,3,4});self.assertEqual(links,((1,2),))
+        self.assertTrue(all(5<=p[2]<=15 for p in centres.values()))
+        hidden,filtered=dual_geometry(self.snapshot,replace(options,hidden=(2,)))
+        self.assertEqual(set(hidden),{1,3,4});self.assertFalse(filtered)
+        for vertices,edges in ((False,False),(True,False),(False,True),(True,True)):
+            fig=render_transition(self.snapshot,replace(options,show_dual_vertices=vertices,show_dual_halfedges=edges))
+            gids={a.get_gid() for a in fig.axes[0].collections if a.get_gid()}
+            self.assertEqual({g for g in gids if g.startswith('dual-vertex')},
+                             {f'dual-vertex-{k}' for k in centres} if vertices else set())
+            self.assertEqual({g for g in gids if g.startswith('dual-halfedge')},
+                             {'dual-halfedge-1-2','dual-halfedge-2-1'} if edges else set())
+            fig.clear()
+        self.assertIs(self.snapshot.faces,faces);self.assertEqual(_core(),core)
+
+    def test_dual_export_and_unchanged_2d_sections(self):
+        settings=PublicationSettings({'layout':{'width_in':4,'height_in':3},'export':{'dpi':100}})
+        options=ViewSettings(show_dual_vertices=True,show_dual_halfedges=True)
+        with tempfile.TemporaryDirectory(dir='artifacts') as output:
+            paths,record=export_transition(self.snapshot,output,options=options,settings=settings)
+            svg=next(p for p in paths if p.suffix=='.svg').read_text(encoding='utf-8')
+            self.assertIn('dual-vertex-1',svg);self.assertIn('dual-halfedge-1-2',svg)
+            self.assertTrue(record['view']['show_dual_vertices']);self.assertTrue(record['view']['show_dual_halfedges'])
+        fig=render_slices(self.snapshot,6,'2d',options,settings)
+        self.assertFalse(any(a.get_gid() for ax in fig.axes for a in ax.collections))
+        self.assertFalse(any('Dual' in t.get_text() for legend in fig.legends for t in legend.texts))
+        fig.clear()
 
     def test_custom_slice_ranges_validation_and_display_extent(self):
         self.assertEqual(resolve_slice_levels(self.snapshot,ViewSettings(),6),list(np.linspace(5,15,6)))
@@ -320,6 +351,11 @@ class TransitionViewerControlTests(unittest.TestCase):
             window=TransitionVisualizationWindow(root,s,proposal);root.update()
             self.assertFalse(window.show_plane.get())
             self.assertFalse(window.slice_xy_numbers.get())
+            self.assertFalse(window.show_dual_vertices.get());self.assertFalse(window.show_dual_halfedges.get())
+            window.show_dual_vertices.set(True);window.show_dual_halfedges.set(True)
+            window.redraw();root.update()
+            self.assertTrue(window.options().show_dual_vertices);self.assertTrue(window.options().show_dual_halfedges)
+            self.assertTrue(any((a.get_gid() or '').startswith('dual-vertex') for a in window.figure.axes[0].collections))
             window.variables['slice_z_start'].set('7');window.variables['slice_z_end'].set('22')
             self.assertEqual(window.options().slice_z_start,7)
             window.presentation.set('2D slice grid');window.redraw();root.update()

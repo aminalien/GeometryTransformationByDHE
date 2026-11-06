@@ -5,7 +5,7 @@ and cut caps are illustrations; sections always come from the full stored shell.
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 import json
 import math
@@ -137,6 +137,8 @@ class ViewSettings:
     value: float | None = None
     tilt: float = 45.
     plane_azimuth: float = 0.
+    show_dual_vertices: bool = False
+    show_dual_halfedges: bool = False
 
     def validate(self):
         if self.scope not in ('affected','all') or self.extent not in ('interval','history'):
@@ -271,6 +273,54 @@ def visible_outlines(snapshot,options,*,slicer=None):
         for owner,g in selected_sections(slicer,SlicePlane.horizontal(level),owners).items())
 
 
+def dual_geometry(snapshot,options,*,clipped=None):
+    """Illustrative cell centres and shared-face adjacency, without live DHE.
+
+    Positions are means of unique visible boundary vertices, not new model
+    vertices. Exact matching face uses supply adjacency, never proximity.
+    """
+    lower,upper=view_bounds(snapshot,options);owners=visible_owners(snapshot,options)
+    rings={} if clipped is None else clipped
+    interfaces={}
+    for face in snapshot.faces:
+        if face.owner not in owners:continue
+        visible=clip_ring(face.points,lower,upper)
+        if not visible:continue
+        if clipped is None:rings.setdefault(face.owner,[]).extend(visible)
+        key=tuple(sorted(face.points))
+        interfaces.setdefault(key,set()).add(face.owner)
+    centres={owner:tuple(np.mean(sorted({p for ring in faces for p in ring}),axis=0))
+             for owner,faces in sorted(rings.items()) if faces}
+    links=set()
+    for uses in interfaces.values():
+        if len(uses)==2 and uses<=centres.keys():links.add(tuple(sorted(uses)))
+    return centres,tuple(sorted(links))
+
+
+def draw_dual(ax,snapshot,options,clipped):
+    centres,links=dual_geometry(snapshot,options,clipped=clipped)
+    if options.show_dual_halfedges:
+        for a,b in links:
+            start,end=np.asarray(centres[a]),np.asarray(centres[b]);delta=end-start
+            length=np.linalg.norm(delta)
+            if length<=arithmetic_bound([start,end]):continue
+            side=np.array([-delta[1],delta[0],0.])
+            if np.linalg.norm(side)==0:side=np.array([1.,0.,0.])
+            offset=side/np.linalg.norm(side)*length*.015
+            for owner,target,p,q in ((a,b,start,end),(b,a,end,start)):
+                shift=offset if owner==a else -offset
+                p,q=p+(q-p)*.06+shift,q+(p-q)*.06+shift
+                arrow=ax.quiver(*p,*(q-p),color=feature_color(owner),linewidth=1.5,
+                                arrow_length_ratio=.12)
+                arrow.set_gid(f'dual-halfedge-{owner}-{target}')
+    if options.show_dual_vertices:
+        for owner,point in centres.items():
+            marker=ax.scatter(*point,s=44,color=feature_color(owner),edgecolors='black',
+                              linewidths=.6,depthshade=False)
+            marker.set_gid(f'dual-vertex-{owner}')
+            ax.text(*point,f' D{owner}',fontsize=8,color=feature_color(owner))
+
+
 def render_scene(ax,snapshot,slicer,options,settings,*,plane=None):
     lower,upper=view_bounds(snapshot,options)
     owners=visible_owners(snapshot,options)
@@ -295,6 +345,7 @@ def render_scene(ax,snapshot,slicer,options,settings,*,plane=None):
                 draw_geometry(ax,remainder,feature_color(owner),plane=cut,alpha=options.opacity,fill=options.fill_cells)
     for outline in visible_outlines(snapshot,options,slicer=slicer):
         draw_geometry(ax,outline.geometry,feature_color(outline.owner),plane=SlicePlane.horizontal(outline.level),linewidth=1.8,fill=False)
+    if options.show_dual_vertices or options.show_dual_halfedges:draw_dual(ax,snapshot,options,by_owner)
     arr=np.asarray(points);lo,hi=arr.min(axis=0),arr.max(axis=0)
     span=np.maximum(hi-lo,1.);middle=(hi+lo)/2
     for axis,i in ((ax.set_xlim,0),(ax.set_ylim,1)):
@@ -343,6 +394,8 @@ def add_legend(fig,snapshot,options,settings):
     names=dict(snapshot.names)
     owners=sorted(visible_owners(snapshot,options))
     handles=[Line2D([],[],color=feature_color(k),lw=3,label=names.get(k,f'Feature {k}')) for k in owners]
+    if options.show_dual_vertices:handles.append(Line2D([],[],color='black',marker='o',ls='none',label='Dual vertices (illustration)'))
+    if options.show_dual_halfedges:handles.append(Line2D([],[],color='black',lw=1.5,label='Dual half-edges'))
     fig.legend(handles=handles,loc=settings['view']['legend_loc'],ncol=settings['view']['legend_columns'] or min(6,max(1,len(handles))),
                fontsize=settings['fonts']['legend'],frameon=False)
 
@@ -433,7 +486,8 @@ def render_slices(snapshot,count=9,kind='2d',options=None,settings=None,*,levels
             number=i+1 if len(levels)>1 else int(np.argmin(np.abs(np.array(configured)-z)))+1
             ax.set_title(f'({number}) Z = {z:g}',fontsize=settings['fonts']['panel_title'])
         if settings['layout']['show_title']:fig.suptitle(snapshot.label,fontsize=settings['fonts']['title'])
-        add_legend(fig,snapshot,options,settings)
+        legend_options=options if kind=='3d' else replace(options,show_dual_vertices=False,show_dual_halfedges=False)
+        add_legend(fig,snapshot,legend_options,settings)
         apply_layout(fig,settings,grid=True,options=options)
         return fig
 
