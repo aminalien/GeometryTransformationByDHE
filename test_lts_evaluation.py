@@ -18,9 +18,88 @@ from test_generalization import session
 from top_face_overlay import cell_volume
 
 
-def evaluate(s,mode='last_operation',index=None):
+def evaluate(s,mode='last_operation',index=None,feature_ids=None):
     j=EvaluationJournal();j.start_session(s.data,s.origin)
-    return evaluate_history(s.history,s.cursor if index is None else index,mode,s.model,j.dataset,j.session_id)
+    return evaluate_history(s.history,s.cursor if index is None else index,mode,s.model,j.dataset,j.session_id,feature_ids=feature_ids)
+
+
+class FeatureSelectionTests(unittest.TestCase):
+    def test_individual_combined_unaffected_collapse_and_read_only(self):
+        s=session();s.apply(s.preview('point',[1]));before=s.state;ledger=tuple(dhe.dhe);history=tuple(s.history)
+        with patch.object(dhe,'MEVVFS',side_effect=AssertionError('Evaluation allocated DHE')):
+            report=evaluate(s,feature_ids=[3,1,3])
+        self.assertEqual(report['feature_selection']['requested_ids'],[1,3])
+        self.assertEqual(set(report['scope_definitions']),{'Feature family 1','Feature family 3','Combined selected families'})
+        self.assertEqual(len(report['tables']['sections']),33)
+        end={r['scope']:r for r in report['tables']['summary'] if r['step']==s.cursor}
+        self.assertIsNone(end['Feature family 1']['area_m2'])
+        self.assertEqual(end['Feature family 3']['area_m2'],100)
+        self.assertEqual(end['Combined selected families']['area_m2'],100)
+        self.assertEqual(end['Feature family 3']['operation_descriptor'],'N/A')
+        audit={r['scope']:r for r in report['tables']['structure'] if r['step']==s.cursor}
+        self.assertEqual(audit['Feature family 3']['retained_cells'],1)
+        self.assertEqual(audit['Combined selected families']['retained_cells'],2)
+        self.assertTrue(all(r['live_validation_scope']=='Entire stored complex' for r in audit.values()))
+        self.assertIs(s.state,before);self.assertEqual(tuple(s.history),history);self.assertEqual(tuple(dhe.dhe),ledger)
+
+    def test_retired_winner_and_recursive_merging_are_one_complete_family(self):
+        s=session([box(0,0,5,5),box(5,0,10,5),box(10,0,15,5),box(30,0,35,5)])
+        s.apply(s.preview('merging',[1,2],winner=1));s.apply(s.preview('merging',[1,3],winner=1))
+        report=evaluate(s,'whole_history',feature_ids=[2,1])
+        self.assertEqual(len(report['scope_definitions']),1)
+        name=next(iter(report['scope_definitions']))
+        self.assertEqual(report['scope_definitions'][name]['cell_ids'],[1,2,3])
+        self.assertEqual(report['feature_selection']['expanded_cell_ids'],[3])
+        self.assertTrue(all(r['area_m2']==75 for r in report['tables']['summary']))
+        self.assertEqual(len(report['tables']['sections']),22)
+        last=evaluate(s,feature_ids=[2])
+        end=last['tables']['summary'][-1]
+        self.assertEqual(end['operation_descriptor'],'Union preservation error (%)')
+        self.assertAlmostEqual(end['descriptor_value'],0)
+
+    def test_selected_terminal_family_missing_from_later_physical_sections(self):
+        s=session();s.apply(s.preview('polyline',[1]));s.apply(s.preview('smoothing',[3]))
+        report=evaluate(s,'whole_history',feature_ids=[1])
+        last=report['tables']['summary'][-1]
+        self.assertIsNone(last['area_m2']);self.assertEqual(last['geometry_type'],'Empty')
+        self.assertEqual(report['tables']['structure'][-1]['missing_terminal_features'],[1])
+
+    def test_aggregation_expansion_deduplication_and_active_prefix(self):
+        s=session([box(0,0,2,2),box(4,0,6,2),box(20,0,22,2),box(24,0,26,2)])
+        s.apply(s.preview('aggregation',[1,2]));first=s.state.operation.winner
+        s.apply(s.preview('aggregation',[first,3]));second=s.state.operation.winner
+        report=evaluate(s,'whole_history',feature_ids=[2,second,4])
+        definitions=list(report['scope_definitions'].values())
+        family=next(v for v in definitions if set(v['cell_ids'])=={1,2,3,first,second})
+        self.assertEqual(family['initial_lineage'],[1,2,3])
+        self.assertEqual(len(definitions),3)
+        combined=report['feature_selection']['combined_scope']
+        end=next(r for r in report['tables']['summary'] if r['step']==2 and r['scope']==combined)
+        self.assertAlmostEqual(end['area_m2'],sum(f.geometry.area for f in s.state.features.values()))
+        self.assertEqual(len(report['tables']['sections']),66)
+        s.go(1)
+        earlier=evaluate(s,'whole_history',feature_ids=[2])
+        self.assertEqual(next(iter(earlier['scope_definitions'].values()))['cell_ids'],[1,2,first])
+        for ids in ([],[second],[999],[True],[1.5]):
+            with self.assertRaises(ValueError):evaluate(s,'whole_history',feature_ids=ids)
+
+    def test_mixed_action_descriptors_and_filtered_report_roundtrip(self):
+        import csv,json
+        s=session()
+        s.apply(s.preview_level([dict(operation='merging',selected=[1,2],winner=1),dict(operation='point',selected=[3])]))
+        report=evaluate(s,feature_ids=[1,3,4])
+        end={r['scope']:r for r in report['tables']['summary'] if r['step']==1}
+        self.assertEqual(end['Feature family 1']['operation_descriptor'],'Union preservation error (%)')
+        self.assertEqual(end['Feature family 3']['operation_descriptor'],'Normalized centroid displacement')
+        self.assertEqual(end['Feature family 4']['operation_descriptor'],'N/A')
+        with tempfile.TemporaryDirectory() as folder:
+            path=save_report(report,folder);loaded,warnings=load_reports(folder)
+            self.assertFalse(warnings);self.assertEqual(loaded[0]['feature_selection'],report['feature_selection'])
+            with path.with_name('summary.csv').open(encoding='utf-8-sig',newline='') as stream:rows=list(csv.DictReader(stream))
+            self.assertEqual(json.loads(rows[0]['family_cell_ids']),[1,2])
+            self.assertIn('requested IDs',path.with_name('analysis_report.md').read_text(encoding='utf-8'))
+            fig,_=profile_figure(loaded[0],'Feature family 3');fig.clear()
+        self.assertNotIn('feature_selection',evaluate(s))
 
 
 class DisplacementTests(unittest.TestCase):

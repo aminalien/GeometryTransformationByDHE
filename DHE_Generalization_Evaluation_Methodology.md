@@ -8,6 +8,14 @@ Quantitative analysis is initiated explicitly through **Quantitative Evaluation 
 
 Each history state has a stable identifier and parent identifier. Each requested evaluation has a new identifier. Reports retain dataset source, projected CRS, origin and fingerprint, selected/affected indices, lineage-derived scope, operations, parameters, comparison steps and Z levels, numerical settings, and library versions. Reusing a history index on another branch does not reuse its state or evaluation identity. Existing version-1 automatic-evaluation reports can be reviewed as legacy records without reinterpretation or rewriting.
 
+### Optional feature-family selection
+
+The default **All features** request preserves the standard scopes above. **Choose features** selects one or more current or retired feature IDs from the active history prefix before measurement. Families are connected through recorded lineage: ancestors, merge contributors, intermediate aggregates and merged results belong to the same family. No later history state is consulted after Undo. This is a complete-family analysis, not an attempt to attribute part of an indivisible merged polygon to one contributor.
+
+Each distinct requested family receives an individual scope. Multiple distinct families also receive a combined scope; common cell IDs and identical families are deduplicated. Requested IDs, additional family cells and resolved initial lineages are disclosed in report metadata and numerical exports. Last-operation references remain the preceding source representation; whole-history references remain the initial top. A case descriptor is calculated only when the family scope matches a relevant action; unrelated or multi-action scopes receive an explanatory N/A.
+
+Individual family polygon metrics are N/A when the actual representation is collapsed or missing. Combined scopes report polygonal coverage totals, with point counts and line lengths separate. Complexity counts and shell checks use selected family cells; shared-interface checks include the real counterpart without adding that counterpart to selected counts. The live primal/dual audit always validates the complete stored complex and is explicitly labelled as global context. Existing report schemas and metric formulas remain unchanged; feature-selection metadata and scoped complexity rows are additive.
+
 ## 2. Actual representations and dimensional conventions
 
 All evaluated representations are horizontal sections reconstructed from immutable, realized DHE boundary records. Historical models are not reallocated, and global DHE topology is not restored or mutated for evaluation. The current model is also audited through its live primal and dual relationships. No target or section geometry is numerically interpolated from endpoint measurements.

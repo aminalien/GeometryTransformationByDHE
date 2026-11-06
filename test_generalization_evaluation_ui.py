@@ -65,6 +65,39 @@ class EvaluationControlTests(unittest.TestCase):
         self.assertTrue(any(r['evaluation_id']==branch['evaluation_id'] for r in w.evaluation_window.records))
         self.assertEqual(self.errors,[])
 
+    def test_feature_picker_family_expansion_and_history_refresh(self):
+        w=self.window;self.apply();w.review_evaluations();e=w.evaluation_window
+        w._select({2,3});e.use_workspace_selection()
+        self.assertEqual(e.feature_mode.get(),'Choose features')
+        self.assertEqual([e.feature_indices[i] for i in e.feature_list.curselection()],[2,3])
+        e.run();self.wait();report=e.record
+        self.assertEqual(report['feature_selection']['requested_ids'],[2,3])
+        self.assertEqual(len(report['tables']['sections']),33)
+        e.feature_list.selection_clear(0,'end');e.run();self.wait()
+        self.assertIs(e.record,report);self.assertIn('at least one feature',e.status.cget('text'))
+        self.apply('Aggregation',(1,2));aggregate=w.session.state.operation.winner
+        self.assertIn(1,e.feature_indices);self.assertIn(aggregate,e.feature_indices)
+        self.assertIn('retired',e.feature_list.get(e.feature_indices.index(1)))
+        w._select({aggregate});e.use_workspace_selection();e.run();self.wait()
+        self.assertEqual(e.record['feature_selection']['expanded_cell_ids'],[1,2])
+        self.assertIn('additional family cell IDs',e.info.cget('text'))
+        e.save();self.wait();self.assertTrue(Path(e.record['_path']).is_file())
+        with patch('tkinter.filedialog.askdirectory',return_value=self.temp.name), \
+             patch('methodology_publication.save_formats',return_value=([],{},{})):
+            e.plot()
+        import json
+        metadata=json.loads(next(Path(self.temp.name).glob('lts_profile_*.json')).read_text(encoding='utf-8'))
+        self.assertEqual(metadata['feature_selection']['requested_ids'],[aggregate])
+        self.assertEqual(metadata['scope_definition']['cell_ids'],[1,2,aggregate])
+        w.undo();self.wait();self.assertNotIn(aggregate,e.feature_indices)
+        previous=e.record;e.run();self.wait();self.assertIs(e.record,previous)
+        e.feature_mode.set('All features');e._feature_mode_changed();e.run();self.wait()
+        self.assertNotIn('feature_selection',e.record)
+        w._select({1});e.use_workspace_selection()
+        w._loaded(session([box(100,0,110,5),box(120,0,130,5)]))
+        self.assertFalse(e.feature_list.curselection())
+        self.assertEqual(self.errors,[])
+
     def test_six_operation_requests_save_failure_and_retry(self):
         w=self.window;w.review_evaluations();e=w.evaluation_window
         cases=[('Simplification',{1}),('Smoothing',{1}),('Collapse to point',{3}),

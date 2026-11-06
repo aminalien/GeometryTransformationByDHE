@@ -19,11 +19,23 @@ class EvaluationWindow:
         ttk.Button(row,text='Evaluate',command=self.run).pack(side='left',padx=5)
         ttk.Button(row,text='Save results',command=self.save).pack(side='left')
         ttk.Button(row,text='Plot / export profiles',command=self.plot).pack(side='left',padx=5)
-        ttk.Label(row,text='Scope').pack(side='left')
+        ttk.Label(row,text='Result scope').pack(side='left')
         self.scope=tk.StringVar(value='All');self.scope_menu=ttk.Combobox(row,textvariable=self.scope,state='readonly',width=20)
         self.scope_menu.pack(side='left');self.scope_menu.bind('<<ComboboxSelected>>',lambda e:self.display())
         self.step=tk.StringVar(value='All');self.step_menu=ttk.Combobox(row,textvariable=self.step,state='readonly',width=8)
         self.step_menu.pack(side='left',padx=5);self.step_menu.bind('<<ComboboxSelected>>',lambda e:self.display())
+        selection=ttk.LabelFrame(body,text='Features to evaluate',padding=5);selection.pack(fill='x',pady=5)
+        choices=ttk.Frame(selection);choices.pack(fill='x')
+        self.feature_mode=tk.StringVar(value='All features')
+        choice=ttk.Combobox(choices,textvariable=self.feature_mode,values=('All features','Choose features'),state='readonly',width=20)
+        choice.pack(side='left');choice.bind('<<ComboboxSelected>>',lambda e:self._feature_mode_changed())
+        ttk.Button(choices,text='Use workspace selection',command=self.use_workspace_selection).pack(side='left',padx=5)
+        ttk.Label(choices,text='Custom selection follows complete merge/aggregation families; repeated families are counted once.').pack(side='left')
+        self.feature_list=tk.Listbox(selection,selectmode='extended',exportselection=False,height=4)
+        scrollbar=ttk.Scrollbar(selection,command=self.feature_list.yview)
+        self.feature_list.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side='right',fill='y');self.feature_list.pack(fill='x',expand=True)
+        self.feature_indices=[];self.feature_session=workspace.session;self._refresh_features()
         row=ttk.Frame(body);row.pack(fill='x',pady=5)
         ttk.Entry(row,textvariable=workspace.variables['evaluation_folder']).pack(side='left',fill='x',expand=True)
         ttk.Button(row,text='Browse save/review folder',command=self.browse).pack(side='left',padx=4)
@@ -48,14 +60,44 @@ class EvaluationWindow:
         path=filedialog.askdirectory(parent=self.root,title='Choose evaluation save/review folder')
         if path:self.workspace.variables['evaluation_folder'].set(path)
 
+    def _feature_mode_changed(self):
+        self.feature_list.configure(state='normal' if self.feature_mode.get()=='Choose features' else 'disabled')
+
+    def _refresh_features(self):
+        selected={self.feature_indices[i] for i in self.feature_list.curselection()}
+        s=self.workspace.session;features={}
+        if s is not self.feature_session:selected=set()
+        self.feature_session=s
+        if s:
+            for state in s.history[:s.cursor+1]:features.update(state.features)
+        self.feature_indices=sorted(features)
+        self.feature_list.configure(state='normal');self.feature_list.delete(0,'end')
+        for i,k in enumerate(self.feature_indices):
+            f=features[k];status='current' if k in s.state.features else 'retired'
+            self.feature_list.insert('end',f'{k}: {f.label} | {f.geometry.geom_type} | {status}')
+            if k in selected:self.feature_list.selection_set(i)
+        self._feature_mode_changed()
+
+    def use_workspace_selection(self):
+        self._refresh_features();self.feature_mode.set('Choose features');self._feature_mode_changed()
+        self.feature_list.selection_clear(0,'end')
+        for i,k in enumerate(self.feature_indices):
+            if k in self.workspace.selected:self.feature_list.selection_set(i)
+
     def run(self):
         w=self.workspace
         if w.busy or not w.session:return
+        self._refresh_features()
+        feature_ids=None
+        if self.feature_mode.get()=='Choose features':
+            feature_ids=tuple(self.feature_indices[i] for i in self.feature_list.curselection())
+            if not feature_ids:
+                self.status.configure(text='Choose at least one feature before evaluating.');return
         mode='last_operation' if self.mode.get()=='Last operation' else 'whole_history'
         states=tuple(w.session.history[:w.session.cursor+1]);model=w.session.model
         dataset=dict(w.evaluation_journal.dataset);session_id=w.evaluation_journal.session_id
         def measure():
-            try:return evaluate_history(states,len(states)-1,mode,model,dataset,session_id)
+            try:return evaluate_history(states,len(states)-1,mode,model,dataset,session_id,feature_ids=feature_ids)
             except Exception as exc:return dict(_analysis_error=f'{type(exc).__name__}: {exc}')
         def done(record):
             if '_analysis_error' in record:
@@ -73,6 +115,9 @@ class EvaluationWindow:
         self.step_menu.configure(values=('All',)+tuple(str(v) for v in sorted({r['step'] for r in record.get('tables',{}).get('summary',[])})))
         self.scope.set('All');self.step.set('All')
         self.info.configure(text=f"{'Legacy automatic evaluation' if legacy else record['mode']} | {record['dataset']['source']} | end step {record.get('end_index',record.get('history_step'))} | {record['evaluation_id']}")
+        selection=record.get('feature_selection')
+        if selection:
+            self.info.configure(text=self.info.cget('text')+f"\nRequested IDs: {selection['requested_ids']}; additional family cell IDs: {selection['expanded_cell_ids']}. Full-complex live validation is global context.")
         if not legacy and any(r['missing_logical_features'] for r in record['tables']['structure']):
             self.info.configure(text=self.info.cget('text')+'\nSome logical features are absent from actual DHE sections; see Complexity / validation and the report.')
         self.display();self.status.configure(text='Saved: '+record['_path'] if record.get('_path') else 'Measured result is not saved. Click Save results to export tables and explanatory report.')
@@ -82,7 +127,7 @@ class EvaluationWindow:
         preferred={
             'summary':('step','scope','z','geometry_type','area_m2','area_change','area_change_pct','perimeter_m','perimeter_change','perimeter_change_pct','hausdorff_m','normalized_hausdorff','operation_descriptor','descriptor_value'),
             'sections':('step','scope','t','z','geometry_type','area_m2','area_change','area_change_pct','perimeter_m','perimeter_change','perimeter_change_pct','hausdorff_m','normalized_hausdorff'),
-            'structure':('step','z','retained_vertices','retained_edges','retained_faces','retained_cells','top_supporting_vertices','top_supporting_edges','top_supporting_faces','top_supporting_cells','missing_edges','nonmanifold_edges','misoriented_edges','invalid_closed_cells','inconsistent_interfaces','missing_terminal_features','live_dual_status')}
+            'structure':('step','scope','z','retained_vertices','retained_edges','retained_faces','retained_cells','top_supporting_vertices','top_supporting_edges','top_supporting_faces','top_supporting_cells','missing_edges','nonmanifold_edges','misoriented_edges','invalid_closed_cells','inconsistent_interfaces','missing_terminal_features','live_dual_status','live_validation_scope')}
         for key,table in self.tables.items():
             rows=self.record.get('tables',{}).get(key,[])
             if self.record.get('schema_version')==1 and key=='summary':rows=self.record['metrics']
@@ -136,13 +181,21 @@ class EvaluationWindow:
         if not path:return
         try:
             figure,settings=profile_figure(self.record,scope)
-            try:files,_,_=save_formats(figure,Path(path),'lts_profile_'+self.record['evaluation_id']+'_'+str(scopes.index(scope)),settings)
+            stem='lts_profile_'+self.record['evaluation_id']+'_'+str(scopes.index(scope))
+            try:files,_,_=save_formats(figure,Path(path),stem,settings)
             finally:figure.clear()
+            if self.record.get('feature_selection'):
+                metadata=dict(evaluation_id=self.record['evaluation_id'],scope=scope,
+                    source_step_id=self.record['source_step_id'],end_step_id=self.record['end_step_id'],
+                    feature_selection=self.record['feature_selection'],scope_definition=self.record['scope_definitions'][scope])
+                (Path(path)/(stem+'.json')).write_text(json.dumps(metadata,indent=2,ensure_ascii=False,allow_nan=False)+'\n',encoding='utf-8')
             self.status.configure(text=f'Exported {len(files)} profile figure files for {scope}.')
         except (ValueError,OSError,RuntimeError) as exc:self.status.configure(text='Profile export failed: '+str(exc))
 
     def on_history_changed(self):
-        if not self.closed:self.status.configure(text='History changed. Existing results are retained; click Evaluate for the current history state.')
+        if not self.closed:
+            self._refresh_features()
+            self.status.configure(text='History changed. Existing results are retained; click Evaluate for the current history state.')
 
     def clear(self):self.on_history_changed()
 

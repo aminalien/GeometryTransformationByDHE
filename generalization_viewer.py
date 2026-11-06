@@ -49,6 +49,10 @@ class TransitionVisualizationWindow:
         self.show_dual_vertices=tk.BooleanVar(value=False);self.show_dual_halfedges=tk.BooleanVar(value=False)
         for title,var in [('Dual vertices (illustration)',self.show_dual_vertices),('Dual half-edges',self.show_dual_halfedges)]:
             ttk.Checkbutton(self.controls,text=title,variable=var,command=self.redraw).pack(anchor='w')
+        self.show_dual_labels=tk.BooleanVar(value=True)
+        ttk.Checkbutton(self.controls,text='Show dual labels',variable=self.show_dual_labels,command=self.redraw).pack(anchor='w')
+        self.entry('Dual vertex size (pt²)','dual_vertex_size',50)
+        self.entry('Dual line thickness (pt)','dual_edge_width',2.5)
         self.show_axes=tk.BooleanVar(value=True);self.show_z_transition=tk.BooleanVar(value=False)
         ttk.Checkbutton(self.controls,text='Show axes',variable=self.show_axes,command=self.redraw).pack(anchor='w')
         self.z_guide_check=ttk.Checkbutton(self.controls,text='Show Z transition guide',variable=self.show_z_transition,command=self.redraw)
@@ -133,6 +137,8 @@ class TransitionVisualizationWindow:
             fill_cells=self.fill_cells.get(),slice_xy_numbers=self.slice_xy_numbers.get(),
             show_axes=self.show_axes.get(),show_z_transition=self.show_z_transition.get(),
             show_dual_vertices=self.show_dual_vertices.get(),show_dual_halfedges=self.show_dual_halfedges.get(),
+            show_dual_labels=self.show_dual_labels.get(),dual_vertex_size=float(self.variables['dual_vertex_size'].get()),
+            dual_edge_width=float(self.variables['dual_edge_width'].get()),
             slice_wspace=float(self.variables['slice_wspace'].get()),slice_hspace=float(self.variables['slice_hspace'].get()),
             slice_z_start=float(self.variables['slice_z_start'].get()) if self.variables['slice_z_start'].get().strip() else None,
             slice_z_end=float(self.variables['slice_z_end'].get()) if self.variables['slice_z_end'].get().strip() else None,

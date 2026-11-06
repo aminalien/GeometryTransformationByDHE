@@ -139,6 +139,9 @@ class ViewSettings:
     plane_azimuth: float = 0.
     show_dual_vertices: bool = False
     show_dual_halfedges: bool = False
+    dual_vertex_size: float = 50.
+    dual_edge_width: float = 2.5
+    show_dual_labels: bool = True
 
     def validate(self):
         if self.scope not in ('affected','all') or self.extent not in ('interval','history'):
@@ -156,6 +159,8 @@ class ViewSettings:
                 raise ValueError('Axis limits must be three finite increasing pairs.')
         if any(not math.isfinite(v) or v<0 for v in (self.slice_wspace,self.slice_hspace)):
             raise ValueError('Slice grid gaps must be finite and nonnegative.')
+        if any(not math.isfinite(v) or v<=0 for v in (self.dual_vertex_size,self.dual_edge_width)):
+            raise ValueError('Dual vertex size and line thickness must be positive and finite.')
 
 
 def polygon_parts(geometry):
@@ -297,28 +302,34 @@ def dual_geometry(snapshot,options,*,clipped=None):
     return centres,tuple(sorted(links))
 
 
+DUAL_CONNECTION_COLORS={'horizontal':'#00ad50','inclined':'red','vertical':'orange'}
+
+
+def dual_connection_kind(start,end):
+    delta=np.asarray(end)-np.asarray(start);bound=arithmetic_bound([start,end])
+    if np.linalg.norm(delta)<=bound:return None
+    if abs(delta[2])<=bound:return 'horizontal'
+    if np.linalg.norm(delta[:2])<=bound:return 'vertical'
+    return 'inclined'
+
+
 def draw_dual(ax,snapshot,options,clipped):
     centres,links=dual_geometry(snapshot,options,clipped=clipped)
     if options.show_dual_halfedges:
         for a,b in links:
-            start,end=np.asarray(centres[a]),np.asarray(centres[b]);delta=end-start
-            length=np.linalg.norm(delta)
-            if length<=arithmetic_bound([start,end]):continue
-            side=np.array([-delta[1],delta[0],0.])
-            if np.linalg.norm(side)==0:side=np.array([1.,0.,0.])
-            offset=side/np.linalg.norm(side)*length*.015
-            for owner,target,p,q in ((a,b,start,end),(b,a,end,start)):
-                shift=offset if owner==a else -offset
-                p,q=p+(q-p)*.06+shift,q+(p-q)*.06+shift
-                arrow=ax.quiver(*p,*(q-p),color=feature_color(owner),linewidth=1.5,
-                                arrow_length_ratio=.12)
-                arrow.set_gid(f'dual-halfedge-{owner}-{target}')
+            start,end=centres[a],centres[b];kind=dual_connection_kind(start,end)
+            if kind is None:continue
+            line=ax.plot(*np.asarray([start,end]).T,color=DUAL_CONNECTION_COLORS[kind],
+                         linewidth=options.dual_edge_width,alpha=.9)[0]
+            line.set_gid(f'dual-halfedge-{a}-{b}')
     if options.show_dual_vertices:
         for owner,point in centres.items():
-            marker=ax.scatter(*point,s=44,color=feature_color(owner),edgecolors='black',
+            marker=ax.scatter(*point,s=options.dual_vertex_size,color=feature_color(owner),edgecolors='black',
                               linewidths=.6,depthshade=False)
             marker.set_gid(f'dual-vertex-{owner}')
-            ax.text(*point,f' D{owner}',fontsize=8,color=feature_color(owner))
+            if options.show_dual_labels:
+                label=ax.text(*point,f' D{owner}',fontsize=8,color=feature_color(owner))
+                label.set_gid(f'dual-label-{owner}')
 
 
 def render_scene(ax,snapshot,slicer,options,settings,*,plane=None):
@@ -395,7 +406,9 @@ def add_legend(fig,snapshot,options,settings):
     owners=sorted(visible_owners(snapshot,options))
     handles=[Line2D([],[],color=feature_color(k),lw=3,label=names.get(k,f'Feature {k}')) for k in owners]
     if options.show_dual_vertices:handles.append(Line2D([],[],color='black',marker='o',ls='none',label='Dual vertices (illustration)'))
-    if options.show_dual_halfedges:handles.append(Line2D([],[],color='black',lw=1.5,label='Dual half-edges'))
+    if options.show_dual_halfedges:
+        handles.extend(Line2D([],[],color=color,lw=options.dual_edge_width,label=f'Dual: {kind}')
+                       for kind,color in DUAL_CONNECTION_COLORS.items())
     fig.legend(handles=handles,loc=settings['view']['legend_loc'],ncol=settings['view']['legend_columns'] or min(6,max(1,len(handles))),
                fontsize=settings['fonts']['legend'],frameon=False)
 

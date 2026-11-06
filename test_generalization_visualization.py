@@ -17,7 +17,7 @@ from shapely.ops import unary_union
 import DHECore as dhe
 from generalization_model import _core
 from generalization_visualization import (TransitionSnapshot,ViewSettings,clip_ring,export_transition,
-    render_slices,render_transition,view_bounds,visible_owners,visible_outlines,resolve_slice_levels,dual_geometry)
+    render_slices,render_transition,view_bounds,visible_owners,visible_outlines,resolve_slice_levels,dual_geometry,draw_dual)
 from methodology_publication import PublicationSettings
 from plane_slicing import PlaneSlicer,SlicePlane
 from test_generalization import session
@@ -96,13 +96,38 @@ class PublicationViewTests(unittest.TestCase):
         self.assertEqual(set(hidden),{1,3,4});self.assertFalse(filtered)
         for vertices,edges in ((False,False),(True,False),(False,True),(True,True)):
             fig=render_transition(self.snapshot,replace(options,show_dual_vertices=vertices,show_dual_halfedges=edges))
-            gids={a.get_gid() for a in fig.axes[0].collections if a.get_gid()}
+            gids={a.get_gid() for a in [*fig.axes[0].collections,*fig.axes[0].lines] if a.get_gid()}
             self.assertEqual({g for g in gids if g.startswith('dual-vertex')},
                              {f'dual-vertex-{k}' for k in centres} if vertices else set())
             self.assertEqual({g for g in gids if g.startswith('dual-halfedge')},
-                             {'dual-halfedge-1-2','dual-halfedge-2-1'} if edges else set())
+                             {'dual-halfedge-1-2'} if edges else set())
             fig.clear()
         self.assertIs(self.snapshot.faces,faces);self.assertEqual(_core(),core)
+
+    def test_dual_line_colors_sizes_and_label_visibility(self):
+        from matplotlib.colors import to_rgba
+        centres={1:(0,0,0),2:(2,0,0),3:(2,0,3),4:(4,2,6)}
+        options=ViewSettings(show_dual_vertices=True,show_dual_halfedges=True,
+                             dual_vertex_size=81,dual_edge_width=3.2,show_dual_labels=False)
+        fig=render_transition(self.snapshot)
+        ax=fig.axes[0]
+        with patch('generalization_visualization.dual_geometry',return_value=(centres,((1,2),(2,3),(3,4)))):
+            draw_dual(ax,self.snapshot,options,{})
+            lines={a.get_gid():a for a in ax.lines if a.get_gid()}
+            for pair,color in (('1-2','#00ad50'),('2-3','orange'),('3-4','red')):
+                line=lines['dual-halfedge-'+pair]
+                self.assertEqual(to_rgba(line.get_color()),to_rgba(color));self.assertEqual(line.get_linewidth(),3.2)
+            markers=[a for a in ax.collections if (a.get_gid() or '').startswith('dual-vertex')]
+            self.assertTrue(all(a.get_sizes()[0]==81 for a in markers));self.assertEqual(len(markers),4)
+            self.assertFalse(any((a.get_gid() or '').startswith('dual-label') for a in ax.texts))
+            draw_dual(ax,self.snapshot,replace(options,show_dual_vertices=False,show_dual_halfedges=False,show_dual_labels=True),{})
+            self.assertFalse(any((a.get_gid() or '').startswith('dual-label') for a in ax.texts))
+            draw_dual(ax,self.snapshot,replace(options,show_dual_labels=True),{})
+            self.assertEqual(len([a for a in ax.texts if (a.get_gid() or '').startswith('dual-label')]),4)
+        fig.clear()
+        for key in ('dual_vertex_size','dual_edge_width'):
+            for value in (0,-1,float('nan'),float('inf')):
+                with self.assertRaises(ValueError):ViewSettings(**{key:value}).validate()
 
     def test_dual_export_and_unchanged_2d_sections(self):
         settings=PublicationSettings({'layout':{'width_in':4,'height_in':3},'export':{'dpi':100}})
@@ -353,8 +378,12 @@ class TransitionViewerControlTests(unittest.TestCase):
             self.assertFalse(window.slice_xy_numbers.get())
             self.assertFalse(window.show_dual_vertices.get());self.assertFalse(window.show_dual_halfedges.get())
             window.show_dual_vertices.set(True);window.show_dual_halfedges.set(True)
+            window.variables['dual_vertex_size'].set('84');window.variables['dual_edge_width'].set('4.5')
+            window.show_dual_labels.set(False)
             window.redraw();root.update()
             self.assertTrue(window.options().show_dual_vertices);self.assertTrue(window.options().show_dual_halfedges)
+            self.assertEqual(window.options().dual_vertex_size,84);self.assertEqual(window.options().dual_edge_width,4.5)
+            self.assertFalse(window.options().show_dual_labels)
             self.assertTrue(any((a.get_gid() or '').startswith('dual-vertex') for a in window.figure.axes[0].collections))
             window.variables['slice_z_start'].set('7');window.variables['slice_z_end'].set('22')
             self.assertEqual(window.options().slice_z_start,7)

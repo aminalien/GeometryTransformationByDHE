@@ -115,11 +115,20 @@ def _entities(faces):
     return dict(vertices=len(vertices),edges=len(edges),faces=len(unique_faces),cells=len(owners))
 
 
-def structural_audit(state,actual):
+def structural_audit(state,actual,owners=None):
+    faces=[f for f in state.faces if owners is None or f.owner in owners]
     groups=defaultdict(list);edge_uses=defaultdict(list);face_uses=defaultdict(list)
-    for f in state.faces:
+    for f in faces:
         groups[f.owner].append(f);face_uses[tuple(sorted(f.points))].append(f)
         for a,b in zip(f.points,f.points[1:]+f.points[:1]):edge_uses[f.owner,frozenset((a,b))].append((a,b))
+    if owners is not None:
+        # Audit real interface pairs, including the unselected counterpart;
+        # those counterpart cells are not included in selected complexity.
+        selected_faces=set(face_uses)
+        face_uses=defaultdict(list)
+        for f in state.faces:
+            key=tuple(sorted(f.points))
+            if key in selected_faces:face_uses[key].append(f)
     invalid=0
     for shell in groups.values():
         try:check_oriented_shell(shell)
@@ -129,11 +138,12 @@ def structural_audit(state,actual):
         if len(uses)>1:
             try:check_interface_pairs(uses)
             except ValueError:bad_interfaces+=1
-    active=set(state.features)&set(actual)
-    retained=_entities(state.faces);front=_entities([f for f in state.faces if f.owner in active])
-    missing=sorted(set(state.features)-set(actual))
+    logical=set(state.features) if owners is None else set(state.features)&set(owners)
+    active=logical&set(actual)
+    retained=_entities(faces);front=_entities([f for f in faces if f.owner in active])
+    missing=sorted(logical-set(actual))
     return dict(**{'retained_'+k:v for k,v in retained.items()},**{'top_supporting_'+k:v for k,v in front.items()},
-        logical_features=len(state.features),actual_top_features=len(active),missing_logical_features=missing,
+        logical_features=len(logical),actual_top_features=len(active),missing_logical_features=missing,
         missing_terminal_features=[k for k in missing if state.features[k].geometry.geom_type in ('Point','LineString')],
         missing_edges=sum(len(v)==1 for v in edge_uses.values()),nonmanifold_edges=sum(len(v)>2 for v in edge_uses.values()),
         misoriented_edges=sum(len(v)==2 and v[0]!=tuple(reversed(v[1])) for v in edge_uses.values()),
@@ -163,7 +173,50 @@ def _case_descriptor(operation,source,target):
     return 'Target hull deviation (%)',100*hull.symmetric_difference(target).area/hull.area
 
 
-def evaluate_history(history,end_index,mode,live_model,dataset,session_id,*,relative_spacing=.001,max_samples=200000):
+def feature_family_scopes(states,feature_ids):
+    """Resolve complete connected lineage families within this history prefix."""
+    registry={}
+    for state in states:
+        for k,f in state.features.items():registry.setdefault(k,set()).update(f.lineage)
+    requested=list(feature_ids)
+    if not requested or any(isinstance(k,bool) or not isinstance(k,(int,np.integer)) for k in requested):
+        raise ValueError('Choose at least one feature using integer feature IDs.')
+    requested=sorted(set(map(int,requested)))
+    unknown=set(requested)-set(registry)
+    if unknown:raise ValueError('Unknown features in the active history: '+', '.join(map(str,sorted(unknown))))
+    parent={k:k for k in set(registry)|set().union(*registry.values())}
+    def root(k):
+        while parent[k]!=k:parent[k]=parent[parent[k]];k=parent[k]
+        return k
+    for k,lineage in registry.items():
+        for ancestor in lineage:parent[root(ancestor)]=root(k)
+    groups={}
+    for k in requested:
+        keys=tuple(sorted(n for n in registry if root(n)==root(k)))
+        groups.setdefault(keys,[]).append(k)
+    scopes={};families={}
+    for keys,ids in groups.items():
+        name='Feature family '+', '.join(map(str,ids))
+        scopes[name]=(set(keys),False)
+        families[name]=dict(requested_ids=ids,cell_ids=list(keys),
+                            initial_lineage=sorted(set().union(*(registry[k] for k in keys))))
+    combined=set().union(*(keys for keys,_ in scopes.values()))
+    combined_name=next(iter(scopes))
+    if len(scopes)>1:
+        combined_name='Combined selected families';scopes[combined_name]=(combined,True)
+    return scopes,dict(policy='full_family',requested_ids=requested,families=families,
+                       combined_scope=combined_name,expanded_cell_ids=sorted(combined-set(requested)))
+
+
+def _matching_action(state,source_keys,target_keys):
+    for action in operation_actions(state.operation):
+        if action.name in ('merging','aggregation'):
+            if source_keys==set(action.selected) and target_keys=={action.winner}:return action
+        elif source_keys and source_keys==target_keys and source_keys<=set(action.selected):return action
+    return None
+
+
+def evaluate_history(history,end_index,mode,live_model,dataset,session_id,*,relative_spacing=.001,max_samples=200000,feature_ids=None):
     """Explicit request only. History must be the active prefix; no DHE allocation."""
     started=perf_counter()
     if mode not in ('last_operation','whole_history'):raise ValueError('Choose Last operation or Whole history.')
@@ -191,30 +244,51 @@ def evaluate_history(history,end_index,mode,live_model,dataset,session_id,*,rela
             if op.name=='merging':scopes[f'Winner {op.winner}']=({op.winner},False)
         else:scopes={f'Feature {k}':({k},False) for k in op.selected}
         scopes['Affected context']=(set(op.affected)|set(op.selected),True)
+    selection=None;scope_metadata={};descriptor_actions={}
+    if feature_ids is not None:
+        scopes,selection=feature_family_scopes(states,feature_ids)
+        for name,(keys,_) in scopes.items():
+            ids=selection['families'].get(name,{}).get('requested_ids',selection['requested_ids'])
+            scope_metadata[name]=dict(requested_feature_ids=ids,family_cell_ids=sorted(keys))
+            if mode=='last_operation':
+                descriptor_actions[name]=_matching_action(states[-1],keys&set(states[first].features),keys&set(states[-1].features))
+    elif mode=='last_operation':
+        op=states[-1].operation
+        if op.name=='batch':
+            for index,action in enumerate(operation_actions(op),1):
+                if action.name in ('merging','aggregation'):descriptor_actions[f'Action {index}: {action.name} group']=action
+                else:
+                    for k in action.selected:descriptor_actions[f'Action {index}: {action.name} feature {k}']=action
+        elif op.name in ('merging','aggregation'):descriptor_actions['Selected group']=op
+        else:descriptor_actions.update({f'Feature {k}':op for k in op.selected})
     slicers={i:_state_sections(states[i]) for i in range(first,len(states))}
     actual={i:_actual(slicers[i],states[i].z,states[i].features) for i in slicers}
     references={};baselines={}
     for scope,(keys,totals) in scopes.items():
         baseline=[g for k,g in actual[first].items() if k in keys]
         baselines[scope]=baseline;references[scope]=DisplacementReference(baseline,relative_spacing,max_samples)
-    summary=[];sections=[];structure=[]
+    summary=[];sections=[];structure=[];global_validation=live_audit(live_model)
     for i in range(first,len(states)):
         s=states[i]
         for scope,(keys,totals) in scopes.items():
             gs=[g for k,g in actual[i].items() if k in keys]
             row=dict(scope=scope,step=i,step_id=s.step_id,z=s.z,reference_step=first,
-                reference_z=states[first].z,**_comparison(gs,baselines[scope],references[scope],totals))
-            if mode=='last_operation' and i==len(states)-1 and scope!='Affected context' and not scope.startswith('Winner'):
-                op=s.operation
-                if op.name=='batch':op=operation_actions(op)[int(scope.split(':',1)[0].split()[1])-1]
-                try:label,value=_case_descriptor(op.name,unary_union(baselines[scope]),unary_union(gs))
+                reference_z=states[first].z,**scope_metadata.get(scope,{}),**_comparison(gs,baselines[scope],references[scope],totals))
+            if mode=='last_operation' and i==len(states)-1 and scope in descriptor_actions:
+                op=descriptor_actions[scope]
+                try:
+                    label,value=(_case_descriptor(op.name,unary_union(baselines[scope]),unary_union(gs)) if op else
+                                 ('N/A','This feature scope does not match a single action in the last operation.'))
                 except (ValueError,AttributeError,ZeroDivisionError):label,value='N/A','Descriptor is undefined for actual geometry.'
                 row.update(operation_descriptor=label,descriptor_value=None if label=='N/A' else value,
                            descriptor_reason=value if label=='N/A' else '')
             summary.append(row)
-        row=dict(step=i,step_id=s.step_id,z=s.z,**structural_audit(s,actual[i]))
-        if i==end_index:row.update(live_audit(live_model))
-        structure.append(row)
+        audit_scopes=scopes if selection is not None else {None:(None,False)}
+        for scope,(keys,_) in audit_scopes.items():
+            row=dict(step=i,step_id=s.step_id,z=s.z,**structural_audit(s,actual[i],keys))
+            if scope is not None:row.update(scope=scope,**scope_metadata[scope])
+            if i==end_index:row.update(global_validation,live_validation_scope='Entire stored complex')
+            structure.append(row)
     for i in steps:
         s=states[i];lo=states[i-1].z;hi=s.z
         for j in range(11):
@@ -224,6 +298,7 @@ def evaluate_history(history,end_index,mode,live_model,dataset,session_id,*,rela
             for scope,(keys,totals) in scopes.items():
                 sections.append(dict(scope=scope,step=i,step_id=s.step_id,t=t,z=z,z_s=lo,z_t=hi,
                     reference_step=first,reference_z=states[first].z,
+                    **scope_metadata.get(scope,{}),
                     **_comparison([g for k,g in gs.items() if k in keys],baselines[scope],references[scope],totals)))
     aggregates=[]
     for scope in scopes:
@@ -234,7 +309,7 @@ def evaluate_history(history,end_index,mode,live_model,dataset,session_id,*,rela
         aggregates.append(dict(scope=scope,max_sampled_nhd=max(values) if values else None,
             sampled_z_weighted_mean_nhd=float(np.average(values,weights=weights)) if values and sum(weights)>0 else None,
             valid_samples=len(values),requested_samples=len(selected)))
-    return dict(schema_version=2,evaluation_id=uuid4().hex,session_id=session_id,
+    record=dict(schema_version=2,evaluation_id=uuid4().hex,session_id=session_id,
         created_utc=datetime.now(timezone.utc).isoformat(),mode=mode,source_step_id=states[first].step_id,
         end_step_id=states[-1].step_id,end_index=end_index,dataset=dict(dataset),
         scope_definitions={scope:dict(cell_ids=sorted(keys),initial_lineage=sorted(set().union(*(registry.get(k,{k}) for k in keys))),
@@ -247,11 +322,14 @@ def evaluate_history(history,end_index,mode,live_model,dataset,session_id,*,rela
         tables=dict(summary=summary,sections=sections,structure=structure),profile_summary=aggregates,
         software=dict(shapely=shapely.__version__,geos=shapely.geos_version_string),
         evaluation_elapsed_seconds=perf_counter()-started)
+    if selection is not None:record['feature_selection']=selection
+    return record
 
 
 def analysis_report(record):
     lines=['# LTS quantitative analysis report','',f"Mode: {record['mode']}. End state: {record['end_step_id']} (history index {record['end_index']}).",
         f"Dataset: {record['dataset']['source']}. Fingerprint: {record['dataset']['fingerprint']}.",
+        *([f"Feature selection: requested IDs {record['feature_selection']['requested_ids']}; policy full family; additional family cell IDs {record['feature_selection']['expanded_cell_ids']}."] if record.get('feature_selection') else []),
         '', '## Applied operations and parameters',
         *[f"- Step {o['step']} ({o['step_id']}): {o['name']}; selected={o['selected']}; affected={o['affected']}; winner={o['winner']}; parameters={o['parameters']}; Zs={o['z_s']}, Zt={o['z_t']}, Zm={o['z_m']}." for o in record['operations']],
         *[f"- Step {o['step']}, action {i}: {a['name']}; selected={a['selected']}; winner={a['winner']}; parameters={a['parameters']}." for o in record['operations'] if o['name']=='batch' for i,a in enumerate(o.get('actions',()),1)],
@@ -261,7 +339,7 @@ def analysis_report(record):
         'Area A is polygonal coverage in m². Perimeter P sums polygon-feature boundaries in m (shared boundaries count per feature). Signed differences are ΔA=A−Aref and ΔP=P−Pref; percentages are 100ΔA/Aref and 100ΔP/Pref. For individual collapsed targets these polygon metrics are N/A. Whole-map coverage totals exclude points and polylines; their counts and line lengths are reported separately.',
         'Displacement compares polygon boundaries, line geometries, and points. The symmetric sampled Hausdorff Hh is the largest sampled point-to-original-geometry distance in either direction. NHD=Hh/D, where D is the fixed reference bounding-box diagonal. Maximum sample spacing h=D·relative_hd_spacing; the sampling-only continuous-distance bound is Hh≤H≤Hh+h/2. Floating-point errors are separate. A budget overflow yields N/A without coarsening.',
         'Whole-history references are the initial top representation; last-operation references are the preceding source representation. Reference step and Z, reference diagonal D, spacing, sample counts and sampling bound are recorded in the numerical rows. Changed-lineage scope includes selected ancestors and affected neighbours.',
-        'Retained V/E/F/C counts are globally unique vertices, undirected edges, faces and bounded cells across the complete stored complex. Top-supporting counts use the full closed shells of cells supporting actual current logical features; they are not the topology of a clipped planar mesh.',
+        'Retained V/E/F/C counts are unique vertices, undirected edges, faces and bounded cells within each selected family scope when a feature selection is supplied; otherwise they cover the complete stored complex. Top-supporting counts use the full closed shells of cells supporting actual current logical features in that scope; they are not the topology of a clipped planar mesh. Shared interface audits include the real counterpart without adding it to selected complexity counts. Live primal/dual validation always covers the entire stored complex and is labelled as global context.',
         'Missing/non-manifold/misoriented edges and invalid shells are counted per cell. Historical checks inspect realized boundary records. Only the live model receives a primal/dual pointer and reciprocal-interface check. These checks do not constitute an exact-arithmetic proof of geometric embedding.',
         'Operation descriptors: vertex reduction=100(1−nT/nS); compactness change=4πAT/PT²−4πAS/PS²; point displacement=|cT−cS|/sqrt(AS/π); relative line length=100LT/Drect; merging error=100A(T△U)/A(U); aggregation hull deviation=100A(T△CH(U))/A(CH(U)). They are descriptors, not calibrated quality scores.',
         'Profile summaries use maximum sampled NHD and a Z-weighted trapezoidal mean of the sampled NHD values. These summarize measured samples, not exact continuous integrals. Missing values are omitted and coverage is disclosed. No counts or heterogeneous case descriptors are averaged.',
@@ -271,7 +349,7 @@ def analysis_report(record):
         if name=='summary':
             for r in rows:lines.append(f"- {r['scope']}, step {r['step']}, Z={r['z']:g}: A={r['area_m2']}, P={r['perimeter_m']}, Hh={r['hausdorff_m']}, NHD={r['normalized_hausdorff']}. "+r['polygon_metric_reason']+' '+r['hd_reason'])
         if name=='structure':
-            for r in rows:lines.append(f"- Step {r['step']}: retained V/E/F/C={r['retained_vertices']}/{r['retained_edges']}/{r['retained_faces']}/{r['retained_cells']}; top-supporting cells={r['top_supporting_cells']}; invalid shells={r['invalid_closed_cells']}; interface errors={r['inconsistent_interfaces']}; missing logical features={r['missing_logical_features']}; {r['live_dual_status']}.")
+            for r in rows:lines.append(f"- Step {r['step']}, {r.get('scope','Entire stored complex')}: retained V/E/F/C={r['retained_vertices']}/{r['retained_edges']}/{r['retained_faces']}/{r['retained_cells']}; top-supporting cells={r['top_supporting_cells']}; invalid shells={r['invalid_closed_cells']}; interface errors={r['inconsistent_interfaces']}; missing logical features={r['missing_logical_features']}; {r['live_dual_status']} (global context when live).")
     lines.extend(['','## Profile summaries',json.dumps(record['profile_summary'],indent=2),
         '', '## Limitations and paper presentation',
         'Values measure representational change rather than error against independent ground truth. Boundary removal and dimensional collapse can intentionally increase displacement. DHE counts include retained historical cells and must not be conflated with the number of symbols on a map. Terminal symbols absent from higher DHE sections are disclosed as missing, never synthesized.',
