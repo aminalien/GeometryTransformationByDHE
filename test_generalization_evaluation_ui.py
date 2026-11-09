@@ -49,11 +49,32 @@ class EvaluationControlTests(unittest.TestCase):
         e=w.evaluation_window;e.run();self.wait()
         self.assertEqual(e.record['mode'],'last_operation')
         self.assertEqual(len(e.tables['sections'].get_children()),22)
+        self.assertEqual(len(e.tables['cell_complexity'].get_children()),1)
         self.assertEqual(list(Path(self.temp.name).iterdir()),[])
         e.save();self.wait()
         self.assertTrue(Path(e.record['_path']).is_file())
         self.assertTrue(Path(e.record['_path']).with_name('analysis_report.md').is_file())
+        self.assertTrue(Path(e.record['_path']).with_name('cell_complexity.csv').is_file())
         self.assertEqual(self.errors,[])
+
+    def test_cell_complexity_complete_group_filter_and_older_report(self):
+        from copy import deepcopy
+        self.apply('Aggregation',(1,2));w=self.window
+        w.review_evaluations();e=w.evaluation_window
+        e.feature_mode.set('Choose features');e._feature_mode_changed()
+        e.feature_list.selection_set(e.feature_indices.index(2));e.consider_feature_family.set(False)
+        e.run();self.wait()
+        table=e.tables['cell_complexity'];rows=table._evaluation_rows
+        self.assertEqual(len(rows),1);self.assertEqual(rows[0]['baseline_cell_ids'],[1,2])
+        self.assertEqual(rows[0]['status'],'ok',rows[0]['reason'])
+        self.assertEqual(rows[0]['result_cell_id'],w.session.state.operation.winner)
+        e.scope.set('Feature 2');e.step.set('1');e.display()
+        self.assertEqual(len(table.get_children()),1)
+        table.selection_set('0');e.row_details('cell_complexity')
+        self.assertIn('baseline_cell_ids',e.status.cget('text'))
+        e.step.set('0');e.display();self.assertEqual(table.get_children(),())
+        old=deepcopy(e.record);old['tables'].pop('cell_complexity');e.show(old)
+        self.assertIn('Reevaluate',e.info.cget('text'));self.assertEqual(table.get_children(),())
 
     def test_current_history_prefix_branch_and_saved_review(self):
         w=self.window;self.apply();w.review_evaluations();e=w.evaluation_window

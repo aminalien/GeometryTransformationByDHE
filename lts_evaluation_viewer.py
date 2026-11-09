@@ -7,6 +7,16 @@ from uuid import uuid4
 from lts_evaluation import evaluate_history,load_reports,save_report,profile_figure,profile_comparison_figure
 
 
+def _table_rows(record,key,scope='All',step='All'):
+    rows=record.get('tables',{}).get(key,[])
+    if record.get('schema_version')==1 and key=='summary':rows=record['metrics']
+    def matches(row):
+        if scope=='All':return True
+        if 'matching_scopes' in row:return scope in row['matching_scopes']
+        return 'scope' not in row or row['scope']==scope
+    return [r for r in rows if matches(r) and (step=='All' or 'step' not in r or str(r['step'])==step)]
+
+
 class EvaluationWindow:
     def __init__(self,workspace):
         import tkinter as tk
@@ -52,7 +62,7 @@ class EvaluationWindow:
         self.info=ttk.Label(body,text='Choose a mode and click Evaluate. Apply never runs quantitative analysis.',wraplength=1200)
         self.info.pack(fill='x',pady=7)
         book=ttk.Notebook(body);book.pack(fill='both',expand=True)
-        for key,title in (('summary','Endpoint / history summary'),('sections','11-level section profiles'),('structure','Complexity / validation')):
+        for key,title in (('summary','Endpoint / history summary'),('sections','11-level section profiles'),('structure','Complexity / validation'),('cell_complexity','Cell V/E/F change')):
             frame=ttk.Frame(book);book.add(frame,text=title)
             table=ttk.Treeview(frame,show='headings');x=ttk.Scrollbar(frame,orient='horizontal',command=table.xview)
             y=ttk.Scrollbar(frame,command=table.yview);table.configure(xscrollcommand=x.set,yscrollcommand=y.set)
@@ -131,6 +141,10 @@ class EvaluationWindow:
             self.info.configure(text=self.info.cget('text')+f"\nRequested IDs: {selection['requested_ids']}; policy: {policy}; additional family cell IDs: {selection['expanded_cell_ids']}. Full-complex live validation is global context.")
         if not legacy and any(r['missing_logical_features'] for r in record['tables']['structure']):
             self.info.configure(text=self.info.cget('text')+'\nSome logical features are absent from actual DHE sections; see Complexity / validation and the report.')
+        note=('Cell V/E/F change always measures complete operation groups. Positive percentages mean increases.'
+              if 'cell_complexity' in record.get('tables',{}) else
+              'Cell V/E/F change is unavailable in this older report. Reevaluate to populate the table.')
+        self.info.configure(text=self.info.cget('text')+'\n'+note)
         self.display();self.status.configure(text='Saved: '+record['_path'] if record.get('_path') else 'Measured result is not saved. Click Save results to export tables and explanatory report.')
 
     def display(self):
@@ -138,11 +152,10 @@ class EvaluationWindow:
         preferred={
             'summary':('step','scope','z','geometry_type','area_m2','area_change','area_change_pct','perimeter_m','perimeter_change','perimeter_change_pct','hausdorff_m','normalized_hausdorff','operation_descriptor','descriptor_value'),
             'sections':('step','scope','t','z','geometry_type','area_m2','area_change','area_change_pct','perimeter_m','perimeter_change','perimeter_change_pct','hausdorff_m','normalized_hausdorff'),
+            'cell_complexity':('step','action_index','operation','baseline_cell_ids','result_cell_id','baseline_z_min','baseline_z_max','actual_upper_z_min','actual_upper_z_max','baseline_vertices','upper_vertices','vertices_change_pct','baseline_edges','upper_edges','edges_change_pct','baseline_faces','upper_faces','faces_change_pct','status','reason'),
             'structure':('step','scope','z','retained_vertices','retained_edges','retained_faces','retained_cells','top_supporting_vertices','top_supporting_edges','top_supporting_faces','top_supporting_cells','missing_edges','nonmanifold_edges','misoriented_edges','invalid_closed_cells','inconsistent_interfaces','missing_terminal_features','live_dual_status','live_validation_scope')}
         for key,table in self.tables.items():
-            rows=self.record.get('tables',{}).get(key,[])
-            if self.record.get('schema_version')==1 and key=='summary':rows=self.record['metrics']
-            rows=[r for r in rows if (self.scope.get()=='All' or 'scope' not in r or r['scope']==self.scope.get()) and (self.step.get()=='All' or 'step' not in r or str(r['step'])==self.step.get())]
+            rows=_table_rows(self.record,key,self.scope.get(),self.step.get())
             columns=preferred[key] if self.record.get('schema_version')==2 else ('scope','label','value','unit','reason')
             table.delete(*table.get_children());table.configure(columns=columns)
             for col in columns:table.heading(col,text=col.replace('_',' '));table.column(col,width=145,stretch=False)

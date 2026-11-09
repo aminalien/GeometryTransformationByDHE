@@ -132,6 +132,16 @@ Logical map entries are compared with the actual DHE section. For example, a ter
 
 Construction time and memory are not reconstructed retrospectively. `evaluation_elapsed_seconds` measures the requested analysis, not generalization construction performance.
 
+### 5.4. Cell V/E/F change across Z ranges
+
+The **Cell V/E/F change** table compares closed cell portions in `[0, initial extrusion height]` and `[initial extrusion height, result lifetime]`. The split is normally Z=5 and follows custom initial heights. Baseline counts come from the initial history snapshot, without later boundary subdivisions. For merging and aggregation, sum all original ancestor cells separately, counting shared interfaces per incident cell; compare that sum with only the single resulting cell. Repeated groups resolve back to all original ancestors once. Other operations produce one row per involved feature, and mixed levels retain separate action rows.
+
+The result is measured from the snapshot immediately before its next selecting or affecting operation, or at the evaluated history endpoint. Clip only the cell's actual occupied geometry: a later aggregate born above the split is not extended downward, and a terminal cell ends at its actual top. Rows disclose source/result IDs, requested and actual Z bounds, and lifetime endpoint. Feature filters choose relevant operation rows, but each row always includes the complete operation group even when **Consider feature family** is unchecked.
+
+Clip the immutable oriented faces and add closing caps at cut boundaries without allocating DHE records. Preserve existing face subdivisions and shared boundary nodes. Count unique vertices and undirected edges within each cell and one face per connected clipped polygon or cap, including inner rings, without introducing triangulation solely for counting. Disconnected solid portions are included; unsuccessful closed-boundary assembly yields N/A with a reason. Caps with holes are connected polygonal faces rather than disk faces, so these range counts must not be tested with the unadjusted genus-zero `V-E+F=2` formula.
+
+For each count N, the signed percentage is `100 * (N_upper - N_baseline) / N_baseline`. Positive values mean increases and negative values mean reductions. Zero denominators yield N/A. These counts describe closed 3D portions, separately from the globally deduplicated retained/top-supporting complexity table and planar section metrics.
+
 ## 6. Profile summaries, exports, and paper presentation
 
 For each scope, report the maximum of the sampled NHD values and a sampled Z-weighted mean:
@@ -142,7 +152,7 @@ For each scope, report the maximum of the sampled NHD values and a sampled Z-wei
 
 where \(h_{i,j}\) denotes measured normalized displacement, not sample spacing. This is a trapezoidal summary of sampled metric values, not an exact continuous integral. When samples are unavailable, their weights are omitted, the remaining weights are renormalized, and valid/requested coverage is reported. Counts and heterogeneous case descriptors are not averaged.
 
-Save produces a unique directory containing JSON metadata, `summary.csv`, `sections.csv`, `structure.csv`, and `analysis_report.md`. CSV values retain numerical precision rather than GUI display rounding. The separate analysis report describes the analyses actually performed, their actual input levels and parameters, formulas, values, interpretation, and limitations. Saving again to an occupied event directory cannot overwrite the previous report; a new Evaluate request creates a new evaluation identity.
+Save produces a unique directory containing JSON metadata, `summary.csv`, `sections.csv`, `structure.csv`, `cell_complexity.csv`, and `analysis_report.md`. The new table is additive in version-2 reports; older reports remain readable and require a new Evaluate request to populate it. CSV values retain numerical precision rather than GUI display rounding. The separate analysis report describes the analyses actually performed, their actual input levels and parameters, formulas, values, interpretation, and limitations. Saving again to an occupied event directory cannot overwrite the previous report; a new Evaluate request creates a new evaluation identity.
 
 The most useful main-paper table is endpoint/history area and perimeter change with sampled HD/NHD. A second table should contrast retained and top-supporting V/E/F/C counts and validation outcomes. Recommended figures are the measured area/perimeter/NHD profiles against actual Z and a verified primal/dual aggregation diagram showing lower sources, source-level interfaces and the upper aggregate. Full eleven-level tables and parameter metadata are suitable for supplementary material. Profile figures reuse the publication export settings, including Times New Roman and vector SVG/PDF support.
 

@@ -13,6 +13,7 @@ from uuid import uuid4
 import numpy as np
 import shapely
 from shapely.geometry import LineString,Point
+from shapely.errors import GEOSException
 from shapely.ops import unary_union
 
 from plane_slicing import PlaneSlicer,SlicePlane
@@ -219,6 +220,61 @@ def _matching_action(state,source_keys,target_keys):
     return None
 
 
+def cell_complexity_rows(states,steps,scopes):
+    """Compare original source sums with one result over its measured lifetime."""
+    from cell_complexity import range_counts
+    split=states[0].z;cache={};rows=[]
+    def measure(index,owner,lo,hi):
+        key=(index,owner,lo,hi)
+        if key not in cache:
+            try:
+                cache[key]=(range_counts([f for f in states[index].faces if f.owner==owner],lo,hi),'')
+            except (ValueError,GEOSException) as exc:cache[key]=(None,str(exc))
+        return cache[key]
+    for step in steps:
+        state=states[step];before=states[step-1]
+        for action_index,action in enumerate(operation_actions(state.operation),1):
+            grouped=action.name in ('merging','aggregation')
+            for result in ([action.winner] if grouped else action.selected):
+                sources=list(action.selected) if grouped else [result]
+                ancestors=sorted({k for owner in sources for k in before.features[owner].lineage})
+                related=set(sources)|set(ancestors)|{result}
+                matching=[name for name,(keys,_) in scopes.items() if keys&related]
+                if not matching:continue
+                end=len(states)-1
+                for later in range(step+1,len(states)):
+                    op=states[later].operation
+                    if result in set(op.selected)|set(op.affected):
+                        end=later-1;break
+                shell=[f for f in states[end].faces if f.owner==result]
+                lifetime=min(states[end].z,max((p[2] for f in shell for p in f.points),default=split))
+                row=dict(step=step,step_id=state.step_id,action_index=action_index,operation=action.name,
+                    scope=f'{action.name}: '+', '.join(map(str,sources))+f' -> {result}',
+                    matching_scopes=matching,source_cell_ids=sources,baseline_cell_ids=ancestors,result_cell_id=result,
+                    baseline_z_min=0.,baseline_z_max=split,upper_z_min=split,upper_z_max=lifetime,
+                    lifetime_end_step=end,lifetime_end_step_id=states[end].step_id,
+                    count_policy='Sum original cells separately; one resulting cell; complete operation group',
+                    status='ok',reason='')
+                baseline=[];reasons=[]
+                for owner in ancestors:
+                    values,reason=measure(0,owner,0.,split)
+                    if values is None:reasons.append(f'Original cell {owner}: {reason}')
+                    else:baseline.append(values)
+                upper,reason=measure(end,result,split,lifetime)
+                if upper is None:reasons.append(f'Result cell {result}: {reason}')
+                row.update(actual_upper_z_min=upper['actual_z_min'] if upper else None,
+                           actual_upper_z_max=upper['actual_z_max'] if upper else None)
+                for key in ('vertices','edges','faces'):
+                    a=sum(v[key] for v in baseline) if len(baseline)==len(ancestors) and ancestors else None
+                    b=upper[key] if upper else None
+                    row.update({f'baseline_{key}':a,f'upper_{key}':b,
+                                f'{key}_change_pct':100*(b-a)/a if a and b is not None else None})
+                    if a==0:reasons.append(f'{key}: baseline is zero; percentage change is undefined.')
+                if reasons:row.update(status='unavailable',reason='; '.join(dict.fromkeys(reasons)))
+                rows.append(row)
+    return rows
+
+
 def evaluate_history(history,end_index,mode,live_model,dataset,session_id,*,relative_spacing=.001,max_samples=200000,feature_ids=None,consider_feature_family=True):
     """Explicit request only. History must be the active prefix; no DHE allocation."""
     started=perf_counter()
@@ -323,7 +379,8 @@ def evaluate_history(history,end_index,mode,live_model,dataset,session_id,*,rela
         operations=[dict(step=i,step_id=s.step_id,parent_step_id=s.parent_step_id,**asdict(s.operation)) for i,s in enumerate(states) if s.operation and (mode=='whole_history' or i==end_index)],
         source_provenance=[dict(step=i,step_id=s.step_id,**asdict(s.operation)) for i,s in enumerate(states[:first+1]) if s.operation],
         settings=dict(relative_hd_spacing=relative_spacing,max_hd_samples=max_samples,horizontal_side='below'),
-        tables=dict(summary=summary,sections=sections,structure=structure),profile_summary=aggregates,
+        tables=dict(summary=summary,sections=sections,structure=structure,
+                    cell_complexity=cell_complexity_rows(states,steps,scopes)),profile_summary=aggregates,
         software=dict(shapely=shapely.__version__,geos=shapely.geos_version_string),
         evaluation_elapsed_seconds=perf_counter()-started)
     if selection is not None:record['feature_selection']=selection
@@ -344,6 +401,7 @@ def analysis_report(record):
         'Displacement compares polygon boundaries, line geometries, and points. The symmetric sampled Hausdorff Hh is the largest sampled point-to-original-geometry distance in either direction. NHD=Hh/D, where D is the fixed reference bounding-box diagonal. Maximum sample spacing h=D·relative_hd_spacing; the sampling-only continuous-distance bound is Hh≤H≤Hh+h/2. Floating-point errors are separate. A budget overflow yields N/A without coarsening.',
         'Whole-history references are the initial top representation; last-operation references are the preceding source representation. Reference step and Z, reference diagonal D, spacing, sample counts and sampling bound are recorded in the numerical rows. Changed-lineage scope includes selected ancestors and affected neighbours.',
         'Retained V/E/F/C counts are unique vertices, undirected edges, faces and bounded cells within each selected family scope when a feature selection is supplied; otherwise they cover the complete stored complex. Top-supporting counts use the full closed shells of cells supporting actual current logical features in that scope; they are not the topology of a clipped planar mesh. Shared interface audits include the real counterpart without adding it to selected complexity counts. Live primal/dual validation always covers the entire stored complex and is labelled as global context.',
+        'Cell V/E/F change compares closed 3D portions in [0, initial extrusion height] and [initial extrusion height, result lifetime]. Baseline counts use the original history snapshot and sum every original ancestor cell separately, including shared interfaces once per incident cell. The upper range counts only the single resulting cell. Existing face subdivisions are retained; cut caps count once per connected polygon, including its inner rings, without triangulation. Signed percentage change is 100(upper-baseline)/baseline; positive values mean increases. Zero denominators and unsuccessful closed-boundary assembly are N/A with reasons. Lifetime stops immediately before the next operation selecting or affecting that result, or at the evaluated history endpoint. Actual occupied Z bounds are reported; cells born above the split are not extended downward. Each operation/action is listed separately. Feature filters select relevant operations, but every row always measures the complete operation group, independently of the feature-family checkbox.',
         'Missing/non-manifold/misoriented edges and invalid shells are counted per cell. Historical checks inspect realized boundary records. Only the live model receives a primal/dual pointer and reciprocal-interface check. These checks do not constitute an exact-arithmetic proof of geometric embedding.',
         'Operation descriptors: vertex reduction=100(1−nT/nS); compactness change=4πAT/PT²−4πAS/PS²; point displacement=|cT−cS|/sqrt(AS/π); relative line length=100LT/Drect; merging error=100A(T△U)/A(U); aggregation hull deviation=100A(T△CH(U))/A(CH(U)). They are descriptors, not calibrated quality scores.',
         'Profile summaries use maximum sampled NHD and a Z-weighted trapezoidal mean of the sampled NHD values. These summarize measured samples, not exact continuous integrals. Missing values are omitted and coverage is disclosed. No counts or heterogeneous case descriptors are averaged.',
@@ -354,6 +412,8 @@ def analysis_report(record):
             for r in rows:lines.append(f"- {r['scope']}, step {r['step']}, Z={r['z']:g}: A={r['area_m2']}, P={r['perimeter_m']}, Hh={r['hausdorff_m']}, NHD={r['normalized_hausdorff']}. "+r['polygon_metric_reason']+' '+r['hd_reason'])
         if name=='structure':
             for r in rows:lines.append(f"- Step {r['step']}, {r.get('scope','Entire stored complex')}: retained V/E/F/C={r['retained_vertices']}/{r['retained_edges']}/{r['retained_faces']}/{r['retained_cells']}; top-supporting cells={r['top_supporting_cells']}; invalid shells={r['invalid_closed_cells']}; interface errors={r['inconsistent_interfaces']}; missing logical features={r['missing_logical_features']}; {r['live_dual_status']} (global context when live).")
+        if name=='cell_complexity':
+            for r in rows:lines.append(f"- Step {r['step']}, {r['scope']}: original cells {r['baseline_cell_ids']}, result {r['result_cell_id']}; baseline V/E/F={r['baseline_vertices']}/{r['baseline_edges']}/{r['baseline_faces']}; upper V/E/F={r['upper_vertices']}/{r['upper_edges']}/{r['upper_faces']}; changes (%)={r['vertices_change_pct']}/{r['edges_change_pct']}/{r['faces_change_pct']}. {r['reason']}")
     lines.extend(['','## Profile summaries',json.dumps(record['profile_summary'],indent=2),
         '', '## Limitations and paper presentation',
         'Values measure representational change rather than error against independent ground truth. Boundary removal and dimensional collapse can intentionally increase displacement. DHE counts include retained historical cells and must not be conflated with the number of symbols on a map. Terminal symbols absent from higher DHE sections are disclosed as missing, never synthesized.',
@@ -401,6 +461,10 @@ def load_reports(folder):
                 for key in ('summary','sections','structure'):
                     if not path.with_name(key+'.csv').is_file():raise ValueError('Incomplete numerical tables.')
                     if not all(isinstance(row,dict) for row in record['tables'][key]):raise ValueError('Invalid table row.')
+                if 'cell_complexity' in record['tables']:
+                    rows=record['tables']['cell_complexity']
+                    if not isinstance(rows,list) or not all(isinstance(row,dict) for row in rows):raise ValueError('Invalid cell complexity table.')
+                    if not path.with_name('cell_complexity.csv').is_file():raise ValueError('Incomplete cell complexity table.')
                 if not path.with_name('analysis_report.md').is_file():raise ValueError('Missing analysis report.')
                 json.dumps(record,allow_nan=False)
             else:raise ValueError('Unsupported report version.')
