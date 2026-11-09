@@ -294,13 +294,18 @@ def _remove_redundant_walls(faces):
                 normal/=np.linalg.norm(normal)
                 if np.max(np.abs((np.asarray(faces[j].points)-a[0])@normal))<=arithmetic_bound(a):
                     adjacency[i].add(j)
+    # Short walls can have less accurate normals than their long neighbours.
+    # Merge only when both directional plane checks agree at the existing bound.
+    adjacency={i:{j for j in links if i in adjacency.get(j,())} for i,links in adjacency.items()}
     visited=set();result=[f for i,f in enumerate(faces) if i not in eligible]
     for start in sorted(eligible):
         if start in visited:continue
         group=set();pending=[start]
         while pending:
             i=pending.pop()
-            if i not in group:group.add(i);pending.extend(adjacency[i]-group)
+            if i not in group and i not in visited:
+                group.add(i)
+                pending.extend(adjacency.get(i,set())-group-visited)
         visited.update(group)
         uses=defaultdict(list)
         for i in group:

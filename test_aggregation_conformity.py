@@ -115,7 +115,7 @@ class ReportedAggregationTests(unittest.TestCase):
         self.assertEqual(saved,tuple((a.geometry.wkb,a.times,a.provenance,a.fractions) for a in preview.skeleton_arcs))
 
     def test_reported_selections_levels_and_increments(self):
-        for selection in ((17,27,30),(1,26,29,32)):
+        for selection in ((17,27,30),(1,26,29,32),(8,9,11,12,14)):
             for source_z in (5.,25.):
                 s=GeneralizationSession(self.data,initial_height=source_z)
                 old=s.state;saved=_core()
@@ -139,8 +139,19 @@ class ReportedAggregationTests(unittest.TestCase):
                             expected=source if int(k)==owner else old.features[int(k)].geometry
                             self.assertLess(g.symmetric_difference(expected).area,1e-6)
                         self.assertTrue(all(cell_volume(cell)>0 for cell in proposal.model.cells))
+                        for k in selection:
+                            lower=next(c for c in proposal.model.cells if c.feature_id==str(k))
+                            self.assertAlmostEqual(cell_volume(lower),old.features[k].geometry.area*source_z,delta=1e-6)
                         timing=proposal.state.operation.diagnostics['skeleton_timing']
-                        self.assertLessEqual(timing['maximum_edge_time_difference'],timing['backend_distance_epsilon']+1e-10)
+                        if selection==(8,9,11,12,14):
+                            # This fixture also has verified near-collinear
+                            # backend events, covered by existing local bounds.
+                            for vertex in timing['explained_vertices']:
+                                residual=max(abs(t-vertex['time']) for t in vertex['edge_times'])
+                                self.assertLessEqual(residual,vertex['effective_time_bound'])
+                                self.assertTrue(vertex['approximation_sources'])
+                        else:
+                            self.assertLessEqual(timing['maximum_edge_time_difference'],timing['backend_distance_epsilon']+1e-10)
                         if selection==(1,26,29,32):
                             self.assertTrue(proposal.state.operation.diagnostics['collapsed_arrangement_rings'])
 

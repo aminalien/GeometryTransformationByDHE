@@ -4,10 +4,11 @@ import unittest
 from unittest.mock import patch
 
 import geopandas as gpd
-from shapely.geometry import box
+from shapely.geometry import Polygon,box
+from shapely.ops import unary_union
 import DHECore as dhe
 from generalization_geometry import DEFAULT_DATA,prepare_frame,load_shapefile
-from generalization_model import GeneralizationSession,Face,Patch,_prism,_core,_recipient,realize
+from generalization_model import GeneralizationSession,Face,Patch,_prism,_core,_recipient,realize,_remove_redundant_walls
 from plane_slicing import PlaneSlicer,SlicePlane
 from shell_conformity import (CoordinateRegistry,TransitionShellError,check_oriented_shell,
                               check_face_intersections,check_interface_pairs)
@@ -94,6 +95,47 @@ class ShellDiagnosticTests(unittest.TestCase):
         with self.assertRaises(TransitionShellError) as caught:realize(faces,s.origin)
         self.assertEqual(caught.exception.report['classification'],'horizontal_transition_facet')
         self.assertIs(_core()[0],core[0])
+
+
+class WallGroupingTests(unittest.TestCase):
+    def test_asymmetric_coplanarity_does_not_duplicate_wall_coverage(self):
+        # The long wall accepts the short wall's plane, but roundoff in the
+        # short wall's normal rejects the reverse comparison. Both are from
+        # the reported aggregation; no local Shapefile is needed here.
+        short=Face(34,[
+            (131.18210456836616,22.35992990835287,12.013966183953551),
+            (131.18687080362562,22.38162299939455,12.019843474938142),
+            (131.18687080362562,22.38162299939455,15.),
+            (131.18210456836616,22.35992990835287,15.)],"wall")
+        long=Face(34,[
+            (131.18687080362562,22.38162299939455,12.019843474938142),
+            (134.45837570139346,37.2715832567683,5.761012416491431),
+            (134.45837570139346,37.2715832567683,15.),
+            (131.18687080362562,22.38162299939455,15.)],"wall")
+        def projected(faces):
+            return [Polygon([(x,z) for x,y,z in f.points]) for f in faces]
+        expected=unary_union(projected([short,long]))
+        for walls in ([short,long],[long,short]):
+            with self.subTest(first=walls[0].points[0]):
+                result=_remove_redundant_walls(walls)
+                self.assertEqual(len(result),2)
+                self.assertEqual({cycle(f.points) for f in result},{cycle(f.points) for f in walls})
+                polygons=projected(result);coverage=unary_union(polygons)
+                self.assertLess(coverage.symmetric_difference(expected).area,1e-10)
+                self.assertAlmostEqual(sum(p.area for p in polygons),coverage.area,delta=1e-10)
+
+    def test_coplanar_walls_merge_only_with_matching_ownership(self):
+        left=Face(1,[(0.,0.,0.),(1.,0.,0.),(1.,0.,2.),(0.,0.,2.)],"wall")
+        right=Face(1,[(1.,0.,0.),(2.,0.,0.),(2.,0.,2.),(1.,0.,2.)],"wall")
+        result=_remove_redundant_walls([left,right])
+        self.assertEqual(len(result),1)
+        self.assertEqual(result[0].owner,1)
+        self.assertEqual(cycle(result[0].points),cycle([(0,0,0),(2,0,0),(2,0,2),(0,0,2)]))
+        other=Face(2,right.points,"wall")
+        self.assertEqual(len(_remove_redundant_walls([left,other])),2)
+        interface=Face(2,list(reversed(left.points)),"wall")
+        result=_remove_redundant_walls([left,right,interface])
+        self.assertEqual(len([f for f in result if f.owner==1]),2)
 
 
 class CompactHistoryTests(unittest.TestCase):
