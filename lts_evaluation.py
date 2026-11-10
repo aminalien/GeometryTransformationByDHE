@@ -221,7 +221,7 @@ def _matching_action(state,source_keys,target_keys):
 
 
 def cell_complexity_rows(states,steps,scopes):
-    """Compare original source sums with one result over its measured lifetime."""
+    """Compare merge participants individually; aggregate original source sums."""
     from cell_complexity import range_counts
     split=states[0].z;cache={};rows=[]
     def measure(index,owner,lo,hi):
@@ -234,13 +234,22 @@ def cell_complexity_rows(states,steps,scopes):
     for step in steps:
         state=states[step];before=states[step-1]
         for action_index,action in enumerate(operation_actions(state.operation),1):
-            grouped=action.name in ('merging','aggregation')
+            grouped=action.name=='aggregation'
             for result in ([action.winner] if grouped else action.selected):
                 sources=list(action.selected) if grouped else [result]
-                ancestors=sorted({k for owner in sources for k in before.features[owner].lineage})
-                related=set(sources)|set(ancestors)|{result}
+                baseline_ids=([result] if action.name=='merging' else
+                              sorted({k for owner in sources for k in before.features[owner].lineage}))
+                related=set(sources)|set(baseline_ids)|{result}
+                if action.name=='merging':
+                    # Selecting one participant includes every row of the merge,
+                    # while each row still measures only its own cell.
+                    related.update(action.selected)
+                    related.update(k for owner in action.selected for k in before.features[owner].lineage)
                 matching=[name for name,(keys,_) in scopes.items() if keys&related]
                 if not matching:continue
+                if grouped:role='aggregate'
+                elif action.name=='merging':role='winner' if result==action.winner else 'loser'
+                else:role='feature'
                 end=len(states)-1
                 for later in range(step+1,len(states)):
                     op=states[later].operation
@@ -249,15 +258,20 @@ def cell_complexity_rows(states,steps,scopes):
                 shell=[f for f in states[end].faces if f.owner==result]
                 lifetime=min(states[end].z,max((p[2] for f in shell for p in f.points),default=split))
                 row=dict(step=step,step_id=state.step_id,action_index=action_index,operation=action.name,
-                    scope=f'{action.name}: '+', '.join(map(str,sources))+f' -> {result}',
-                    matching_scopes=matching,source_cell_ids=sources,baseline_cell_ids=ancestors,result_cell_id=result,
+                    scope=(f'merging: {role} {result}' if action.name=='merging' else
+                           f'{action.name}: '+', '.join(map(str,sources))+f' -> {result}'),
+                    participant_role=role,matching_scopes=matching,source_cell_ids=sources,
+                    baseline_cell_ids=baseline_ids,result_cell_id=result,
                     baseline_z_min=0.,baseline_z_max=split,upper_z_min=split,upper_z_max=lifetime,
                     lifetime_end_step=end,lifetime_end_step_id=states[end].step_id,
-                    count_policy='Sum original cells separately; one resulting cell; complete operation group',
+                    count_policy=('Own original feature ID versus own upper cell; all merge participants included'
+                                  if action.name=='merging' else
+                                  'Sum original cells separately; one resulting cell; complete operation group'),
                     status='ok',reason='')
                 baseline=[];reasons=[]
-                for owner in ancestors:
-                    values,reason=measure(0,owner,0.,split)
+                for owner in baseline_ids:
+                    values,reason=(measure(0,owner,0.,split) if owner in states[0].features else
+                                   (None,'No original lower-range cell exists for this feature ID.'))
                     if values is None:reasons.append(f'Original cell {owner}: {reason}')
                     else:baseline.append(values)
                 upper,reason=measure(end,result,split,lifetime)
@@ -265,7 +279,7 @@ def cell_complexity_rows(states,steps,scopes):
                 row.update(actual_upper_z_min=upper['actual_z_min'] if upper else None,
                            actual_upper_z_max=upper['actual_z_max'] if upper else None)
                 for key in ('vertices','edges','faces'):
-                    a=sum(v[key] for v in baseline) if len(baseline)==len(ancestors) and ancestors else None
+                    a=sum(v[key] for v in baseline) if len(baseline)==len(baseline_ids) and baseline_ids else None
                     b=upper[key] if upper else None
                     row.update({f'baseline_{key}':a,f'upper_{key}':b,
                                 f'{key}_change_pct':100*(b-a)/a if a and b is not None else None})
@@ -401,7 +415,7 @@ def analysis_report(record):
         'Displacement compares polygon boundaries, line geometries, and points. The symmetric sampled Hausdorff Hh is the largest sampled point-to-original-geometry distance in either direction. NHD=Hh/D, where D is the fixed reference bounding-box diagonal. Maximum sample spacing h=D·relative_hd_spacing; the sampling-only continuous-distance bound is Hh≤H≤Hh+h/2. Floating-point errors are separate. A budget overflow yields N/A without coarsening.',
         'Whole-history references are the initial top representation; last-operation references are the preceding source representation. Reference step and Z, reference diagonal D, spacing, sample counts and sampling bound are recorded in the numerical rows. Changed-lineage scope includes selected ancestors and affected neighbours.',
         'Retained V/E/F/C counts are unique vertices, undirected edges, faces and bounded cells within each selected family scope when a feature selection is supplied; otherwise they cover the complete stored complex. Top-supporting counts use the full closed shells of cells supporting actual current logical features in that scope; they are not the topology of a clipped planar mesh. Shared interface audits include the real counterpart without adding it to selected complexity counts. Live primal/dual validation always covers the entire stored complex and is labelled as global context.',
-        'Cell V/E/F change compares closed 3D portions in [0, initial extrusion height] and [initial extrusion height, result lifetime]. Baseline counts use the original history snapshot and sum every original ancestor cell separately, including shared interfaces once per incident cell. The upper range counts only the single resulting cell. Existing face subdivisions are retained; cut caps count once per connected polygon, including its inner rings, without triangulation. Signed percentage change is 100(upper-baseline)/baseline; positive values mean increases. Zero denominators and unsuccessful closed-boundary assembly are N/A with reasons. Lifetime stops immediately before the next operation selecting or affecting that result, or at the evaluated history endpoint. Actual occupied Z bounds are reported; cells born above the split are not extended downward. Each operation/action is listed separately. Feature filters select relevant operations, but every row always measures the complete operation group, independently of the feature-family checkbox.',
+        'Cell V/E/F change compares closed 3D portions in [0, initial extrusion height] and [initial extrusion height, result lifetime]. Merging has one row per participant, labelled winner or loser: each original feature ID is compared only with its own upper cell, including retained loser transition geometry. A later-created ID without an original lower-range cell has an N/A baseline and percentage. Aggregation has one row: sum all original ancestor cells separately, including shared interfaces once per incident cell, and compare with the single upper aggregate. Other operations retain their existing per-feature ancestor baselines. Existing face subdivisions are retained; cut caps count once per connected polygon, including its inner rings, without triangulation. Signed percentage change is 100(upper-baseline)/baseline; positive values mean increases. Zero denominators and unsuccessful closed-boundary assembly are N/A with reasons. Lifetime stops immediately before the next operation selecting or affecting that cell, or at the evaluated history endpoint. Actual occupied Z bounds are reported; cells born above the split are not extended downward. Feature filters select complete operations independently of the feature-family checkbox: a merge includes all participant rows, while aggregation includes its one summed row.',
         'Missing/non-manifold/misoriented edges and invalid shells are counted per cell. Historical checks inspect realized boundary records. Only the live model receives a primal/dual pointer and reciprocal-interface check. These checks do not constitute an exact-arithmetic proof of geometric embedding.',
         'Operation descriptors: vertex reduction=100(1−nT/nS); compactness change=4πAT/PT²−4πAS/PS²; point displacement=|cT−cS|/sqrt(AS/π); relative line length=100LT/Drect; merging error=100A(T△U)/A(U); aggregation hull deviation=100A(T△CH(U))/A(CH(U)). They are descriptors, not calibrated quality scores.',
         'Profile summaries use maximum sampled NHD and a Z-weighted trapezoidal mean of the sampled NHD values. These summarize measured samples, not exact continuous integrals. Missing values are omitted and coverage is disclosed. No counts or heterogeneous case descriptors are averaged.',
@@ -413,6 +427,8 @@ def analysis_report(record):
         if name=='structure':
             for r in rows:lines.append(f"- Step {r['step']}, {r.get('scope','Entire stored complex')}: retained V/E/F/C={r['retained_vertices']}/{r['retained_edges']}/{r['retained_faces']}/{r['retained_cells']}; top-supporting cells={r['top_supporting_cells']}; invalid shells={r['invalid_closed_cells']}; interface errors={r['inconsistent_interfaces']}; missing logical features={r['missing_logical_features']}; {r['live_dual_status']} (global context when live).")
         if name=='cell_complexity':
+            if any(r.get('operation')=='merging' and r.get('participant_role') not in ('winner','loser') for r in rows):
+                lines.append('This saved report retains earlier grouped merging counts. Reevaluate for separate winner and loser rows; saved measurements have not been recalculated.')
             for r in rows:lines.append(f"- Step {r['step']}, {r['scope']}: original cells {r['baseline_cell_ids']}, result {r['result_cell_id']}; baseline V/E/F={r['baseline_vertices']}/{r['baseline_edges']}/{r['baseline_faces']}; upper V/E/F={r['upper_vertices']}/{r['upper_edges']}/{r['upper_faces']}; changes (%)={r['vertices_change_pct']}/{r['edges_change_pct']}/{r['faces_change_pct']}. {r['reason']}")
     lines.extend(['','## Profile summaries',json.dumps(record['profile_summary'],indent=2),
         '', '## Limitations and paper presentation',

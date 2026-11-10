@@ -90,6 +90,27 @@ class EvaluationControlTests(unittest.TestCase):
         self.assertTrue(any(r['evaluation_id']==branch['evaluation_id'] for r in w.evaluation_window.records))
         self.assertEqual(self.errors,[])
 
+    def test_merging_participant_roles_and_grouped_report_notice(self):
+        from copy import deepcopy
+        s=session([box(0,0,2,2),box(2,0,4,2)])
+        s.apply(s.preview('merging',[1,2],winner=1));self.window._loaded(s)
+        w=self.window;w.review_evaluations();e=w.evaluation_window
+        e.feature_mode.set('Choose features');e._feature_mode_changed()
+        e.feature_list.selection_set(e.feature_indices.index(2));e.consider_feature_family.set(False)
+        e.run();self.wait();table=e.tables['cell_complexity']
+        self.assertIn('participant_role',table['columns'])
+        self.assertEqual(len(table.get_children()),2)
+        self.assertEqual([r['participant_role'] for r in table._evaluation_rows],['winner','loser'])
+        e.scope.set('Feature 2');e.display();self.assertEqual(len(table.get_children()),2)
+        old=deepcopy(e.record);grouped=old['tables']['cell_complexity'][0]
+        grouped.pop('participant_role');grouped.update(baseline_cell_ids=[1,2],baseline_vertices=16)
+        old['tables']['cell_complexity']=[grouped];saved=deepcopy(grouped)
+        e.show(old)
+        self.assertIn('Reevaluate for separate winner and loser rows',e.info.cget('text'))
+        self.assertEqual(len(table.get_children()),1)
+        self.assertEqual(old['tables']['cell_complexity'],[saved])
+        self.assertEqual(self.errors,[])
+
     def test_feature_picker_family_expansion_and_history_refresh(self):
         w=self.window;self.apply();w.review_evaluations();e=w.evaluation_window
         w._select({2,3});e.use_workspace_selection()

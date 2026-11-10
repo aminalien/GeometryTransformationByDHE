@@ -54,14 +54,15 @@ class RangeCountTests(unittest.TestCase):
 
 
 class ComparisonTableTests(unittest.TestCase):
-    def test_group_baselines_sum_shared_cells_and_single_result(self):
-        for op in ('merging','aggregation'):
-            with self.subTest(operation=op):
-                s=session([box(0,0,2,2),box(2 if op=='merging' else 4,0,4 if op=='merging' else 6,2)])
-                s.apply(s.preview(op,[1,2],**({'winner':1} if op=='merging' else {})))
+    def test_aggregation_baseline_sums_sources_for_single_result(self):
+        for second_x in (2,4):
+            with self.subTest(second_x=second_x):
+                s=session([box(0,0,2,2),box(second_x,0,second_x+2,2)])
+                s.apply(s.preview('aggregation',[1,2]))
                 report=evaluate(s,feature_ids=[2],consider_feature_family=False)
                 rows=report['tables']['cell_complexity'];self.assertEqual(len(rows),1)
                 row=rows[0];self.assertEqual(row['status'],'ok',row['reason'])
+                self.assertEqual(row['participant_role'],'aggregate')
                 self.assertEqual(row['baseline_cell_ids'],[1,2])
                 self.assertEqual(tuple(row['baseline_'+k] for k in ('vertices','edges','faces')),(16,24,12))
                 self.assertEqual(row['result_cell_id'],s.state.operation.winner)
@@ -71,6 +72,71 @@ class ComparisonTableTests(unittest.TestCase):
                     self.assertAlmostEqual(row[key+'_change_pct'],100*(actual[key]-row['baseline_'+key])/row['baseline_'+key])
                 self.assertEqual(_table_rows(report,'cell_complexity','Feature 2','1'),rows)
                 self.assertEqual(_table_rows(report,'cell_complexity','Feature 2','0'),[])
+
+    def test_merging_winner_and_losers_have_independent_counts_and_exports(self):
+        s=session([box(0,0,2,2),Polygon([(2,0),(4,0),(4,2),(3,3),(2,2)]),
+                   Polygon([(4,0),(6,0),(4,2)])])
+        s.apply(s.preview('merging',[1,2,3],winner=2))
+        history=deepcopy([state.faces for state in s.history]);ledger=tuple(dhe.dhe)
+        report=evaluate(s,feature_ids=[1],consider_feature_family=False)
+        rows=report['tables']['cell_complexity'];self.assertEqual(len(rows),3)
+        self.assertEqual([r['result_cell_id'] for r in rows],[1,2,3])
+        self.assertEqual([r['participant_role'] for r in rows],['loser','winner','loser'])
+        self.assertEqual(len({r['baseline_vertices'] for r in rows}),3)
+        for row in rows:
+            owner=row['result_cell_id'];self.assertEqual(row['baseline_cell_ids'],[owner])
+            self.assertEqual(row['source_cell_ids'],[owner]);self.assertEqual(row['status'],'ok',row['reason'])
+            baseline=range_counts([f for f in s.history[0].faces if f.owner==owner],0,5)
+            upper=range_counts([f for f in s.state.faces if f.owner==owner],5,15)
+            for key in ('vertices','edges','faces'):
+                self.assertEqual(row['baseline_'+key],baseline[key]);self.assertEqual(row['upper_'+key],upper[key])
+                self.assertAlmostEqual(row[key+'_change_pct'],100*(upper[key]-baseline[key])/baseline[key])
+        self.assertEqual(_table_rows(report,'cell_complexity','Feature 1','1'),rows)
+        self.assertEqual(tuple(dhe.dhe),ledger);self.assertEqual([state.faces for state in s.history],history)
+        with tempfile.TemporaryDirectory() as folder:
+            path=save_report(report,folder);loaded,warnings=load_reports(folder)
+            self.assertFalse(warnings);self.assertEqual(loaded[0]['tables']['cell_complexity'],rows)
+            with path.with_name('cell_complexity.csv').open(encoding='utf-8-sig',newline='') as stream:
+                exported=list(csv.DictReader(stream))
+            self.assertEqual([r['participant_role'] for r in exported],['loser','winner','loser'])
+            self.assertIn('merging: winner 2',path.with_name('analysis_report.md').read_text(encoding='utf-8'))
+        old=deepcopy(report);grouped=deepcopy(next(r for r in rows if r['participant_role']=='winner'))
+        grouped.pop('participant_role');grouped.update(baseline_cell_ids=[1,2,3],scope='merging: 1, 2, 3 -> 2')
+        for key in ('vertices','edges','faces'):
+            grouped['baseline_'+key]=sum(r['baseline_'+key] for r in rows)
+            grouped[key+'_change_pct']=100*(grouped['upper_'+key]-grouped['baseline_'+key])/grouped['baseline_'+key]
+        old['tables']['cell_complexity']=[grouped]
+        with tempfile.TemporaryDirectory() as folder:
+            path=save_report(old,folder);loaded,warnings=load_reports(folder)
+            self.assertFalse(warnings);self.assertEqual(loaded[0]['tables']['cell_complexity'],[grouped])
+            self.assertIn('retains earlier grouped merging counts',path.with_name('analysis_report.md').read_text(encoding='utf-8'))
+
+    def test_mixed_merge_and_aggregation_keep_separate_participant_policies(self):
+        s=session([box(0,0,2,2),box(2,0,4,2),box(10,0,12,2),box(14,0,16,2)])
+        s.apply(s.preview_level([dict(operation='merging',selected=[1,2],winner=2),
+                                 dict(operation='aggregation',selected=[3,4])]))
+        rows=evaluate(s)['tables']['cell_complexity']
+        self.assertEqual(len(rows),3)
+        self.assertEqual([r['participant_role'] for r in rows],['loser','winner','aggregate'])
+        self.assertEqual([r['baseline_cell_ids'] for r in rows],[[1],[2],[3,4]])
+        self.assertEqual([r['action_index'] for r in rows],[1,1,2])
+        self.assertTrue(all(r['status']=='ok' for r in rows))
+        selected=evaluate(s,feature_ids=[1],consider_feature_family=False)['tables']['cell_complexity']
+        self.assertEqual([r['result_cell_id'] for r in selected],[1,2])
+
+    def test_later_created_merge_participant_has_no_original_id_baseline(self):
+        for winner in (3,4):
+            with self.subTest(winner=winner):
+                s=session([box(0,0,2,2),box(4,0,6,2),box(6,0,8,2)])
+                s.apply(s.preview('aggregation',[1,2]));aggregate=s.state.operation.winner
+                self.assertEqual(aggregate,4)
+                s.apply(s.preview('merging',[3,aggregate],winner=winner))
+                rows=evaluate(s)['tables']['cell_complexity'];self.assertEqual(len(rows),2)
+                row=next(r for r in rows if r['result_cell_id']==aggregate)
+                self.assertEqual(row['participant_role'],'winner' if winner==aggregate else 'loser')
+                self.assertEqual(row['baseline_cell_ids'],[aggregate]);self.assertIsNone(row['baseline_vertices'])
+                self.assertIsNone(row['vertices_change_pct']);self.assertGreater(row['upper_vertices'],0)
+                self.assertEqual(row['status'],'unavailable');self.assertIn('No original lower-range cell',row['reason'])
 
     def test_original_ancestors_lifetimes_same_id_and_late_birth(self):
         s=session([box(0,0,2,2),box(4,0,6,2),box(8,0,10,2),box(20,0,22,2)])
@@ -92,8 +158,12 @@ class ComparisonTableTests(unittest.TestCase):
         s=session([box(0,0,2,2),box(2,0,4,2),box(4,0,6,2)])
         s.apply(s.preview('merging',[1,2],winner=1));s.apply(s.preview('merging',[1,3],winner=1))
         rows=evaluate(s,'whole_history')['tables']['cell_complexity']
-        self.assertEqual([r['lifetime_end_step'] for r in rows],[1,2])
-        self.assertEqual(rows[1]['baseline_cell_ids'],[1,2,3])
+        self.assertEqual(len(rows),4)
+        winners=[r for r in rows if r['participant_role']=='winner']
+        self.assertEqual([r['lifetime_end_step'] for r in winners],[1,2])
+        self.assertEqual([r['baseline_cell_ids'] for r in winners],[[1],[1]])
+        loser=next(r for r in rows if r['result_cell_id']==2)
+        self.assertEqual(loser['actual_upper_z_max'],15)
 
     def test_custom_height_terminal_counts_mixed_actions_and_no_mutation(self):
         s=session([box(0,0,2,2),box(4,0,6,2),box(8,0,10,2)])
