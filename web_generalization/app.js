@@ -2,7 +2,8 @@ import * as maplibregl from 'maplibre-gl';
 import {MapLibreOverlay} from 'https://esm.sh/@deck.gl/maplibre@9.4.1?external=@deck.gl/core,maplibre-gl';
 import {SolidPolygonLayer,PathLayer,LineLayer,ScatterplotLayer,TextLayer} from 'https://esm.sh/@deck.gl/layers@9.4.1?external=@deck.gl/core';
 import {SimpleMeshLayer} from 'https://esm.sh/@deck.gl/mesh-layers@9.4.1?external=@deck.gl/core';
-import {AmbientLight,DirectionalLight,LightingEffect} from '@deck.gl/core';
+import {AmbientLight,DirectionalLight,LightingEffect,WebMercatorViewport} from '@deck.gl/core';
+import {fitCellCamera} from './cell_focus.js';
 
 const $=id=>document.getElementById(id);
 const empty={type:'FeatureCollection',features:[]};
@@ -11,7 +12,7 @@ const state={scene:null,preview:null,section:null,revision:0,selected:new Set(),
   camera:null,modeCamera:null,config:null,upload:null,markers:[],custom:null,background:'osm',fitOnNext:true,
   sliceInFlight:false,sliceQueued:false,inputPreview:null,inputPreviewJob:null,miniFitPending:false,
   topologyScene:null,edgeMap:new Map(),faceMap:new Map(),edgesByCell:new Map(),fallback:new Set(),mapWarnings:new Map(),
-  levelActions:[],levelStep:null,jobId:null,automaticReport:null,autoInputs:{}};
+  levelActions:[],levelStep:null,jobId:null,automaticReport:null,autoInputs:{},exporting:false};
 let mapping=null;
 // Shared unit sphere: only the instance centres/colours/scales vary between cells.
 function unitSphere(){
@@ -92,6 +93,7 @@ function setBusy(busy,label='Constructing DHE…'){
   state.busy=busy;$('busy-overlay').hidden=!busy;$('busy-label').textContent=label;
   for(const id of ['apply','preview','undo','load-default','load-upload','draw-bbox','open-import','history','level-add','level-update','level-remove','level-clear','level-actions','open-automatic','run-automatic'])$(id).disabled=busy;
   for(const id of ['operation','dz','tolerance','iterations','ratio','winner','initial-height'])$(id).disabled=busy;
+  exportControls();
 }
 async function waitJob(id){
   for(;;){
@@ -285,6 +287,7 @@ function updateEdges(){
 }
 function topology(){
   const scene=displayScene();if(state.topologyScene===scene)return;
+  if(state.topologyScene?.snapshot_id!==scene?.snapshot_id)state.edge=null;
   state.topologyScene=scene;state.edgeMap=new Map();state.faceMap=new Map();state.edgesByCell=new Map();
   for(const e of scene?.halfedges||[]){state.edgeMap.set(e.id,e);if(!state.edgesByCell.has(e.owner))state.edgesByCell.set(e.owner,[]);state.edgesByCell.get(e.owner).push(e);}
   for(const f of scene?.faces||[])state.faceMap.set(f.id,f);
@@ -308,7 +311,7 @@ function hover(info,label){
   const tooltip=$('tooltip');tooltip.textContent=label(info.object);tooltip.style.left=`${info.x+12}px`;tooltip.style.top=`${info.y+12}px`;tooltip.hidden=false;
 }
 function render(){
-  const scene=displayScene();if(!state.mapReady)return;
+  const scene=displayScene();exportControls();if(!state.mapReady)return;
   if(state.inputPreview){
     const polygons=state.inputPreview.features.flatMap(f=>(f.geometry.type==='Polygon'?[f.geometry.coordinates]:f.geometry.coordinates).map(rings=>({rings})));
     overlay.setProps({layers:[new SolidPolygonLayer({id:'prepared-input',data:polygons,getPolygon:d=>d.rings,getFillColor:[35,139,118,115],material:false}),
@@ -437,6 +440,36 @@ function fitData(){
   map.fitBounds([[b[0],b[1]],[b[2],b[3]]],{padding:{top:75,left:Math.min(50,width*.1),right:Math.min(250,width*.3),bottom:40},maxZoom:20,duration:400});
   state.miniFitPending=true;fitMini();
 }
+function exportControls(){
+  const scene=displayScene(),available=Boolean(scene?.snapshot_id)&&!state.inputPreview;
+  for(const id of ['export-primal','export-duality','export-coordinates'])$(id).disabled=!available||state.busy||state.exporting;
+  $('export-details').textContent=available?`${scene.workspace==='mapping'?'Mapping':'Generalize'} · ${scene.preview?'validated preview':'validated model'} · ${scene.cells} cells/primitives · ${scene.crs}${scene.stale?' · built from an earlier review':''}`:'Load or build a validated model to export.';
+  topology();const edge=state.edgeMap.get(state.edge);
+  $('focus-cell').disabled=!edge||!state.mapReady||Boolean(state.inputPreview);
+  $('focus-cell').textContent=edge?`Zoom to cell ${edge.owner}`:'Zoom to current cell';
+}
+async function downloadSpace(kind){
+  const scene=displayScene();if(!scene?.snapshot_id||state.busy||state.exporting||state.inputPreview)return;
+  state.exporting=true;exportControls();$('export-message').textContent='Preparing '+kind+' download…';
+  const q=new URLSearchParams({workspace_name:scene.workspace||'generalize',snapshot_id:scene.snapshot_id,coordinates:$('export-coordinates').value});
+  try{
+    const response=await fetch('/api/export/'+kind+'?'+q);
+    if(!response.ok){const error=await response.json();throw new Error(error.detail||'Export failed.');}
+    const blob=await response.blob(),url=URL.createObjectURL(blob),a=document.createElement('a');
+    a.href=url;a.download=response.headers.get('Content-Disposition')?.match(/filename="([^"]+)"/)?.[1]||('dhe_'+kind+(kind==='primal'?'.zip':'.json'));
+    a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+    $('export-message').textContent=`Downloaded ${kind} from snapshot ${scene.snapshot_id.slice(0,8)}.`;
+  }catch(error){$('export-message').textContent=error.message;status(error.message,true);}
+  finally{state.exporting=false;exportControls();}
+}
+$('export-primal').onclick=()=>downloadSpace('primal');$('export-duality').onclick=()=>downloadSpace('duality');
+$('focus-cell').onclick=guard(()=>{
+  topology();const edge=state.edgeMap.get(state.edge);if(!edge)throw new Error('Select a half-edge first.');
+  const unique=new Map();for(const e of state.edgesByCell.get(edge.owner)||[])for(const p of [e.source,e.target])unique.set(p.join(','),zpoint(p,!$('show-3d').checked));
+  const canvas=$('map'),camera=fitCellCamera([...unique.values()],{Viewport:WebMercatorViewport,width:canvas.clientWidth||800,height:canvas.clientHeight||500,
+    pitch:map.getPitch(),bearing:map.getBearing(),minZoom:map.getMinZoom?.()??0,maxZoom:map.getMaxZoom?.()??22});
+  map.easeTo(camera);status(`Framed cell ${edge.owner}; highlighted half-edge retained.`);
+});
 function fitMini(){
   const scene=displayScene();if(!scene||!state.miniReady||$('mini-panel').hidden||!state.miniFitPending)return;
   const b=scene.bounds;mini.resize();mini.fitBounds([[b[0],b[1]],[b[2],b[3]]],{padding:22,maxZoom:20,duration:0});state.miniFitPending=false;

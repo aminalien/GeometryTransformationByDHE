@@ -68,6 +68,7 @@
     <label>Cell<select id="edge-cell" aria-label="Inspector cell"></select></label>
     <label>Find half-edge<input id="edge-search" placeholder="Label or raw ID (up to 300 matches)"></label>
     <label>Half-edge<select id="edge-select" aria-label="Half-edge"></select></label>
+    <button id="focus-cell" class="focus-cell" disabled>Zoom to current cell</button>
     <div class="section-title"><span>DUAL APPEARANCE</span></div>
     <label class="check"><input type="checkbox" id="dual-labels">Dual labels</label>
     <label class="check"><input type="checkbox" id="exterior">Include exterior dual</label>
@@ -76,6 +77,14 @@
     <label>Dual edge width <span class="unit">pixels</span><input id="dual-width" type="range" min="0.5" max="6" step="0.25" value="2.5"></label>
     <div class="section-title"><span>DATA DETAILS</span></div>
     <div id="data-details" class="hint"></div>
+  </section>
+  <section class="space-export">
+    <div class="section-title"><span>EXPORT SPACE</span></div>
+    <p id="export-details" class="hint">Load a validated model to export.</p>
+    <label>Coordinates<select id="export-coordinates"><option value="local">Local XY (metres)</option><option value="projected">Absolute projected CRS</option></select></label>
+    <div class="operation-actions"><button id="export-primal" disabled>Primal OBJ</button><button id="export-duality" disabled>Duality JSON</button></div>
+    <p class="hint">All bounded cells. Original polygons, internal interfaces and raw Z. OBJ ZIP includes materials and metadata; JSON includes the graph and full live DHE pointers.</p>
+    <p id="export-message" class="hint" role="status"></p>
   </section>
   <details class="load-notes"><summary id="notes-title">Import & construction notes</summary><div id="notes"></div></details>
 </aside>

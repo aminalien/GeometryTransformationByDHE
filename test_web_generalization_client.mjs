@@ -10,6 +10,7 @@ import {setTimeout as pause} from 'node:timers/promises';
 const origin=process.env.DHE_WEB_TEST_URL||'http://127.0.0.1:8765';
 const html=await fs.readFile(new URL('./web_generalization/index.html',import.meta.url),'utf8');
 const elements=new Map();
+const downloads=[],blobs=new Map();let blobSerial=0;
 class Element{
   constructor(tag='div'){this.tagName=tag.toUpperCase();this.value='';this.checked=false;this.hidden=false;this.style={};this.children=[];this.events={};this.dataset={};this.files=[];this._classes=new Set();this.classList={toggle:(k,force)=>{const add=force??!this._classes.has(k);add?this._classes.add(k):this._classes.delete(k);},add:k=>this._classes.add(k)};}
   set textContent(value){this._text=String(value);this.children=[];}
@@ -21,6 +22,7 @@ class Element{
   querySelector(selector){const match=selector.match(/option\[value="(.*)"\]/);return this.children.find(c=>c.value===match?.[1]);}
   showModal(){this.open=true;}
   close(){this.open=false;}
+  click(){if(this.tagName==='A')downloads.push({filename:this.download,blob:blobs.get(this.href)});}
 }
 class OptionElement extends Element{constructor(text,value){super('option');this.textContent=text;this.value=String(value);}}
 for(const match of html.matchAll(/<([\w-]+)\b([^>]*\bid="([^"]+)"[^>]*)>/g)){
@@ -56,13 +58,20 @@ class FakeMap{
   getBearing(){return this.bearing;}
   getZoom(){return 19;}
   setMaxPitch(pitch){this.maxPitch=pitch;if(this.pitch>pitch)this.pitch=pitch;}
-  easeTo(options){this.pitch=options.pitch??this.pitch;this.bearing=options.bearing??this.bearing;}
+  easeTo(options){this.lastCamera=options;this.pitch=options.pitch??this.pitch;this.bearing=options.bearing??this.bearing;}
   setStyle(style){this.style=style;this.sources={};this.layers={};setTimeout(()=>this.emit('style.load'),1);}
   getBounds(){const b=this.bounds;return {getWest:()=>b[0],getSouth:()=>b[1],getEast:()=>b[2],getNorth:()=>b[3],extend(){return this;}};}
 }
 class Marker{setLngLat(){return this;}addTo(){return this;}remove(){}}
 class Overlay{constructor(props){this.props=props;overlays.push(this);}setProps(props){this.props={...this.props,...props};}}
 class Layer{constructor(props){this.props=props;this.id=props.id;}}
+// UI wiring only; test_cell_focus.mjs checks the helper using real deck.gl math.
+class FocusViewport{
+  constructor(o){Object.assign(this,o);this.scale=512*2**o.zoom/360;this.viewProjectionMatrix=[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1];}
+  projectPosition(p){return p;}unprojectPosition(p){return p;}
+  project(p){return [(p[0]-this.longitude)*this.scale+this.width/2,(this.latitude-p[1])*this.scale+this.height/2-p[2]*this.scale/70000*Math.sin(this.pitch*Math.PI/180),.5];}
+  unproject(p){return [this.longitude+(p[0]-this.width/2)/this.scale,this.latitude-(p[1]-this.height/2)/this.scale,0];}
+}
 const realFetch=globalThis.fetch;let submitted,automaticSubmitted,activeSlices=0,maxActiveSlices=0,slowSlices=false;
 async function fetchLocal(path,options){
   if(path==='/api/apply'){submitted=JSON.parse(options.body);return {ok:true,json:async()=>({job_id:'failure-test'})};}
@@ -83,13 +92,18 @@ async function fetchLocal(path,options){
   }
   return realFetch(new URL(path,origin),options);
 }
-const context=vm.createContext({console,document,window:{},location:{origin},fetch:fetchLocal,Option:OptionElement,URLSearchParams,FormData,setTimeout,clearTimeout,setInterval:()=>0});
+class DownloadURL extends URL{
+  static createObjectURL(blob){const key='blob:test-'+(++blobSerial);blobs.set(key,blob);return key;}
+  static revokeObjectURL(key){blobs.delete(key);}
+}
+const context=vm.createContext({console,document,window:{},location:{origin},fetch:fetchLocal,Option:OptionElement,URL:DownloadURL,Blob,URLSearchParams,FormData,setTimeout,clearTimeout,setInterval:()=>0});
 vm.runInContext(await fs.readFile(new URL('./web_generalization/mapping.js',import.meta.url),'utf8'),context);
 const source=await fs.readFile(new URL('./web_generalization/app.js',import.meta.url),'utf8');
 const module=new vm.SourceTextModule(source,{context});
 await module.link(async specifier=>{
+  if(specifier==='./cell_focus.js')return new vm.SourceTextModule(await fs.readFile(new URL('./web_generalization/cell_focus.js',import.meta.url),'utf8'),{context});
   const exports=specifier==='maplibre-gl'?{Map:FakeMap,Marker,NavigationControl:class{},ScaleControl:class{}}:
-    specifier.includes('/maplibre@')?{MapLibreOverlay:Overlay}:Object.fromEntries(['SolidPolygonLayer','PathLayer','LineLayer','ScatterplotLayer','TextLayer','SimpleMeshLayer','AmbientLight','DirectionalLight','LightingEffect'].map(key=>[key,Layer]));
+    specifier.includes('/maplibre@')?{MapLibreOverlay:Overlay}:{...Object.fromEntries(['SolidPolygonLayer','PathLayer','LineLayer','ScatterplotLayer','TextLayer','SimpleMeshLayer','AmbientLight','DirectionalLight','LightingEffect'].map(key=>[key,Layer])),WebMercatorViewport:FocusViewport};
   return new vm.SyntheticModule(Object.keys(exports),function(){for(const [key,value] of Object.entries(exports))this.setExport(key,value);},{context});
 });
 await module.evaluate();
@@ -99,6 +113,12 @@ const layer=id=>overlays[0].props.layers.find(layer=>layer.id===id)?.props;
 await waitFor(()=>context.window.dheAtlas?.loaded&&layer('slice-fills')?.data.length,'App boot');
 assert.ok(layer('dhe-faces').data.length);assert.ok(layer('primal-vertices').data.length);
 const revision=context.window.dheAtlas.revision;
+assert.equal(el('focus-cell').disabled,true);assert.equal(el('export-primal').disabled,false);
+await el('export-primal').emit('click');assert.ok(downloads.at(-1).filename.endsWith('.zip'));
+assert.equal(new Uint8Array(await downloads.at(-1).blob.arrayBuffer())[0],80);
+el('export-coordinates').value='projected';await el('export-duality').emit('click');
+const exported=JSON.parse(await downloads.at(-1).blob.text());assert.equal(exported.metadata.coordinates,'projected');
+assert.equal(exported.metadata.revision,revision);assert.ok(exported.dhe_records.length);assert.equal(el('export-duality').disabled,false);
 el('show-3d').checked=false;await el('show-3d').emit('change');
 await waitFor(()=>!layer('dhe-faces')&&layer('slice-fills')?.data.length,'Flat mode');
 assert.equal(maps[0].maxPitch,0);assert.ok(layer('slice-fills').data.every(d=>d.rings.every(r=>r.every(p=>p[2]===.04))));
@@ -116,6 +136,10 @@ el('show-plane').checked=false;await el('show-plane').emit('change');assert.equa
 el('show-sections').checked=true;await el('show-sections').emit('change');await waitFor(()=>layer('slice-fills')?.data.length,'Restore sections');
 assert.ok(el('edge-select').children.length<=302);assert.ok(el('edge-cell').children.length);
 const firstEdge=el('edge-select').children[1];el('edge-select').value=firstEdge.value;await el('edge-select').emit('change');assert.ok(layer('selected-face'));
+const selectedFace=layer('selected-face').data[0].face,pitch=maps[0].pitch,bearing=maps[0].bearing;
+assert.equal(el('focus-cell').disabled,false);await el('focus-cell').emit('click');
+assert.ok(maps[0].lastCamera.center);assert.equal(maps[0].pitch,pitch);assert.equal(maps[0].bearing,bearing);
+assert.equal(layer('selected-face').data[0].face,selectedFace);assert.equal(el('edge-select').value,firstEdge.value);
 assert.equal(layer('selected-face').opacity,.5);
 el('edge-search').value='not-a-halfedge';await el('edge-search').emit('input');assert.ok(el('edge-select').children.length<=2);
 el('edge-search').value='';await el('edge-search').emit('input');
@@ -164,6 +188,7 @@ el('indices').value='3';await el('select-indices').emit('click');el('operation')
 await el('level-add').emit('click');assert.equal(el('level-actions').children.length,2);
 assert.equal(el('preview').textContent,'Preview level');await el('preview').emit('click');
 await waitFor(()=>el('busy-overlay').hidden&&el('scene-title').textContent==='Validated preview','Mixed-level preview');
+await el('export-duality').emit('click');assert.ok(JSON.parse(await downloads.at(-1).blob.text()).metadata.preview_id);
 assert.equal(context.window.dheAtlas.revision,revision);
 await el('discard-preview').emit('click');await el('level-clear').emit('click');assert.equal(el('level-actions').children.length,0);
 await el('open-automatic').emit('click');assert.ok(el('automatic-dialog').open);
@@ -171,7 +196,7 @@ el('auto-kind').value='polygon';await el('run-automatic').emit('click');
 assert.equal(automaticSubmitted.settings.final_kind,'polygon');assert.deepEqual(automaticSubmitted.selected,[3]);
 assert.ok(el('status').textContent.includes('atomic automatic rejection'));assert.equal(context.window.dheAtlas.revision,revision);
 assert.equal(el('cancel-automatic').hidden,true);
-console.log('Client integration passed: map/section controls, primal/dual sizing, selection and OSM drawing, level queue/duplicate guards, real mixed-level preview, automatic request settings, and atomic failure preservation.');
+console.log('Client integration passed: OBJ/full DHE JSON downloads, selected-cell zoom, map/section controls, primal/dual sizing, level preview, automatic settings, and atomic failure preservation.');
 if(process.env.DHE_WEB_TEST_MAPPING==='1'){
   // Use an isolated server whose mapping defaults are disposable fixture layers.
   const previous=await (await realFetch(origin+'/api/scene')).json();
@@ -199,6 +224,8 @@ if(process.env.DHE_WEB_TEST_MAPPING==='1'){
   await el('mapping-build').emit('click');
   const report=await (await realFetch(origin+'/api/mapping/report')).json();assert.equal(report.endpoint_validation,'passed');
   assert.ok(report.routing.every(g=>g.builder==='classic'));
+  await el('export-duality').emit('click');const mappingExport=JSON.parse(await downloads.at(-1).blob.text());
+  assert.equal(mappingExport.metadata.workspace,'mapping');assert.equal(mappingExport.metadata.mapping_report.endpoint_validation,'passed');
   // Force a pair of moving cells to cross and verify the approved Hybrid retry
   // appears as actual final routing in the UI, with valid Smooth cells retained.
   el('mapping-mode').value='hybrid';
@@ -218,8 +245,9 @@ if(process.env.DHE_WEB_TEST_MAPPING==='1'){
   await tabs.find(t=>t.dataset.tab==='inspect').emit('click');
   el('edge-select').value=el('edge-select').children[1].value;await el('edge-select').emit('change');
   assert.ok(el('edge-details').textContent.includes('source')||el('edge-details').textContent.includes('target'));
+  const mappingEdge=el('edge-select').value;await el('focus-cell').emit('click');assert.equal(el('edge-select').value,mappingEdge);
   await tabs.find(t=>t.dataset.tab==='generalize').emit('click');
   assert.equal(el('mapping-tab').hidden,true);assert.equal(context.window.dheAtlas.revision,revision);
   assert.equal(layer('mapping-input-fills'),undefined);
-  console.log('Mapping client integration passed: automatic review, optional regrouping, Classic preview/build/slicing, Hybrid collision retries and final routing, inspector metadata, and restoration of Generalize.');
+  console.log('Mapping client integration passed: full topology download, cell zoom, automatic review, optional regrouping, Classic slicing, Hybrid retries/final routing, inspector metadata, and restoration of Generalize.');
 }

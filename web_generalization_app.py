@@ -120,6 +120,7 @@ class Workspace:
                 snapshot.payload.update(preview=False,preview_id=None,cursor=self.session.cursor+1,
                     history=[dict(index=i,label=s.description,step_id=s.step_id,z=s.z) for i,s in enumerate(next_history)])
                 snapshot.preview_id=None
+                snapshot.refresh_export_metadata()
                 self.session.apply(proposal)
                 with self.lock:self.revision+=1;self.scene=snapshot;self.clear_preview()
                 return dict(revision=self.revision)
@@ -288,6 +289,8 @@ def create_app(*,default_path=DEFAULT_WEB_DATA,initial_height=5.,autoload=True,w
 
     from web_mapping_api import attach_mapping_routes
     attach_mapping_routes(app,w)
+    from web_space_export import attach_export_routes
+    attach_export_routes(app,w)
 
     @app.get('/api/state')
     def state():

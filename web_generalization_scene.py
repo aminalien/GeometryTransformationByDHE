@@ -12,6 +12,7 @@ import DHECore as dhe
 from generalization_geometry import feature_color
 from plane_slicing import PlaneSlicer,SlicePlane
 from web_generalization_data import json_value
+from web_space_export import ExportSnapshot
 
 
 def rgba(owner):return [round(v*255) for v in feature_color(int(owner))]
@@ -110,6 +111,7 @@ class WebScene:
         coordinates=[p['position'] for p in vertices.values()]
         bounds=[min(p[0] for p in coordinates),min(p[1] for p in coordinates),max(p[0] for p in coordinates),max(p[1] for p in coordinates)]
         self.payload=dict(revision=revision,preview_id=preview_id,preview=proposal is not None,
+            workspace='generalize',
             dataset=session.data.source,crs=session.data.frame.crs.to_string(),origin=list(session.origin),
             notes=list(session.data.rejected)+(list(proposal.notes) if proposal else []),
             levels=levels,bounds=bounds,features=dict(type='FeatureCollection',features=features),
@@ -118,6 +120,18 @@ class WebScene:
             cursor=session.cursor,history=[dict(index=i,label=s.description,step_id=s.step_id,z=s.z) for i,s in enumerate(session.history)],
             operation=json_value(asdict(state.operation)) if state.operation else None,
             automatic_report=json_value(getattr(session,'last_automatic_report',None)))
+        metadata={}
+        for historic in [*session.history[:session.cursor+1],state]:
+            for owner,f in historic.features.items():
+                attributes=json_value(f.attributes)
+                original=attributes.get('original_id',attributes.get('osm_id',attributes.get('id',owner)))
+                metadata[owner]=dict(feature_id=owner,original_id=str(original),label=f.label,attributes=attributes,
+                                     members=attributes.get('source_members',[]),lineage=list(f.lineage))
+        self.export=ExportSnapshot.capture(model,model.cells,model.generalization_face_records,keys,
+            workspace='generalize',crs=session.data.frame.crs,payload=self.payload,cell_metadata=metadata)
+        self.payload['snapshot_id']=self.export.snapshot_id
+
+    def refresh_export_metadata(self):self.export=self.export.refresh_metadata(self.payload)
 
     def section(self,orientation,value,tilt=45.,azimuth=0.,*,include_sections=True,clamp_position=False):
         if orientation=='Horizontal':plane=SlicePlane.horizontal(value)

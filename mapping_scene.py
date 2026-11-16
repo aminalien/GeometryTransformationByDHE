@@ -6,6 +6,7 @@ from shapely.ops import unary_union
 import DHECore as dhe
 from plane_slicing import PlaneSlicer,SlicePlane
 from web_generalization_scene import GeographicCoordinates,display_triangles,rgba,WebScene
+from web_space_export import ExportSnapshot
 
 
 class MappingScene:
@@ -76,6 +77,9 @@ class MappingScene:
             halfedges=halfedges,edges=list(segments.values()),vertices=list(vertices.values()),duals=[*duals.values(),exterior],dual_edges=links,
             cells=len(cells),cursor=0,history=[dict(index=0,label='Validated two-layer mapping',step_id='mapping',z=result.levels['z_t'])],
             notes=['Actual DHE cells; Classic symbols use typed edge/sheet primitives.'],operation=None,automatic_report=None,mapping_report=result.report)
+        self.export=ExportSnapshot.capture(model,cells,face_records,keys,workspace='mapping',crs=result.crs,
+                                          payload=self.payload,cell_metadata=result.metadata)
+        self.payload['snapshot_id']=self.export.snapshot_id
 
     def section(self,orientation,value,tilt=45.,azimuth=0.,*,include_sections=True,clamp_position=False):
         answer=WebScene.section(self,orientation,value,tilt,azimuth,include_sections=include_sections,clamp_position=clamp_position)
@@ -114,3 +118,4 @@ class MappingScene:
                 if measured.is_empty or measured.hausdorff_distance(expected)>1e-6 or (expected.area>0 and measured.symmetric_difference(expected).area>max(1e-6,expected.area*1e-9)):
                     raise ValueError(f'{uid}: actual {side} endpoint section does not match the approved input.')
         self.result.report['endpoint_validation']='passed'
+        self.export=self.export.refresh_metadata(self.payload)

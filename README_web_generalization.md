@@ -189,6 +189,72 @@ The broader Python regression suite passed 95 tests, and the real-API client tes
 exercises Hybrid collision retries and final routing with a mock DOM/WebGL adapter.
 Browser appearance remains a separate check.
 
+## Space exports and cell focus
+
+The shared **Export space** section works in Generalize and Mapping. It exports
+the displayed validated model or preview, including retained lower/history cells.
+Downloads include all bounded physical cells and primitives regardless of layer
+visibility, selected features, slice position, or the display Z factor. A
+decomposed logical feature keeps its separate physical cells and provenance.
+Exports are disabled until a validated snapshot exists and during construction.
+
+**Primal OBJ** downloads a ZIP containing `primal.obj`, `primal.mtl` and
+`metadata.json`. Each bounded cell is a separate OBJ object with its cell colour.
+Faces retain their original DHE polygon cycles, including concave polygons;
+display triangles are not exported. Internal interfaces occur once per incident
+cell with opposite winding. Mapping sheets retain both sides and edge primitives
+use OBJ `l` elements; no thickness or exterior volume is invented. The metadata
+contains cell identities, attributes, members, lineage, face uses and an
+`obj_vertex_ids` table: its first entry maps OBJ vertex 1 to the corresponding
+vertex ID in the full DHE export. `obj_element` numbers the `f`/`l`/`p` elements
+together, starting at 1. Polygon support and Z-up import settings depend on the
+receiving OBJ application.
+
+**Duality JSON** contains schema-version-1 tables:
+
+| Table | Contents |
+| --- | --- |
+| `vertices` | Snapshot-scoped ID, original raw ID, XYZ and primal/dual/exterior-placeholder kind |
+| `dhe_records` | All live bounded, exterior and dual half-edges, with `V`, `S`, `D`, `NF`, `NV`, labels, raw IDs and optional display-half-edge ID |
+| `face_uses` | Owning cell, seed record, face part and ordered primal vertex IDs |
+| `cells` | Physical cell ID, seed, dual vertex, dimension, colour and source provenance |
+| `dual_graph` | Cell nodes and actual face adjacency; typed Mapping edge/vertex contacts are separate `mapping_contact` relations |
+
+IDs are scoped to one snapshot and reference actual records. Coincident but
+distinct topology records remain distinct. `mapping_incident` lists live contact
+record IDs. VINF is an unbounded exterior node with a null graph position; its
+stored vertex coordinates are explicitly marked as placeholders. Legacy scratch
+fields are not structural pointers and are not exported.
+
+The coordinate selector defaults to **Local XY (metres)**. **Absolute projected
+CRS** adds the model's XY origin. Both preserve raw transition Z, use Z-up axes,
+and include CRS/WKT, origin, coordinate mode and Z semantics. Z represents the
+transition dimension, rather than measured building height. No display
+exaggeration or geographic longitude/latitude conversion is applied.
+
+Read-only downloads use `/api/export/primal` or `/api/export/duality` with required
+`workspace_name=generalize|mapping` and `snapshot_id` query parameters, plus
+optional `coordinates=local|projected`. Compact immutable tables are captured
+when the scene is prepared. Downloads pin those tables without rebuilding DHE
+or consulting its mutable global registry. Expired/replaced snapshot tokens return
+HTTP 409. A retained Mapping result from an earlier review remains exportable
+with its original report and explicit `stale` metadata.
+
+In **Inspect DHE**, select a half-edge and click **Zoom to current cell**. The main
+map fits its actual owning physical cell in XYZ, accounting for the current Z
+factor or flat mode, while preserving pitch, bearing, highlighted edge and other
+view settings. Small point/line footprints receive a little map context. The
+current-top mini-map retains its context. The button is disabled without a valid
+edge; decomposed features focus the selected physical cell.
+
+Validation includes 104 Python regressions, real-API client control/download
+checks in both workspaces, and 90 camera fits using the actual deck.gl projection
+at multiple pitches, bearings, viewport sizes and cell shapes. These are numeric
+and control checks; browser appearance remains a separate check. A full default
+Classic build exported all 1,191 cells, 393,236 live DHE records, 28,143 vertices
+and 19,866 face uses. Its JSON was 75.4 MB and its OBJ ZIP 1.1 MB; all structural
+references and endpoints passed, and input-file hashes remained unchanged.
+
 ## Backgrounds
 
 OpenStreetMap is the default. Light/dark OpenFreeMap styles, Esri World Imagery, White / no background, and a custom Web Mercator XYZ tile URL are available. Custom services need `{z}`, `{x}`, `{y}`, browser-accessible HTTP(S), and attribution. Visible provider/data attribution is retained.
@@ -215,12 +281,20 @@ The shared construction engine now uses `SewComplex` to compose internal and ext
 Run the portable integration tests:
 
 ```powershell
-.\.venv\Scripts\python.exe -B -m unittest test_web_launch test_web_generalization test_mapping test_transition_conformity.WallGroupingTests -v
+.\.venv\Scripts\python.exe -B -m unittest test_web_launch test_web_generalization test_mapping test_space_export test_transition_conformity.WallGroupingTests -v
 node --check web_generalization/app.js
 node --check web_generalization/mapping.js
 ```
 
-With a local server already running, `node --experimental-vm-modules test_web_generalization_client.mjs` checks client control/data flow against its actual section API using a mock DOM/WebGL adapter. Set `DHE_WEB_TEST_URL` to change the test URL. This is not a visual rendering test, and Node is not required to run the application.
+With a local server already running, `node --experimental-vm-modules test_web_generalization_client.mjs` checks client control/data flow, actual downloads and cell-focus wiring against the API using a mock DOM/WebGL adapter. Set `DHE_WEB_TEST_URL` to change the test URL. This is not a visual rendering test, and Node is not required to run the application.
+
+The separate numeric camera regression uses the browser's pinned deck.gl version.
+Install its test-only dependency in the ignored artifacts directory, then run:
+
+```powershell
+npm install --prefix artifacts/camera-test --no-save --ignore-scripts --no-audit --no-fund '@deck.gl/core@9.4.1'
+node test_cell_focus.mjs
+```
 
 On an isolated QA server with small disposable source/target defaults, set
 `DHE_WEB_TEST_MAPPING=1` to also exercise Mapping loading, review/regrouping,

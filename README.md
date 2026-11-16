@@ -17,6 +17,12 @@ overlaps and reviews correspondence groups, and constructs Classic, Smooth, or H
 DHE mappings. Its defaults are `Kleczkow Updated/osm_data.shp` and
 `Kleczkow Updated/citygml_data.shp`. See [Mapping workflow](README_web_generalization.md#mapping-two-independent-layers).
 
+Both workspaces provide **Primal OBJ** (a ZIP with materials and metadata) and
+**Duality JSON** (the graph and full live DHE pointers) for the displayed validated
+snapshot. **Zoom to current cell** in Inspect DHE frames the highlighted
+half-edge's owning cell while retaining the viewing angle and selection.
+See [space exports and cell focus](README_web_generalization.md#space-exports-and-cell-focus).
+
 Desktop and web now support **Level operations** (several disjoint assignments
 within one ΔZ interval) and final-only **Automatic generalization** of selected
 polygons. Automatic runs preserve the original workspace on failure and retain
