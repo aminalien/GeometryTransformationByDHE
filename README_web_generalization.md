@@ -78,26 +78,27 @@ Mapping uses the existing map, plane controls, current-top map and Inspect DHE.
    `--mapping-source PATH --mapping-target PATH`. Sources must be polygonal; targets
    can also be points or simple open lines. Upload formats and CRS preflight match
    Generalize. A common metre CRS and XY origin are used for construction.
-2. Review positive-area overlaps **within each layer**. Assign the overlap to a
-   chosen feature, explicitly union the features, or exclude the other feature.
-   These edits affect in-memory inputs only. Unlike Generalize imports, Mapping
-   never automatically unions different feature identities. Invalid polygon
-   components are repaired/dissolved within their original row, with repair notes.
+2. Positive-area overlap chains **within each layer are automatically unioned**.
+   Touching neighbours stay separate. The largest member supplies the retained
+   identifier/attributes, with input order breaking ties. Every member's original
+   identifier and attributes remain in provenance. Unions and per-feature polygon
+   repairs affect in-memory copies only and are listed in the interface/report.
 3. Set the mapping path and source/target Z (defaults 5 and 15). Optional scale
    denominators, dates and source labels are report metadata. Z represents the
    transition dimension, not building height; the lower datum is zero.
-4. **Suggest matches**, then **Review / edit**. Polygon links use intersection area
-   divided by the smaller area (default minimum 25%); contained target symbols also
-   propose links. Proximity candidates within 10 m are shown for review and are
-   never automatically accepted. Connected links form proposed groups. Confirm
-   matches, regroup using the `s…` and `t…` IDs, or split groups into singletons.
-   Every input must belong to one group. Unmatched features require an explicit
-   appearance, disappearance or exclusion decision. The optional starting-vertex
-   index forces cyclic pairing for a one-to-one polygon transition; inspect the
-   resulting preview before building. Original dataset IDs remain visible.
+4. Correspondences are reviewed automatically once both layers load. Polygon links
+   use intersection area divided by the smaller area (default minimum 25%);
+   contained target symbols also qualify. Connected strong links are accepted.
+   Unmatched sources automatically disappear and unmatched targets appear.
+   Proximity candidates within 10 m remain suggestions and are never accepted
+   based on distance alone. **Edit auto review** optionally corrects groups using
+   the `s…` and `t…` IDs, excludes features or sets a cyclic vertex anchor.
+   Confirmation checkboxes are informational; there is no confirmation gate.
+   Input or matching-threshold changes recompute groups; otherwise valid manual
+   corrections are preserved. **Refresh auto matches** explicitly recomputes them.
 5. **Preview** constructs and validates a temporary DHE snapshot. **Build mapping**
-   publishes a validated result. Both save the current review first and require all
-   groups to be confirmed. Failed or cancelled jobs retain the previous published
+   publishes a validated result. Both complete automatic preparation and save any
+   optional review edits first. Failed or cancelled jobs retain the previous published
    model. Cancellation is checked between planning groups and construction stages;
    an active core construction finishes before cancellation takes effect.
 6. Use the source/target slice shortcuts, vertical/inclined planes and Inspect DHE.
@@ -111,7 +112,7 @@ Mapping uses the existing map, plane controls, current-top map and Inspect DHE.
 | --- | --- |
 | Classic | Source cells extend from Z=0 to the midpoint of source/target Z; supplied target cells extend from that interface to target Z. Coplanar cap overlays are partitioned into common faces and joined using actual DHE `JoinByFace` topology. No deep merge erases the two layer identities. |
 | Smooth | One-to-one rigid displacement/orientation connects cyclically corresponding vertices, with automatic rigid-fit alignment. Other polygon changes use the existing polygon transition. Point and line collapses use the supplied target, subject to the existing visibility/ridge conditions. Separated-source aggregation first reaches the convex hull, then transitions to the supplied target in the same upper cell; the target is not replaced by that hull. |
-| Hybrid | Adjacent-source merging (including displacement plus merging), splits, many-to-many groups and explicit appearances/disappearances use Classic. One-to-one changes/collapses and separated-source aggregation use Smooth. The review/report records each group's builder and reason. |
+| Hybrid | Groups containing polygon holes, adjacent-source merging (including displacement plus merging), splits, many-to-many groups and appearances/disappearances use Classic. Other supported one-to-one changes/collapses and separated-source aggregation use Smooth. The review/report records each group's builder and reason. |
 
 Classic point targets are actual two-half-edge vertical DHE edge primitives;
 Classic line targets are actual two-sided vertical DHE sheets, one per line
@@ -122,10 +123,15 @@ navigation retains its existing meaning. Dual links identify face, edge or verte
 incidence. A semantic correspondence can exist without geometric contact at the
 Classic interface; the report does not invent adjacency for displaced footprints.
 
-Smooth-only fails explicitly for unsupported splits, many-to-many groups, unmatched
-features or invalid geometry; it never silently changes to Classic. Polygon
-components currently require hole-free boundaries. MultiPolygon identities retain
-their components as separate cells in Classic; Smooth requires one target polygon.
+Classic automatically decomposes holed polygon components into constrained
+triangles and constructs their shared DHE interfaces. Holes remain empty; their
+area is never filled. A decomposed feature retains one logical identity and review
+row while containing several physical DHE cells. Reports distinguish logical
+source/target counts from physical cells and record decomposition/hole areas.
+Hybrid selects Classic for these groups. Smooth-only explicitly reports unsupported
+holes, splits, many-to-many groups, unmatched features or invalid geometry; it
+never silently changes to Classic. MultiPolygon identities retain their components
+as separate cells in Classic; Smooth requires one target polygon.
 Intersecting transition shells are rejected, even when their endpoint polygons are
 individually valid. Arithmetic conformity is distinct from the editable rigid-fit
 tolerance. Actual source-Z and target-Z sections are compared with the approved
@@ -133,18 +139,22 @@ input footprints before publication.
 
 The supplied defaults contain 674 source and 431 target records. The target export
 has coincident polygon components requiring per-feature repair. There are five
-source and three target cross-feature overlap pairs; these require review in the
-interface. The original Shapefiles are never changed.
+source and three target cross-feature overlap pairs. Automatic unions prepare
+**669 logical source features and 428 logical target features**. Unioning `t47`
+and `t157` leaves a genuine enclosed gap of approximately **0.000272 m²**; it is
+preserved through decomposition instead of blocking construction. The original
+Shapefiles are never changed.
 
-Validation of the complete defaults used in-memory copies with eight explicit
-ownership assignments (the lower numeric workspace ID retained each overlap),
-confirmed proposed correspondences, and explicit appearance/disappearance for
-unmatched records. Classic constructed **1,105 cells, 1,658 shared faces and
-110,516 directed half-edges**, with every source-Z and target-Z section matching
-its approved input. Construction, scene preparation and endpoint validation took
-about **8.7 minutes** on the test machine. This QA policy is not automatically
-applied to the interactive workspace. The focused regression suite has 81 passing
-tests; the real-API client test also covers Mapping with a mock DOM/WebGL adapter.
+The full-data regression exercises automatic unions, matches and unmatched
+classifications without supplying manual decisions, then checks actual source-Z
+and target-Z sections against the prepared inputs. Input-file hashes are checked
+before/after construction. The client regression also exercises direct preview
+after loading and optional subsequent corrections using a mock DOM/WebGL adapter.
+The complete automatic Classic run passed with **1,191 physical cells, 1,850
+shared faces and 112,510 directed half-edges**, preserving all 669 source and 428
+target logical features and the hole in `t47`. Preparation, construction and
+endpoint checks took about **5.3 minutes** on the test machine. The broader Python
+regression suite passed 87 tests; browser appearance remains a separate check.
 
 ## Backgrounds
 

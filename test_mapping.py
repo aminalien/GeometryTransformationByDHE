@@ -18,7 +18,7 @@ from shapely.ops import unary_union
 import DHECore as dhe
 from generalization_model import _core,Face,_node_faces
 from mapping_data import (prepare_layer,reproject_layer,overlap_review,resolve_overlap,
-                          suggest_groups,validate_groups,route_group)
+                          suggest_groups,validate_groups,route_group,union_overlaps,automatic_review)
 from mapping_builders import build_mapping,MappingBuildError
 from mapping_scene import MappingScene
 from plane_slicing import SlicePlane
@@ -46,6 +46,31 @@ def build(ss,ts,mode='hybrid',groups=None,**settings):
 
 
 class MappingDataTests(unittest.TestCase):
+    def test_automatic_union_chains_containment_duplicates_and_provenance(self):
+        gs=[box(0,0,4,4),box(3,0,7,4),box(6,0,10,4),box(10,0,12,4),box(1,1,2,2),box(3,0,7,4)]
+        source,_=layers(gs,[box(0,0,12,4)]);saved=[g.wkb for g in gs]
+        result=union_overlaps(source)
+        self.assertEqual(list(result.features),['s1','s4']);self.assertFalse(overlap_review(result))
+        f=result.features['s1'];self.assertEqual(f.geometry.area,40)
+        self.assertEqual(set(f.members),{'s1','s2','s3','s5','s6'})
+        self.assertEqual({r['original_id'] for r in f.member_records},{'0','1','2','4','5'})
+        self.assertTrue(all(r['attributes']['osm_id']==r['original_id'] for r in f.member_records))
+        self.assertTrue(result.notes[-1]['automatic']);self.assertIs(union_overlaps(result),result)
+        self.assertEqual([g.wkb for g in gs],saved);self.assertEqual(len(source.features),6)
+        bigger,_=layers([box(0,0,1,1),box(.5,0,4,3)],[box(0,0,4,3)])
+        self.assertEqual(list(union_overlaps(bigger).features),['s2'])
+
+    def test_automatic_review_accepts_strong_links_not_proximity_and_preserves_edits(self):
+        s,t=layers([box(0,0,2,2),box(6,0,8,2)],[box(.2,0,2.2,2),box(9,0,11,2)])
+        gs,info=suggest_groups(s,t);accepted=automatic_review(gs,s,t)
+        self.assertEqual([g['decision'] for g in accepted],['map','disappearance','appearance'])
+        self.assertTrue(all(g['confirmed'] for g in accepted));self.assertTrue(info['proximity_candidates'])
+        self.assertFalse(gs[0]['confirmed'])
+        accepted[0].update(id='custom',anchor=1,confirmed=False);accepted[-1]['decision']='exclude'
+        edited=automatic_review(accepted,s,t)
+        self.assertEqual(edited[0]['id'],'custom');self.assertEqual(edited[0]['anchor'],1)
+        self.assertEqual(edited[-1]['decision'],'exclude')
+
     def test_per_feature_citygml_repair_preserves_ids_and_cross_feature_overlap(self):
         raw=gpd.GeoDataFrame({'gml_id':['a','b']},geometry=[MultiPolygon([box(0,0,2,2),box(0,0,2,2)]),box(1,0,3,2)],crs=2180)
         saved=[g.wkb for g in raw.geometry];layer=prepare_layer(raw,'target','test')
@@ -95,6 +120,23 @@ class MappingDataTests(unittest.TestCase):
 
 
 class MappingBuilderTests(unittest.TestCase):
+    def test_holed_source_and_target_preserve_empty_interiors_and_logical_identity(self):
+        donut=Polygon(box(0,0,4,4).exterior.coords,[box(1,1,3,3).exterior.coords])
+        for source,target in ((box(0,0,4,4),donut),(donut,box(0,0,4,4)),(donut,donut)):
+            with self.subTest(source_holes=len(source.interiors),target_holes=len(target.interiors)):
+                r,s=build([source],[target])
+                self.assertEqual(r.report['routing'][0]['builder'],'classic')
+                self.assertIn('Hole-preserving',r.report['routing'][0]['reason'])
+                self.assertEqual(r.report['logical_features'],dict(source=1,target=1))
+                self.assertTrue(r.report['decompositions']);self.assertEqual(r.report['endpoint_validation'],'passed')
+                for side,z,expected in (('source',5,source),('target',15,target)):
+                    actual=s.slicer.sections(SlicePlane.horizontal(z),include_degenerate=True)
+                    measured=unary_union([actual[str(k)] for k,m in r.metadata.items() if m['layer']==side and str(k) in actual])
+                    self.assertLess(measured.symmetric_difference(expected).area,1e-8)
+                    if expected.interiors:self.assertEqual(measured.intersection(box(1,1,3,3)).area,0)
+        with self.assertRaisesRegex(MappingBuildError,'Smooth-only cannot preserve polygon holes'):
+            build([box(0,0,4,4)],[donut],mode='smooth')
+
     def test_indexed_noding_preserves_exhaustive_three_dimensional_incidence(self):
         fs=[Face(1,[(0,0,0),(8,0,8),(0,4,0)]),
             Face(2,[(0,0,0),(0,0,8),(0,-2,8),(0,-2,0)]),
@@ -205,6 +247,53 @@ class MappingApiTests(unittest.TestCase):
         gs=deepcopy(self.w.mapping.groups)
         for g in gs:g['confirmed']=True
         self.command('review',{'groups':gs,'settings':{'mode':'classic'}})
+
+    def test_load_and_build_automatically_union_review_and_preserve_union_hole(self):
+        a=unary_union([box(0,0,4,1),box(0,0,1,4),box(3,0,4,4)])
+        root=Path(self.temp.name)
+        for side,gs in (('source',[box(0,0,4,4)]),('target',[a,box(0,3,4,4)])):
+            gpd.GeoDataFrame({'id':[f'{side}-{i}' for i in range(len(gs))]},geometry=gs,crs=2180).to_file(root/(side+'.geojson'),driver='GeoJSON')
+        self.command('load',{'side':'source'});self.command('load',{'side':'target'})
+        state=self.client.get('/api/mapping/state').json()
+        self.assertEqual(state['layers']['target']['count'],1)
+        self.assertEqual(state['automatic_review']['union_groups'],1)
+        self.assertEqual(state['automatic_review']['holed_features'],1)
+        self.assertTrue(all(g['confirmed'] for g in state['groups']))
+        self.assertEqual(state['groups'][0]['builder'],'classic')
+        self.command('build') # No analyze, manual review or confirmation.
+        report=self.client.get('/api/mapping/report').json()
+        self.assertEqual(report['endpoint_validation'],'passed')
+        target_records=[m for m in report['cell_metadata'].values() if m['layer']=='target']
+        self.assertGreater(len(target_records),1)
+        self.assertTrue(all({r['original_id'] for r in m['member_records']}=={'target-0','target-1'} for m in target_records))
+        self.assertTrue(all(d['area_difference']<1e-9 for d in report['decompositions']))
+
+    def test_optional_manual_groups_survive_save_and_build(self):
+        self.command('load',{'side':'source'});self.command('load',{'side':'target'})
+        gs=deepcopy(self.w.mapping.groups);gs[0].update(id='custom',anchor=1,confirmed=False)
+        self.command('review',{'groups':gs,'settings':{'mode':'classic'}})
+        self.assertEqual(self.w.mapping.groups[0]['id'],'custom')
+        self.assertTrue(self.w.mapping.groups[0]['confirmed'])
+        self.command('build')
+        self.assertEqual(self.w.mapping.result.result.report['groups'][0]['anchor'],1)
+        # Matching settings explicitly recompute groups; old reports stay frozen.
+        self.command('review',{'groups':self.w.mapping.groups,'settings':{'overlap_fraction':.5}})
+        self.assertNotEqual(self.w.mapping.groups[0]['id'],'custom')
+        self.assertTrue(all(g['confirmed'] for g in self.w.mapping.groups))
+        self.assertEqual(self.w.mapping.result.result.report['groups'][0]['id'],'custom')
+
+    def test_failed_build_preparation_preserves_inputs_and_published_result(self):
+        self.ready();self.command('build');previous=self.w.mapping.result
+        s,t=layers([box(0,0,4,2),box(3,0,5,2)],[box(1,0,5,2)])
+        raw=dict(source=s,target=t);self.w.mapping.layers=raw;self.w.mapping.groups=[]
+        rev=self.w.mapping.revision
+        def fail(source,target,groups,*args,**kwargs):
+            self.assertEqual(len(source.features),1);self.assertTrue(all(g['confirmed'] for g in groups))
+            raise ValueError('Test failure after automatic preparation')
+        with patch('mapping_workspace.build_mapping',side_effect=fail):self.command('build',success=False)
+        self.assertIs(self.w.mapping.layers,raw);self.assertEqual(self.w.mapping.revision,rev)
+        self.assertIs(self.w.mapping.result,previous)
+        self.command('build');self.assertEqual(len(self.w.mapping.layers['source'].features),1)
 
     def test_separate_revisions_preview_publication_slicing_and_report_provenance(self):
         self.w.execute('default',0);old=self.client.get('/api/scene').json();old_core=_core()

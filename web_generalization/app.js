@@ -668,6 +668,7 @@ function mappingChanged(reset){
   const scene=mapping.scene;if(reset){state.edge=null;state.section=null;updateEdges();updateMini();}
   $('dataset-name').textContent=scene?.dataset||'Mapping · source and target inputs';
   $('scene-subtitle').textContent=scene?`${scene.cells} DHE cells/primitives${scene.stale?' · built from an earlier review':''}`:'Input overlays are not a constructed DHE model';
+  if(scene?.mapping_report?.logical_features){const n=scene.mapping_report.logical_features;$('scene-subtitle').textContent+=` · ${n.source} source / ${n.target} target logical features`;}
   $('model-count').textContent=scene?`${scene.cells} Mapping cells/primitives`:'Mapping · review correspondences';
   $('data-details').textContent=scene?`${scene.crs} · two independent layers; Z is a transition coordinate.`:'Load source and target layers in Mapping.';
   if(reset&&scene){resetSlice(true);fitData();}render();

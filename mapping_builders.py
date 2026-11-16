@@ -14,7 +14,7 @@ from shapely.ops import unary_union,polygonize,nearest_points
 import DHECore as dhe
 from generalization_model import (Face,_prism,_polygon_patches,_collapse_patches,_layer_faces,
                                  _conform_footprints,realize,_core,_restore)
-from mapping_data import polygons,validate_groups,route_group,overlap_review
+from mapping_data import polygons,validate_groups,route_group,overlap_review,member_records,review_summary
 from shell_conformity import CoordinateRegistry,arithmetic_bound
 
 
@@ -270,11 +270,20 @@ def build_mapping(source,target,groups,settings,*,progress=lambda *a:None,cancel
             min(f.geometry.bounds[1] for l in (source,target) for f in l.features.values()))
     local={f.uid:translate(f.geometry,xoff=-origin[0],yoff=-origin[1]) for l in (source,target) for f in l.features.values()}
     # Conform each polygon component without changing its feature identity.
-    components={};parents={}
+    components={};parents={};decompositions=[]
+    excluded={k for g in groups if g['decision']=='exclude' for k in [*g['sources'],*g['targets']]}
     for uid,g in local.items():
+        if uid in excluded:continue
         for i,p in enumerate(polygons(g)):
-            if p.interiors:raise MappingBuildError(f'{uid}: holed input components need explicit decomposition in review.',feature=uid)
-            key=f'{uid}/{i}';components[key]=p;parents[key]=uid
+            pieces=list(constrained_delaunay_triangles(p).geoms) if p.interiors else [p]
+            if p.interiors:
+                difference=float(unary_union(pieces).symmetric_difference(p).area)
+                if any(q.interiors or not q.is_valid for q in pieces) or difference>max(1e-9,p.area*1e-12):
+                    raise MappingBuildError(f'{uid}: automatic hole decomposition did not preserve the footprint.',feature=uid)
+                decompositions.append(dict(feature=uid,component=i,holes=len(p.interiors),parts=len(pieces),
+                                           hole_area=sum(Polygon(r).area for r in p.interiors),area_difference=difference))
+            for j,piece in enumerate(pieces):
+                key=f'{uid}/{i}/{j}';components[key]=piece;parents[key]=uid
     conformed=_conform_footprints(components) if components else {}
     local_components=defaultdict(list)
     for key,p in conformed.items():local_components[parents[key]].append(p)
@@ -282,7 +291,7 @@ def build_mapping(source,target,groups,settings,*,progress=lambda *a:None,cancel
     def allocate(uid,g,group,layer,dimension=3):
         nonlocal owner
         owner+=1;f=(source if layer=='source' else target).features[uid]
-        metadata[owner]=dict(feature_id=uid,original_id=f.original_id,layer=layer,group=group,dimension=dimension,attributes=f.attributes,members=list(f.members))
+        metadata[owner]=dict(feature_id=uid,original_id=f.original_id,layer=layer,group=group,dimension=dimension,attributes=f.attributes,members=list(f.members),member_records=list(member_records(f)))
         geometries[owner]=g
         return owner
     for index,group in enumerate(groups,1):
@@ -353,6 +362,8 @@ def build_mapping(source,target,groups,settings,*,progress=lambda *a:None,cancel
         from copy import deepcopy
         report=dict(mode=mode,settings=deepcopy(settings),groups=deepcopy(groups),routing=routing,source=source.source,target=target.source,
                     source_repairs=list(source.notes),target_repairs=list(target.notes),cells=len(model.cells),
+                    logical_features=dict(source=len({m['feature_id'] for m in metadata.values() if m['layer']=='source'}),target=len({m['feature_id'] for m in metadata.values() if m['layer']=='target'})),
+                    decompositions=decompositions,automatic_review=review_summary(dict(source=source,target=target),groups),
                     primitives=len(model.mapping_primitives),contacts=len(model.mapping_contacts),validation='passed',
                     classic_interface_z=mid,provenance_policy='Geometric DHE adjacency is distinct from reviewed semantic correspondence')
         return MappingResult(model,faces,_core(),metadata,geometries,origin,source.crs,

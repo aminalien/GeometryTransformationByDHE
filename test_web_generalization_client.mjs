@@ -179,20 +179,23 @@ if(process.env.DHE_WEB_TEST_MAPPING==='1'){
   assert.equal(el('mapping-tab').hidden,false);assert.equal(el('generalize-tab').hidden,true);
   for(const side of ['source','target'])await el('mapping-default-'+side).emit('click');
   assert.ok(layer('mapping-input-fills').data.length);
-  el('mapping-mode').value='classic';await el('mapping-analyze').emit('click');
+  el('mapping-mode').value='classic';
+  const accepted=await (await realFetch(origin+'/api/mapping/state')).json();
+  assert.ok(accepted.automatic_review.automatic);assert.ok(accepted.groups.every(g=>g.confirmed&&g.decision!=='unresolved'));
   assert.ok(el('mapping-group-rows').children.length);await el('mapping-review-open').emit('click');
-  assert.ok(el('mapping-review-dialog').open);await el('mapping-confirm-matches').emit('click');await el('mapping-unmatched').emit('click');
-  await el('mapping-save-review').emit('click');
-  assert.ok(el('mapping-summary').textContent.includes('confirmed'));
-  // Regrouping and splitting must retain complete feature coverage as draft rows.
-  el('mapping-edit-sources').value='s1';el('mapping-edit-targets').value='t1';
-  el('mapping-edit-decision').value='map';await el('mapping-regroup').emit('click');
-  await el('mapping-save-review').emit('click');
+  assert.ok(el('mapping-review-dialog').open);
+  assert.ok(el('mapping-summary').textContent.includes('Automatic review'));
+  assert.ok(el('mapping-group-rows').children.every(row=>row.children[0].children[0].disabled));
+  // Preview works directly after loading, without analysis or confirmation.
   await el('mapping-preview').emit('click');
   await waitFor(()=>el('scene-title').textContent==='Validated preview'&&layer('slice-fills')?.data.length,'Mapping preview');
   assert.ok(layer('dhe-faces')?.data.length===undefined||layer('dhe-faces').data.length>0);
   const previewState=await (await realFetch(origin+'/api/mapping/state')).json();assert.ok(previewState.has_preview);assert.equal(previewState.has_result,false);
   await el('mapping-discard').emit('click');assert.equal((await (await realFetch(origin+'/api/mapping/state')).json()).has_preview,false);
+  // Optional edits remain available after automatic review.
+  el('mapping-edit-sources').value='s1';el('mapping-edit-targets').value='t1';
+  el('mapping-edit-decision').value='map';await el('mapping-regroup').emit('click');
+  await el('mapping-save-review').emit('click');
   await el('mapping-build').emit('click');
   const report=await (await realFetch(origin+'/api/mapping/report')).json();assert.equal(report.endpoint_validation,'passed');
   assert.ok(report.routing.every(g=>g.builder==='classic'));
@@ -204,5 +207,5 @@ if(process.env.DHE_WEB_TEST_MAPPING==='1'){
   await tabs.find(t=>t.dataset.tab==='generalize').emit('click');
   assert.equal(el('mapping-tab').hidden,true);assert.equal(context.window.dheAtlas.revision,revision);
   assert.equal(layer('mapping-input-fills'),undefined);
-  console.log('Mapping client integration passed: independent inputs, correspondence review/regrouping, real Classic preview/publication/slicing, inspector metadata, and restoration of Generalize.');
+  console.log('Mapping client integration passed: automatic review without confirmations, optional regrouping, real Classic preview/publication/slicing, inspector metadata, and restoration of Generalize.');
 }

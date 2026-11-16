@@ -1,6 +1,7 @@
 """Identity-preserving two-layer import, correspondence review and routing."""
 from dataclasses import dataclass,replace
 from collections import defaultdict
+from copy import deepcopy
 from math import isfinite
 
 import geopandas as gpd
@@ -30,6 +31,7 @@ class MappingFeature:
     geometry:object
     attributes:dict
     members:tuple[str,...]
+    member_records:tuple=()
 
 
 @dataclass(frozen=True)
@@ -72,7 +74,8 @@ def prepare_layer(frame,side,source,*,crs=None,override_crs=None):
             raise ValueError(f'{uid}: use polygon sources and polygon, simple-line or point targets.')
         if g.is_empty or not g.is_valid or not np.isfinite(g.bounds).all():raise ValueError(f'{uid}: footprint repair did not produce valid geometry.')
         if g.geom_type=='LineString' and (not g.is_simple or g.is_ring or g.length==0):raise ValueError(f'{uid}: target line must be simple, open and nonzero.')
-        result[uid]=MappingFeature(uid,ident,g,attrs,(uid,))
+        result[uid]=MappingFeature(uid,ident,g,attrs,(uid,),
+                                   (dict(uid=uid,original_id=ident,attributes=deepcopy(attrs)),))
     if not result:raise ValueError('The mapping layer is empty.')
     return MappingLayer(side,str(source),frame.crs,result,tuple(notes))
 
@@ -106,7 +109,8 @@ def resolve_overlap(layer,ids,action,keeper=None):
         if keeper not in ids:raise ValueError('Choose the feature retaining ownership.')
         if action=='union':
             g=unary_union([fs[k].geometry for k in ids]);members=tuple(k for i in ids for k in fs[i].members)
-            fs[keeper]=replace(fs[keeper],geometry=g,members=members)
+            records=tuple(record for k in ids for record in member_records(fs[k]))
+            fs[keeper]=replace(fs[keeper],geometry=g,members=members,member_records=records)
             for k in ids:
                 if k!=keeper:del fs[k]
         elif action=='assign':
@@ -120,6 +124,53 @@ def resolve_overlap(layer,ids,action,keeper=None):
     if not fs:raise ValueError('An input layer must retain at least one feature.')
     notes.append(dict(action=action,feature_ids=ids,keeper=keeper,explicit_review=True))
     return replace(layer,features=fs,notes=tuple(notes))
+
+
+def member_records(feature):
+    return deepcopy(feature.member_records or (dict(uid=feature.uid,original_id=feature.original_id,attributes=feature.attributes),))
+
+
+def union_overlaps(layer,*,cancelled=lambda:False):
+    """Union whole positive-area overlap components, never touching neighbours."""
+    graph=defaultdict(set)
+    for pair in overlap_review(layer):
+        a,b=pair['ids'];graph[a].add(b);graph[b].add(a)
+    if not graph:return layer
+    order={k:i for i,k in enumerate(layer.features)};seen=set();result=layer
+    for uid in layer.features:
+        if uid not in graph or uid in seen:continue
+        if cancelled():raise ValueError('Mapping preparation cancelled; previous inputs preserved.')
+        pending=[uid];component=set()
+        while pending:
+            k=pending.pop()
+            if k not in component:component.add(k);pending.extend(graph[k]-component)
+        seen.update(component);ids=sorted(component,key=order.get)
+        keeper=min(ids,key=lambda k:(-layer.features[k].geometry.area,order[k]))
+        result=resolve_overlap(result,ids,'union',keeper)
+        note={**result.notes[-1], 'explicit_review':False,'automatic':True,
+              'policy':'Largest area, then input order',
+              'member_records':list(member_records(result.features[keeper]))}
+        result=replace(result,notes=(*result.notes[:-1],note))
+    return result
+
+
+def automatic_review(groups,source,target):
+    """Accept valid groups, resolving unmatched rows without a confirmation gate."""
+    groups=deepcopy(groups)
+    validate_groups(groups,source,target,require_confirmed=False)
+    for g in groups:
+        if g['decision']=='unresolved':
+            g['decision']='map' if g['sources'] and g['targets'] else 'disappearance' if g['sources'] else 'appearance'
+        g['confirmed']=True
+    validate_groups(groups,source,target)
+    return groups
+
+
+def review_summary(layers,groups):
+    return dict(automatic=True,groups=len(groups),
+                decisions={k:sum(g['decision']==k for g in groups) for k in ('map','appearance','disappearance','exclude')},
+                union_groups=sum(isinstance(n,dict) and n.get('automatic',False) and n.get('action')=='union' for l in layers.values() for n in l.notes),
+                holed_features=sum(any(p.interiors for p in polygons(f.geometry)) for l in layers.values() for f in l.features.values()))
 
 
 def suggest_groups(source,target,*,overlap_fraction=.25,search_distance=10.):
@@ -178,6 +229,10 @@ def route_group(group,source,target,mode):
     if mode not in ('classic','smooth','hybrid'):raise ValueError('Choose Classic, Smooth, or Hybrid.')
     if decision=='exclude':return 'excluded','Explicitly excluded'
     if mode=='classic':return 'classic','Classic selected'
+    holed=[k for k in ss if any(p.interiors for p in polygons(source.features[k].geometry))]
+    holed.extend(k for k in ts if any(p.interiors for p in polygons(target.features[k].geometry)))
+    if holed:
+        return ('unsupported','Smooth-only cannot preserve polygon holes; choose Classic or Hybrid for '+', '.join(holed)) if mode=='smooth' else ('classic','Hole-preserving automatic decomposition: '+', '.join(holed))
     if decision in ('appearance','disappearance'):
         return ('unsupported','Smooth-only requires a supplied supported transition target') if mode=='smooth' else ('classic','Explicit appearance/disappearance')
     if len(ss)==1 and len(ts)==1:return 'smooth','One-to-one boundary change, displacement/orientation or collapse'

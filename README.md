@@ -12,8 +12,8 @@ selection, and a prepared-footprint preview during construction. Slice features 
 plane have independent visibility controls; dual vertices can use shaded 3D spheres or dots.
 Install `requirements-web.txt` first. See [web setup and usage](README_web_generalization.md).
 
-The **Mapping** tab loads independent source and target layers, reviews editable
-correspondence groups and input overlaps, and constructs Classic, Smooth, or Hybrid
+The **Mapping** tab loads independent source and target layers, automatically unions
+overlaps and reviews correspondence groups, and constructs Classic, Smooth, or Hybrid
 DHE mappings. Its defaults are `Kleczkow Updated/osm_data.shp` and
 `Kleczkow Updated/citygml_data.shp`. See [Mapping workflow](README_web_generalization.md#mapping-two-independent-layers).
 

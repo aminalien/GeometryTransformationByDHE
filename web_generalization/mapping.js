@@ -39,11 +39,11 @@ window.createMapping=function({api,status,setBusy,changed,fitInputs}){
     const body=$('mapping-group-rows');body.replaceChildren();
     for(const g of controller.groups){
       const row=document.createElement('tr');row.onclick=event=>{if(!['INPUT','SELECT','OPTION'].includes(event.target?.tagName))selectGroup(g);};
-      const check=document.createElement('input');check.type='checkbox';check.checked=g.confirmed;check.onchange=()=>{g.confirmed=check.checked;summarize();};
+      const check=document.createElement('input');check.type='checkbox';check.checked=g.confirmed;check.disabled=true;check.title='Accepted automatically when saved; edit the decision or feature IDs to correct this group.';
       const td=document.createElement('td');td.append(check);row.append(td);
       for(const text of [g.id,g.sources.map(label).join(', ')||'—',g.targets.map(label).join(', ')||'—']){const cell=document.createElement('td');cell.textContent=text;row.append(cell);}
       const cell=document.createElement('td'),choice=document.createElement('select');
-      for(const value of ['map','appearance','disappearance','exclude','unresolved'])choice.append(new Option(value,value));
+      for(const value of ['map','appearance','disappearance','exclude','unresolved'])choice.append(new Option(value==='unresolved'?'Automatic':value,value));
       choice.value=g.decision;choice.onchange=()=>{g.decision=choice.value;g.confirmed=choice.value!=='unresolved';check.checked=g.confirmed;summarize();};cell.append(choice);row.append(cell);
       const route=document.createElement('td');route.textContent=(g.builder||'Save review to classify')+' · '+(g.reason||'');row.append(route);body.append(row);
     }
@@ -51,11 +51,15 @@ window.createMapping=function({api,status,setBusy,changed,fitInputs}){
   }
   function summarize(){
     const confirmed=controller.groups.filter(g=>g.confirmed&&g.decision!=='unresolved').length;
-    const overlaps=Object.values(controller.data?.layers||{}).reduce((n,l)=>n+l.overlaps.length,0);
-    $('mapping-summary').textContent=`${controller.groups.length} groups · ${confirmed} confirmed · ${overlaps} input overlap(s) to resolve.`;
+    const review=controller.data?.automatic_review;
+    $('mapping-summary').textContent=`Automatic review · ${controller.groups.length} groups · ${confirmed} accepted · ${review?.union_groups||0} overlap group(s) unioned · ${review?.holed_features||0} holed feature(s) preserved (Classic/Hybrid).`;
   }
   function overlapControls(){
     const body=$('mapping-overlaps');body.replaceChildren();
+    for(const side of ['source','target'])for(const n of controller.data?.layers[side]?.notes||[]){
+      if(!n.automatic||n.action!=='union')continue;
+      const p=document.createElement('p');p.className='hint';p.textContent=`${side}: automatically unioned ${n.feature_ids.join(', ')} → ${n.keeper}; all member IDs and attributes retained in the report.`;body.append(p);
+    }
     for(const side of ['source','target'])for(const overlap of controller.data?.layers[side]?.overlaps||[]){
       const div=document.createElement('div');div.className='mapping-overlap';
       const p=document.createElement('p');p.textContent=`${side}: ${overlap.ids.map(label).join(' / ')} · ${overlap.area.toPrecision(5)} m² overlap`;div.append(p);
