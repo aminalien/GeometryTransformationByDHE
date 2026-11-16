@@ -14,7 +14,6 @@ from urllib.parse import urlencode
 from urllib.request import Request,urlopen
 from urllib.error import URLError,HTTPError
 from uuid import uuid4
-import webbrowser
 
 try:
     from fastapi import FastAPI,HTTPException,UploadFile,File
@@ -391,16 +390,14 @@ def create_app(*,default_path=DEFAULT_WEB_DATA,initial_height=5.,autoload=True,w
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--input-shp',default=DEFAULT_WEB_DATA)
-    parser.add_argument('--port',type=int,default=8765)
+    parser.add_argument('--port',type=int,default=None,help='Local port; default prefers 8766, then an available port.')
     parser.add_argument('--initial-height',type=float,default=5.)
     parser.add_argument('--no-browser',action='store_true')
     args=parser.parse_args()
     if not math.isfinite(args.initial_height) or args.initial_height<=0:parser.error('Initial height must be positive and finite.')
-    import uvicorn
-    url=f'http://127.0.0.1:{args.port}'
-    print('DHE Transition Atlas: '+url,flush=True)
-    if not args.no_browser:threading.Timer(1.2,lambda:webbrowser.open(url)).start()
-    uvicorn.run(create_app(default_path=args.input_shp,initial_height=args.initial_height),host='127.0.0.1',port=args.port,workers=1)
+    from web_launch import run_local
+    try:run_local(create_app(default_path=args.input_shp,initial_height=args.initial_height),port=args.port,open_browser=not args.no_browser)
+    except (OSError,ValueError) as exc:parser.error(str(exc))
 
 
 if __name__=='__main__':main()

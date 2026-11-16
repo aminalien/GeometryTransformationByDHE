@@ -11,7 +11,7 @@ Install the optional web dependencies into the project environment once:
 .\.venv\Scripts\python.exe web_generalization_app.py
 ```
 
-The script opens **http://127.0.0.1:8765**. Keep its Python process running; Ctrl+C stops it. `--no-browser` suppresses browser launch, `--port 8766` changes the port, and `--initial-height 5` sets the initial extrusion. `--input-shp PATH` overrides the default `C:/University/PhD/Data/Kleczkow/osm_data4.shp`.
+The script prefers **http://127.0.0.1:8766**, reserves an available port if that address is occupied, and opens its actual printed URL only after this server starts successfully. Another project already running on port 8765 is unaffected. Keep its Python process running; Ctrl+C stops it. `--no-browser` suppresses browser launch, `--port NUMBER` requests a fixed port (an occupied one fails without launching the browser), and `--initial-height 5` sets the initial extrusion. `--input-shp PATH` overrides the default `C:/University/PhD/Data/Kleczkow/osm_data4.shp`.
 
 The requested default file contains 32 supported polygons and builds 32 initial DHE cells at Z=0–5. It is external data and is not included in Git. If it is unavailable on another computer, use Load data. The server binds only to loopback. It has one in-memory workspace: tabs share the same state, page refresh retains it, and stopping the server ends the session. This is not a public hosting configuration.
 
