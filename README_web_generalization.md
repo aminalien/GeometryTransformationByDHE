@@ -112,7 +112,28 @@ Mapping uses the existing map, plane controls, current-top map and Inspect DHE.
 | --- | --- |
 | Classic | Source cells extend from Z=0 to the midpoint of source/target Z; supplied target cells extend from that interface to target Z. Coplanar cap overlays are partitioned into common faces and joined using actual DHE `JoinByFace` topology. No deep merge erases the two layer identities. |
 | Smooth | One-to-one rigid displacement/orientation connects cyclically corresponding vertices, with automatic rigid-fit alignment. Other polygon changes use the existing polygon transition. Point and line collapses use the supplied target, subject to the existing visibility/ridge conditions. Separated-source aggregation first reaches the convex hull, then transitions to the supplied target in the same upper cell; the target is not replaced by that hull. |
-| Hybrid | Groups containing polygon holes, adjacent-source merging (including displacement plus merging), splits, many-to-many groups and appearances/disappearances use Classic. Other supported one-to-one changes/collapses and separated-source aggregation use Smooth. The review/report records each group's builder and reason. |
+| Hybrid | Groups containing polygon holes, adjacent-source merging (including displacement plus merging), splits, many-to-many groups and appearances/disappearances use Classic. Other supported one-to-one changes/collapses and separated-source aggregation first use Smooth; groups implicated in diagnosed topology failures retry through Classic. The review/report records the initial and final builders and each retry reason. |
+
+Hybrid collects independent shell failures before allocating DHE records and
+rebuilds the implicated Smooth groups through Classic, then reconforms and validates
+the complete combined complex. Each group changes to Classic at most once;
+later interface/intersection failures can identify additional Smooth groups.
+Independent intersection failures are collected together. During retries, a cell's
+successful geometry checks are reused only when its exact coordinates, winding
+and face labels are unchanged; combined interfaces and live DHE topology are
+validated again on every attempt.
+Only attributed topology failures qualify. Classic-only failures, unidentifiable
+errors, invalid parameters, unexpected allocation errors and cancellation are not
+hidden by retries. Preview/build remains atomic, and supplied endpoints are retained.
+Progress names groups being retried; after success the review table shows actual
+final routing. Reports include `initial_builder`, `fallback`, `construction_attempts`
+and `retry_history`, while failed-job diagnostics identify layer, feature, original
+identifier, group, cell and stage. Smooth-only remains strict.
+
+Vertical-wall overlay uses a horizontal wall axis and an exact Z axis with zero
+Z origin. Assigned levels survive projection/reconstruction without becoming
+values such as `9.999999999999998` instead of `10`. This does not change geometric
+modelling tolerances or merge distinct semantic levels.
 
 Classic point targets are actual two-half-edge vertical DHE edge primitives;
 Classic line targets are actual two-sided vertical DHE sheets, one per line
@@ -150,11 +171,23 @@ classifications without supplying manual decisions, then checks actual source-Z
 and target-Z sections against the prepared inputs. Input-file hashes are checked
 before/after construction. The client regression also exercises direct preview
 after loading and optional subsequent corrections using a mock DOM/WebGL adapter.
-The complete automatic Classic run passed with **1,191 physical cells, 1,850
-shared faces and 112,510 directed half-edges**, preserving all 669 source and 428
-target logical features and the hole in `t47`. Preparation, construction and
-endpoint checks took about **5.3 minutes** on the test machine. The broader Python
-regression suite passed 87 tests; browser appearance remains a separate check.
+The latest complete rechecks preserved all 669 source and 428 target logical
+features, including the hole in `t47`, and verified unchanged input-file hashes:
+
+| Path | Physical cells | Shared faces | Directed half-edges |
+| --- | ---: | ---: | ---: |
+| Classic | 1,191 | 1,850 | 112,510 |
+| Hybrid | 1,191 | 1,847 | 117,706 |
+
+Hybrid completed in five construction attempts: 216 initially Smooth groups
+retried through Classic, leaving 140 Smooth and 468 Classic groups. Target `t339`
+(the former Feature 21 error) ultimately uses Classic because its Smooth shell
+intersects another target's interface; its original Z mismatch is corrected too.
+The Classic and Hybrid rechecks took about 7.8 and 12.9 minutes respectively on
+the test machine; concurrent processes affect timing. All endpoint checks passed.
+The broader Python regression suite passed 95 tests, and the real-API client test
+exercises Hybrid collision retries and final routing with a mock DOM/WebGL adapter.
+Browser appearance remains a separate check.
 
 ## Backgrounds
 

@@ -180,7 +180,7 @@ def check_oriented_shell(plans):
         raise TransitionShellError("The planned transition shell does not have genus-zero topology.", "unsupported_genus")
 
 
-def check_face_intersections(plans, *, across_cells=False):
+def check_face_intersections(plans, *, across_cells=False, collect_failures=False):
     """Reject intersections beyond declared shared edges/vertices.
 
     Polygon/plane line clipping avoids introducing triangulation into NATR or
@@ -188,6 +188,11 @@ def check_face_intersections(plans, *, across_cells=False):
     """
     from shapely.geometry import Polygon,LineString,Point,GeometryCollection
     from shapely.ops import unary_union
+    failures=[];rejected=set()
+    def reject(message,classification,**evidence):
+        error=TransitionShellError(message,classification,**evidence)
+        if not collect_failures:raise error
+        failures.append(error.report);rejected.update(evidence.get('owners',[]))
     arrays=[np.asarray(p.points,dtype=float) for p in plans]
     bound=arithmetic_bound([p for a in arrays for p in a])
     frames=[]
@@ -239,6 +244,7 @@ def check_face_intersections(plans, *, across_cells=False):
 
     minima=np.array([f[4] for f in frames]);maxima=np.array([f[5] for f in frames])
     for i,a in enumerate(arrays):
+        if collect_failures and plans[i].owner in rejected:continue
         na,ua,va,pa,amin,amax=frames[i]
         def project(points):
             rel=np.asarray(points)-a[0]
@@ -247,6 +253,7 @@ def check_face_intersections(plans, *, across_cells=False):
         aedges={frozenset((tuple(p),tuple(q))) for p,q in zip(a,np.roll(a,-1,axis=0))}
         candidates=np.flatnonzero(np.all(minima[:i]<=amax+bound,axis=1)&np.all(maxima[:i]>=amin-bound,axis=1))
         for j in candidates:
+            if collect_failures and (plans[i].owner in rejected or plans[j].owner in rejected):continue
             if across_cells:
                 if plans[i].owner==plans[j].owner:continue
                 if frozenset(map(tuple,a))==frozenset(map(tuple,arrays[j])):continue
@@ -294,7 +301,7 @@ def check_face_intersections(plans, *, across_cells=False):
                 if np.max(np.abs(da))>bound:continue
                 overlap=pa.intersection(Polygon(project(b)))
                 if not permitted_contact(overlap):
-                    raise TransitionShellError("Planned faces overlap beyond their declared interface.","self_intersection",faces=(int(j),i),coplanar=True,contact=overlap.wkt,permitted=permitted.wkt,
+                    reject("Planned faces overlap beyond their declared interface.","self_intersection",faces=(int(j),i),coplanar=True,contact=overlap.wkt,permitted=permitted.wkt,
                         face_points=[arrays[j].tolist(),a.tolist()],parts=[getattr(plans[k],'part',None) for k in (j,i)],owners=[getattr(plans[k],'owner',None) for k in (j,i)])
                 continue
             direction/=norm
@@ -315,7 +322,9 @@ def check_face_intersections(plans, *, across_cells=False):
             bshared=[np.array([(np.array(p)-b[0])@ub,(np.array(p)-b[0])@vb]) for p in shared]
             sb=segments(pb.intersection(LineString(np.column_stack((brel@ub,brel@vb)))),bo,bd,pb,bshared)
             for la,ha in sa:
+                if collect_failures and plans[i].owner in rejected:break
                 for lb,hb in sb:
+                    if collect_failures and plans[i].owner in rejected:break
                     low,high=max(la,lb),min(ha,hb)
                     if high<low-bound:continue
                     if common_edges:
@@ -330,5 +339,8 @@ def check_face_intersections(plans, *, across_cells=False):
                         contact=Point(project([origin+(low+high)/2*direction])[0])
                     else:contact=LineString(project([origin+low*direction,origin+high*direction]))
                     if not permitted_contact(contact):
-                        raise TransitionShellError("Planned faces intersect beyond their declared interface.","self_intersection",faces=(int(j),i),coplanar=False,contact=contact.wkt,permitted=permitted.wkt,
+                        reject("Planned faces intersect beyond their declared interface.","self_intersection",faces=(int(j),i),coplanar=False,contact=contact.wkt,permitted=permitted.wkt,
                             face_points=[arrays[j].tolist(),a.tolist()],parts=[getattr(plans[k],'part',None) for k in (j,i)],owners=[getattr(plans[k],'owner',None) for k in (j,i)])
+    if failures:
+        raise TransitionShellError('Planned mapping interfaces failed intersection validation.',
+                                   'invalid_combined_interfaces',failures=failures,stage='combined_interfaces')

@@ -353,7 +353,16 @@ def _lift_unchanged_isolated(state, old, new, lo, hi):
     return lifted
 
 
-def realize(faces, origin, *, required_vertices=()):
+def _shell_signature(shell):
+    """Exact geometry, winding and part labels; independent of face/start order."""
+    signature=[]
+    for face in shell:
+        p=face.points;i=min(range(len(p)),key=p.__getitem__)
+        signature.append((face.part,tuple(p[i:]+p[:i])))
+    return tuple(sorted(signature))
+
+
+def realize(faces, origin, *, required_vertices=(), collect_shell_errors=False, validated_shells=None):
     """Realize checked shells with the existing Euler and sewing operators."""
     from main import ExtrudedCell, ExtrusionModel, validate_model
     from aggregation_layer import _check_vertex_links
@@ -362,17 +371,24 @@ def realize(faces, origin, *, required_vertices=()):
     faces = _node_faces(faces)
     raw_groups=defaultdict(list)
     for face in faces:raw_groups[face.owner].append(face)
+    shell_errors=[]
     for owner,shell in raw_groups.items():
         try:_check_shell(shell)
         except TransitionShellError as exc:
             exc.report.update(cell=owner,stage='conforming_boundary')
             exc.args=(f"Feature {owner}: {exc}",)
-            raise
+            if not collect_shell_errors:raise
+            shell_errors.append(exc.report)
+    if shell_errors:
+        raise TransitionShellError('Planned mapping cells failed shell validation.',
+                                   'invalid_cell_shells',failures=shell_errors,stage='conforming_boundary')
     faces = _remove_redundant_walls(faces,required_vertices)
     groups = defaultdict(list)
     for face in faces:
         groups[face.owner].append(face)
     for owner, shell in groups.items():
+        signature=_shell_signature(shell) if validated_shells is not None else None
+        if validated_shells is not None and signature in validated_shells:continue
         try:
             _check_shell(shell)
             _check_vertex_links(shell)
@@ -384,14 +400,21 @@ def realize(faces, origin, *, required_vertices=()):
             check_face_intersections(shell)
             if _planned_volume(shell) <= TOL*TOL:
                 raise ValueError("non-positive oriented volume")
+            if validated_shells is not None:validated_shells.add(signature)
         except ValueError as exc:
             if isinstance(exc,TransitionShellError):
                 exc.report['cell']=owner
                 exc.args=(f"Feature {owner}: {exc}",)
                 raise
             raise ValueError(f"Feature {owner}: {exc}") from exc
-    check_interface_pairs(faces)
-    check_face_intersections(faces,across_cells=True)
+    try:
+        check_interface_pairs(faces)
+        check_face_intersections(faces,across_cells=True,collect_failures=collect_shell_errors)
+    except TransitionShellError as exc:
+        if 'owners' not in exc.report:
+            exc.report['owners']=sorted({faces[i].owner for i in exc.report.get('faces',[])})
+        exc.report.setdefault('stage','combined_interfaces')
+        raise
     saved = _core()
     try:
         dhe.reset_globals()

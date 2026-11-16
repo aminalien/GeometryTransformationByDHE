@@ -45,7 +45,7 @@ window.createMapping=function({api,status,setBusy,changed,fitInputs}){
       const cell=document.createElement('td'),choice=document.createElement('select');
       for(const value of ['map','appearance','disappearance','exclude','unresolved'])choice.append(new Option(value==='unresolved'?'Automatic':value,value));
       choice.value=g.decision;choice.onchange=()=>{g.decision=choice.value;g.confirmed=choice.value!=='unresolved';check.checked=g.confirmed;summarize();};cell.append(choice);row.append(cell);
-      const route=document.createElement('td');route.textContent=(g.builder||'Save review to classify')+' · '+(g.reason||'');row.append(route);body.append(row);
+      const route=document.createElement('td');route.textContent=(g.builder||'Save review to classify')+(g.fallback?' (initially '+g.initial_builder+')':'')+' · '+(g.reason||'');row.append(route);body.append(row);
     }
     summarize();
   }
@@ -53,6 +53,7 @@ window.createMapping=function({api,status,setBusy,changed,fitInputs}){
     const confirmed=controller.groups.filter(g=>g.confirmed&&g.decision!=='unresolved').length;
     const review=controller.data?.automatic_review;
     $('mapping-summary').textContent=`Automatic review · ${controller.groups.length} groups · ${confirmed} accepted · ${review?.union_groups||0} overlap group(s) unioned · ${review?.holed_features||0} holed feature(s) preserved (Classic/Hybrid).`;
+    const retries=controller.groups.filter(g=>g.fallback).length;if(retries)$('mapping-summary').textContent+=` ${retries} group(s) retried through Classic after validation.`;
   }
   function overlapControls(){
     const body=$('mapping-overlaps');body.replaceChildren();

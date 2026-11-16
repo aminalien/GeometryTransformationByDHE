@@ -37,6 +37,10 @@ class MappingWorkspace:
             groups,suggestions=suggest_groups(prepared['source'],prepared['target'],
                 overlap_fraction=settings['overlap_fraction'],search_distance=settings['search_distance'])
         groups=automatic_review(groups,prepared['source'],prepared['target'])
+        # The client can send rows previously decorated by state(). Those are
+        # snapshot diagnostics, not persistent instructions for a later build.
+        for g in groups:
+            for key in ('builder','reason','initial_builder','initial_reason','fallback'):g.pop(key,None)
         if cancelled():raise ValueError('Mapping preparation cancelled; previous inputs preserved.')
         return prepared,groups,suggestions or {}
 
@@ -52,6 +56,14 @@ class MappingWorkspace:
             groups=deepcopy(self.groups)
             if len(self.layers)==2:
                 for g in groups:g['builder'],g['reason']=route_group(g,self.layers['source'],self.layers['target'],self.settings['mode'])
+            snapshot=self.preview or self.result
+            if snapshot is not None and snapshot.revision==self.revision:
+                actual={r['group']:r for r in snapshot.result.report['routing']}
+                for g in groups:
+                    if g['id'] in actual:
+                        r=actual[g['id']]
+                        for key in ('builder','reason','initial_builder','fallback'):
+                            if key in r:g[key]=deepcopy(r[key])
             return dict(revision=self.revision,layers=layers,groups=groups,settings=self.settings.copy(),suggestions=deepcopy(self.suggestions),
                         automatic_review=review_summary(self.layers,self.groups),
                         has_result=self.result is not None,has_preview=self.preview is not None,

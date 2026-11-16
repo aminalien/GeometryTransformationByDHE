@@ -16,10 +16,11 @@ from shapely.affinity import rotate,translate
 from shapely.ops import unary_union
 
 import DHECore as dhe
-from generalization_model import _core,Face,_node_faces
+from generalization_model import _core,_restore,Face,_node_faces,_prism,realize
 from mapping_data import (prepare_layer,reproject_layer,overlap_review,resolve_overlap,
                           suggest_groups,validate_groups,route_group,union_overlaps,automatic_review)
-from mapping_builders import build_mapping,MappingBuildError
+from mapping_builders import build_mapping,MappingBuildError,_partition_plane,smooth_faces
+from shell_conformity import TransitionShellError,check_face_intersections
 from mapping_scene import MappingScene
 from plane_slicing import SlicePlane
 from web_generalization_app import Workspace,create_app
@@ -120,6 +121,95 @@ class MappingDataTests(unittest.TestCase):
 
 
 class MappingBuilderTests(unittest.TestCase):
+    def test_independent_intersections_are_reported_together(self):
+        fs=[]
+        for base,owner in ((0,1),(10,3)):
+            fs.extend([Face(owner,[(base,0,0),(base+2,0,0),(base+2,0,2),(base,0,2)]),
+                       Face(owner+1,[(base+1,-1,0),(base+1,1,0),(base+1,1,2),(base+1,-1,2)])])
+        with self.assertRaises(TransitionShellError) as caught:
+            check_face_intersections(fs,across_cells=True,collect_failures=True)
+        report=caught.exception.report
+        self.assertEqual(report['classification'],'invalid_combined_interfaces')
+        self.assertEqual({frozenset(f['owners']) for f in report['failures']},{frozenset((1,2)),frozenset((3,4))})
+        with self.assertRaises(TransitionShellError) as strict:check_face_intersections(fs,across_cells=True)
+        self.assertEqual(strict.exception.report['classification'],'self_intersection')
+
+    def test_validation_cache_reuses_only_exact_shells_and_always_checks_interfaces(self):
+        shell=_prism(1,box(0,0,2,2),0,5);cache=set();before=_core()
+        try:
+            with patch('generalization_model.check_face_intersections',wraps=check_face_intersections) as check:
+                realize(shell,(0,0),validated_shells=cache)
+                reordered=[Face(f.owner,f.points[1:]+f.points[:1],f.part) for f in reversed(shell)]
+                realize(reordered,(0,0),validated_shells=cache)
+                self.assertEqual(sum(not call.kwargs.get('across_cells',False) for call in check.call_args_list),1)
+                self.assertEqual(sum(call.kwargs.get('across_cells',False) for call in check.call_args_list),2)
+                realize(_prism(1,box(0,0,2,2),0,6),(0,0),validated_shells=cache)
+                self.assertEqual(sum(not call.kwargs.get('across_cells',False) for call in check.call_args_list),2)
+                wrong=[Face(f.owner,f.points,'transition' if f.part=='top' else f.part) for f in shell]
+                with self.assertRaises(TransitionShellError):realize(wrong,(0,0),validated_shells=cache)
+        finally:_restore(before)
+
+    def test_vertical_overlay_preserves_assigned_levels_at_new_intersections(self):
+        a=np.array([1074.187115843004,294.62390437187673]);b=a+[6.3,9.7];c=a+.6*(b-a)
+        xyz=lambda p,z:(float(p[0]),float(p[1]),z)
+        faces=[Face(1,[xyz(a,5.),xyz(b,5.),xyz(c,15.),xyz(a,15.)],'wall'),
+               Face(2,[xyz(a,0.),xyz(b,0.),xyz(b,10.),xyz(a,10.)],'wall'),
+               Face(3,[xyz(a,0.),xyz(b,0.),xyz(b,10.+1e-9),xyz(a,10.+1e-9)],'wall')]
+        result=_partition_plane(faces)
+        levels={p[2] for f in result for p in f.points}
+        self.assertEqual(levels,{0.,5.,10.,10.+1e-9,15.})
+        # The slanted boundary introduces vertices that were absent from inputs.
+        original={p for f in faces for p in f.points}
+        self.assertTrue(any(p not in original and p[2]==10. for f in result for p in f.points))
+
+    def test_hybrid_retries_actual_colliding_transitions_through_classic(self):
+        gs=[group(['s1'],['t1'],id='a'),group(['s2'],['t2'],id='b')]
+        r,s=build([box(0,0,2,2),box(6,0,8,2)],[box(6,0,8,2),box(0,0,2,2)],groups=gs)
+        self.assertTrue(r.report['retry_history']);self.assertEqual(r.report['endpoint_validation'],'passed')
+        self.assertEqual({row['builder'] for row in r.report['routing']},{'classic'})
+        self.assertTrue(all(row['initial_builder']=='smooth' and row['fallback'] for row in r.report['routing']))
+        failures=r.report['retry_history'][0]['failures']
+        # Coincident moving side walls are rejected at interface ownership,
+        # before the later face-intersection check is needed.
+        self.assertTrue(any(f['classification']=='interface_orientation_or_ownership' for f in failures))
+        self.assertTrue(all(f['features'] for f in failures))
+
+    def test_independent_shell_failures_are_batched_and_valid_smooth_group_remains(self):
+        def incomplete(owner,sources,target,*args,**kwargs):
+            fs,details=smooth_faces(owner,sources,target,*args,**kwargs)
+            return (fs[:-1] if sources[0].bounds[0]<10 else fs),details
+        sources=[box(0,0,2,2),box(5,0,7,2),box(12,0,14,2)]
+        targets=[translate(p,xoff=.25) for p in sources]
+        gs=[group([f's{i}'],[f't{i}'],id=f'g{i}') for i in range(1,4)]
+        with patch('mapping_builders.smooth_faces',side_effect=incomplete):r,s=build(sources,targets,groups=gs)
+        self.assertEqual(r.report['construction_attempts'],2)
+        self.assertEqual(r.report['retry_history'][0]['groups'],['g1','g2'])
+        self.assertEqual([g['builder'] for g in r.report['routing']],['classic','classic','smooth'])
+
+    def test_retry_terminates_and_does_not_hide_strict_or_unrelated_errors(self):
+        s,t=layers([box(0,0,2,2)],[box(.25,0,2.25,2)]);gs=[group(['s1'],['t1'])]
+        before=_core()
+        for mode,count in (('hybrid',2),('smooth',1),('classic',1)):
+            with patch('mapping_builders.realize',side_effect=lambda *a,**k:(_ for _ in ()).throw(
+                    TransitionShellError('Test unpaired edge','unmatched_edges',cell=2,stage='conforming_boundary'))) as construct:
+                with self.assertRaises(MappingBuildError) as caught:build_mapping(s,t,gs,dict(mode=mode))
+                self.assertEqual(construct.call_count,count)
+                self.assertIn('target t1',str(caught.exception));self.assertIn('group g1',str(caught.exception))
+            self.assertEqual(_core(),before)
+        with patch('mapping_builders.realize',side_effect=RuntimeError('Unexpected allocation error')) as construct:
+            with self.assertRaisesRegex(RuntimeError,'Unexpected allocation'):build_mapping(s,t,gs,{})
+            self.assertEqual(construct.call_count,1)
+
+    def test_cancel_between_retry_attempts_preserves_core(self):
+        s,t=layers([box(0,0,2,2)],[box(.25,0,2.25,2)]);gs=[group(['s1'],['t1'])]
+        stop=Event();before=_core()
+        def progress(message):
+            if message.startswith('Retrying '):stop.set()
+        with patch('mapping_builders.realize',side_effect=TransitionShellError('Test edge','unmatched_edges',cell=2)) as construct:
+            with self.assertRaisesRegex(ValueError,'cancelled'):build_mapping(s,t,gs,{},progress=progress,cancelled=stop.is_set)
+            self.assertEqual(construct.call_count,1)
+        self.assertEqual(_core(),before)
+
     def test_holed_source_and_target_preserve_empty_interiors_and_logical_identity(self):
         donut=Polygon(box(0,0,4,4).exterior.coords,[box(1,1,3,3).exterior.coords])
         for source,target in ((box(0,0,4,4),donut),(donut,box(0,0,4,4)),(donut,donut)):
@@ -281,6 +371,21 @@ class MappingApiTests(unittest.TestCase):
         self.assertNotEqual(self.w.mapping.groups[0]['id'],'custom')
         self.assertTrue(all(g['confirmed'] for g in self.w.mapping.groups))
         self.assertEqual(self.w.mapping.result.result.report['groups'][0]['id'],'custom')
+
+    def test_hybrid_final_routes_are_visible_for_preview_and_stale_reviews_reset_them(self):
+        root=Path(self.temp.name)
+        for side,gs in (('source',[box(0,0,2,2),box(6,0,8,2)]),('target',[box(6,0,8,2),box(0,0,2,2)])):
+            gpd.GeoDataFrame({'id':[str(i) for i in range(2)]},geometry=gs,crs=2180).to_file(root/(side+'.geojson'),driver='GeoJSON')
+        for side in ('source','target'):self.command('load',{'side':side})
+        gs=[group(['s1'],['t1'],id='a'),group(['s2'],['t2'],id='b')]
+        self.command('review',{'groups':gs})
+        self.command('build',{'preview':True})
+        state=self.client.get('/api/mapping/state').json()
+        self.assertTrue(all(g['builder']=='classic' and g['initial_builder']=='smooth' and g['fallback'] for g in state['groups']))
+        report=self.client.get('/api/mapping/report',params={'preview_id':state['preview_id']}).json()
+        self.assertEqual(report['endpoint_validation'],'passed');self.assertTrue(report['retry_history'])
+        self.command('review',{'groups':state['groups'],'settings':{'source_label':'new review'}})
+        self.assertTrue(all(g['builder']=='smooth' and 'fallback' not in g for g in self.client.get('/api/mapping/state').json()['groups']))
 
     def test_failed_build_preparation_preserves_inputs_and_published_result(self):
         self.ready();self.command('build');previous=self.w.mapping.result

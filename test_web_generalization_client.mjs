@@ -199,6 +199,20 @@ if(process.env.DHE_WEB_TEST_MAPPING==='1'){
   await el('mapping-build').emit('click');
   const report=await (await realFetch(origin+'/api/mapping/report')).json();assert.equal(report.endpoint_validation,'passed');
   assert.ok(report.routing.every(g=>g.builder==='classic'));
+  // Force a pair of moving cells to cross and verify the approved Hybrid retry
+  // appears as actual final routing in the UI, with valid Smooth cells retained.
+  el('mapping-mode').value='hybrid';
+  for(const [source,target] of [['s1','t2'],['s2','t1']]){
+    el('mapping-edit-sources').value=source;el('mapping-edit-targets').value=target;
+    el('mapping-edit-decision').value='map';await el('mapping-regroup').emit('click');
+  }
+  await el('mapping-build').emit('click');
+  const hybrid=await (await realFetch(origin+'/api/mapping/report')).json();
+  assert.equal(hybrid.endpoint_validation,'passed');assert.ok(hybrid.retry_history.length);
+  assert.ok(hybrid.routing.some(g=>g.fallback&&g.initial_builder==='smooth'&&g.builder==='classic'));
+  assert.ok(hybrid.routing.some(g=>g.builder==='smooth'));
+  assert.ok(el('mapping-summary').textContent.includes('retried through Classic'));
+  assert.ok(el('mapping-group-rows').children.some(row=>row.children[5].textContent.includes('(initially smooth)')));
   assert.deepEqual(await (await realFetch(origin+'/api/scene')).json(),previous);
   el('show-3d').checked=true;await el('show-3d').emit('change');
   await tabs.find(t=>t.dataset.tab==='inspect').emit('click');
@@ -207,5 +221,5 @@ if(process.env.DHE_WEB_TEST_MAPPING==='1'){
   await tabs.find(t=>t.dataset.tab==='generalize').emit('click');
   assert.equal(el('mapping-tab').hidden,true);assert.equal(context.window.dheAtlas.revision,revision);
   assert.equal(layer('mapping-input-fills'),undefined);
-  console.log('Mapping client integration passed: automatic review without confirmations, optional regrouping, real Classic preview/publication/slicing, inspector metadata, and restoration of Generalize.');
+  console.log('Mapping client integration passed: automatic review, optional regrouping, Classic preview/build/slicing, Hybrid collision retries and final routing, inspector metadata, and restoration of Generalize.');
 }

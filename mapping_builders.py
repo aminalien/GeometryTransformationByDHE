@@ -3,6 +3,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from types import SimpleNamespace
 from math import isfinite
+from copy import deepcopy
 
 import numpy as np
 from shapely import constrained_delaunay_triangles,STRtree
@@ -97,6 +98,13 @@ def _partition_plane(faces,extra_lines=()):
     n=np.sum(np.cross(first-origin,np.roll(first-origin,-1,axis=0)),axis=0);n/=np.linalg.norm(n)
     if all(len({p[2] for p in f.points})==1 for f in faces):
         origin=np.array([0.,0.,first[0,2]]);n=np.array([0.,0.,1.]);u=np.array([1.,0.,0.]);v=np.array([0.,1.,0.])
+    elif abs(n[2])<=arithmetic_bound(first):
+        # A diagonal 3D basis mixes XY and Z. Its inverse can turn an assigned
+        # interface Z=10 into 9.999999999999998, splitting semantic level roles.
+        origin=np.array([first[0,0],first[0,1],0.])
+        delta=max(first-origin,key=lambda p:np.linalg.norm(p[:2]))[:2]
+        u=np.array([delta[0],delta[1],0.]);u/=np.linalg.norm(u)
+        v=np.array([0.,0.,1.]);n=np.cross(u,v)
     else:
         u=max(first-origin,key=lambda p:np.linalg.norm(p));u=u/np.linalg.norm(u);v=np.cross(n,u)
     project=lambda p:np.column_stack(((np.asarray(p)-origin)@u,(np.asarray(p)-origin)@v))
@@ -259,7 +267,24 @@ class MappingResult:
     report:dict
 
 
-def build_mapping(source,target,groups,settings,*,progress=lambda *a:None,cancelled=lambda:False):
+def _mapping_failure(exc,metadata,routing,phase):
+    """Attach semantic identities without guessing from a transient cell number."""
+    evidence=getattr(exc,'report',{})
+    failures=[]
+    for item in evidence.get('failures',[evidence]):
+        owners=set(item.get('owners',[]))
+        if item.get('cell') is not None:owners.add(item['cell'])
+        features=[dict(cell=int(k),feature_id=metadata[k]['feature_id'],original_id=metadata[k]['original_id'],
+                       layer=metadata[k]['layer'],group=metadata[k]['group']) for k in sorted(owners) if k in metadata]
+        failures.append({**item,'features':features,'groups':sorted({f['group'] for f in features})})
+    identified=[f for failure in failures for f in failure['features']]
+    names=', '.join(dict.fromkeys(f"{f['layer']} {f['feature_id']} (original {f['original_id']}, group {f['group']}, cell {f['cell']})" for f in identified))
+    classifications=', '.join(dict.fromkeys(f.get('classification','construction_error') for f in failures))
+    message=f'{names}: {classifications} during {phase}.' if names else str(exc)
+    return MappingBuildError(message,phase=phase,routing=routing,evidence=evidence,failures=failures)
+
+
+def _build_mapping_once(source,target,groups,settings,*,forced_classic,validated_shells,progress,cancelled):
     validate_groups(groups,source,target)
     for layer in (source,target):
         if overlap_review(layer):raise MappingBuildError(f'Resolve {layer.side} layer overlaps before construction.',side=layer.side)
@@ -297,7 +322,12 @@ def build_mapping(source,target,groups,settings,*,progress=lambda *a:None,cancel
     for index,group in enumerate(groups,1):
         if cancelled():raise ValueError('Mapping cancelled; previous models preserved.')
         builder,reason=route_group(group,source,target,mode)
-        row=dict(group=group['id'],sources=group['sources'],targets=group['targets'],builder=builder,reason=reason)
+        initial_builder,initial_reason=builder,reason
+        if group['id'] in forced_classic:
+            builder='classic';reason='Classic retry after '+', '.join(sorted({f['classification'] for f in forced_classic[group['id']]['failures']}))
+        row=dict(group=group['id'],sources=group['sources'],targets=group['targets'],builder=builder,reason=reason,
+                 initial_builder=initial_builder,initial_reason=initial_reason)
+        if group['id'] in forced_classic:row['fallback']=forced_classic[group['id']]
         routing.append(row)
         if builder=='excluded':continue
         if builder=='unsupported':raise MappingBuildError(f"{group['id']}: {reason}",group=group['id'],routing=routing)
@@ -345,13 +375,15 @@ def build_mapping(source,target,groups,settings,*,progress=lambda *a:None,cancel
                 if details is not None:
                     row['construction']=({k:v for k,v in details.items() if k not in ('source','target')} if isinstance(details,dict) else details)
         except ValueError as exc:
-            raise MappingBuildError(f"{group['id']}: {exc}",group=group['id'],builder=builder,evidence=getattr(exc,'report',None)) from exc
+            failure=_mapping_failure(exc,metadata,routing,'group_planning')
+            for item in failure.report['failures']:item['groups']=[group['id']]
+            raise failure from exc
     saved=_core()
     try:
         progress('Conforming common interfaces and validating the complete mapping')
         faces=conform_interfaces(faces,contacts) if faces else []
         if cancelled():raise ValueError('Mapping cancelled; previous models preserved.')
-        if faces:model,faces,_=realize(faces,origin,required_vertices=[tuple(p) for _,points,_ in specs for p in points])
+        if faces:model,faces,_=realize(faces,origin,required_vertices=[tuple(p) for _,points,_ in specs for p in points],collect_shell_errors=True,validated_shells=validated_shells)
         else:
             from main import ExtrusionModel
             dhe.reset_globals();ext=dhe.make_vertex(0,0,0,ch='VINF');ext.logical_feature_id='VINF'
@@ -359,7 +391,6 @@ def build_mapping(source,target,groups,settings,*,progress=lambda *a:None,cancel
         if specs:add_primitives(model,specs,metadata)
         else:model.mapping_primitives=[];model.mapping_contacts=[];model.mapping_face_records=[]
         if cancelled():raise ValueError('Mapping cancelled; previous models preserved.')
-        from copy import deepcopy
         report=dict(mode=mode,settings=deepcopy(settings),groups=deepcopy(groups),routing=routing,source=source.source,target=target.source,
                     source_repairs=list(source.notes),target_repairs=list(target.notes),cells=len(model.cells),
                     logical_features=dict(source=len({m['feature_id'] for m in metadata.values() if m['layer']=='source'}),target=len({m['feature_id'] for m in metadata.values() if m['layer']=='target'})),
@@ -370,5 +401,39 @@ def build_mapping(source,target,groups,settings,*,progress=lambda *a:None,cancel
                              dict(z_b=0.,z_s=lo,z_t=hi,z_interface=mid),report)
     except ValueError as exc:
         if isinstance(exc,MappingBuildError):raise
-        raise MappingBuildError(str(exc),phase='combined_validation',routing=routing,evidence=getattr(exc,'report',None)) from exc
+        raise _mapping_failure(exc,metadata,routing,'combined_validation') from exc
     finally:_restore(saved)
+
+
+# Only diagnosed construction failures qualify. Parameter, cancellation, I/O and
+# unexpected allocation errors retain their original failure behavior.
+_RETRYABLE_TOPOLOGY={'unmatched_edges','nonmanifold_edge_incidence','inconsistent_orientation',
+                    'invalid_vertex_link','disconnected_shell','unsupported_genus','self_intersection',
+                    'nonmanifold_interface','interface_orientation_or_ownership','degenerate_edge'}
+
+
+def build_mapping(source,target,groups,settings,*,progress=lambda *a:None,cancelled=lambda:False):
+    validate_groups(groups,source,target)
+    initial={g['id']:route_group(g,source,target,settings.get('mode','hybrid'))[0] for g in groups}
+    forced={};history=[];validated_shells=set()
+    while True:
+        if cancelled():raise ValueError('Mapping cancelled; previous models preserved.')
+        try:
+            result=_build_mapping_once(source,target,groups,settings,forced_classic=forced,validated_shells=validated_shells,progress=progress,cancelled=cancelled)
+            result.report.update(construction_attempts=len(history)+1,retry_history=deepcopy(history))
+            return result
+        except MappingBuildError as exc:
+            if cancelled():raise ValueError('Mapping cancelled; previous models preserved.') from exc
+            exc.report['retry_history']=deepcopy(history)
+            failures=exc.report.get('failures',[]);eligible=set()
+            if settings.get('mode','hybrid')!='hybrid' or not failures:raise
+            for failure in failures:
+                candidates={g for g in failure['groups'] if initial.get(g)=='smooth' and g not in forced}
+                if failure.get('classification') not in _RETRYABLE_TOPOLOGY or not candidates:raise
+                eligible.update(candidates)
+            attempt=len(history)+1
+            history.append(dict(attempt=attempt,groups=sorted(eligible),failures=deepcopy(failures)))
+            for group in sorted(eligible):
+                evidence=[f for f in failures if group in f['groups']]
+                forced[group]=dict(attempt=attempt,failures=deepcopy(evidence))
+                progress(f'Retrying {group} through Classic: '+', '.join(sorted({f['classification'] for f in evidence})))
