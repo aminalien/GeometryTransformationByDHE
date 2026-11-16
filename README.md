@@ -3,7 +3,7 @@
 ## Local web workspace
 
 Run `web_generalization_app.py` for the new browser-based **DHE Transition Atlas**
-at `http://127.0.0.1:8765`. It defaults to `C:/University/PhD/Data/Kleczkow/osm_data4.shp`
+at its printed localhost address (preferring `http://127.0.0.1:8766`). It defaults to `C:/University/PhD/Data/Kleczkow/osm_data4.shp`
 and reuses the existing six generalization operations, actual DHE cells and slicing.
 The interface includes geographic backgrounds, uploads, mouse-drawn OSM downloads,
 automatic union of overlapping input groups, 3D primal/dual controls and projected sections.
@@ -11,6 +11,11 @@ Uploads include CRS preflight and explicit interpretation overrides, direct Shap
 selection, and a prepared-footprint preview during construction. Slice features and the slicing
 plane have independent visibility controls; dual vertices can use shaded 3D spheres or dots.
 Install `requirements-web.txt` first. See [web setup and usage](README_web_generalization.md).
+
+The **Mapping** tab loads independent source and target layers, reviews editable
+correspondence groups and input overlaps, and constructs Classic, Smooth, or Hybrid
+DHE mappings. Its defaults are `Kleczkow Updated/osm_data.shp` and
+`Kleczkow Updated/citygml_data.shp`. See [Mapping workflow](README_web_generalization.md#mapping-two-independent-layers).
 
 Desktop and web now support **Level operations** (several disjoint assignments
 within one ΔZ interval) and final-only **Automatic generalization** of selected

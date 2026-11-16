@@ -28,6 +28,7 @@ except ImportError as exc:
 from generalization_model import GeneralizationSession,_core,_restore
 from web_generalization_data import DEFAULT_WEB_DATA,MAX_UPLOAD_BYTES,UploadStore,read_web_dataset,fetch_web_osm,prepared_preview
 from web_generalization_scene import WebScene
+from mapping_workspace import MappingWorkspace
 
 
 class RevisionConflict(ValueError):pass
@@ -35,18 +36,19 @@ class RevisionConflict(ValueError):pass
 
 class Workspace:
     """One application workspace; all DHE mutations occur on one executor thread."""
-    def __init__(self,default_path=DEFAULT_WEB_DATA,initial_height=5.):
+    def __init__(self,default_path=DEFAULT_WEB_DATA,initial_height=5.,mapping_paths=None):
         self.default_path=str(default_path);self.initial_height=initial_height
         self.session=None;self.scene=None;self.revision=0;self.preview=None;self.preview_scene=None;self.preview_key=None
         self.pool=ThreadPoolExecutor(max_workers=1,thread_name_prefix='DHE web worker')
         self.lock=threading.RLock();self.jobs={};self.running=None;self.uploads=UploadStore();self.cancellations={}
+        self.mapping=MappingWorkspace(mapping_paths)
 
     def check(self,revision):
         if revision!=self.revision:raise RevisionConflict('The workspace changed in another tab. Refresh the scene and try again.')
 
     def submit(self,action,revision,**parameters):
         with self.lock:
-            self.check(revision)
+            (self.mapping.check if action.startswith('mapping:') else self.check)(revision)
             if self.running:raise RevisionConflict('Another construction job is running. Wait for it to finish.')
             token=uuid4().hex;self.running=token;self.jobs[token]=dict(id=token,status='running',action=action,stage='Queued',revision=revision)
             cancel=threading.Event();self.cancellations[token]=cancel
@@ -70,11 +72,13 @@ class Workspace:
         return dict(job_id=token)
 
     def execute(self,action,revision,**p):
-        self.check(revision)
+        (self.mapping.check if action.startswith('mapping:') else self.check)(revision)
         progress=p.pop('_progress',lambda *args:None)
         cancelled=p.pop('_cancelled',lambda:False)
         saved=_core()
         try:
+            if action.startswith('mapping:'):
+                return self.mapping.execute(action.split(':',1)[1],revision,progress=progress,cancelled=cancelled,**p)
             if self.session:_restore(self.session.core)
             if action in ('default','upload','osm'):
                 progress('Downloading OSM footprints' if action=='osm' else 'Reading data, interpreting CRS and unioning overlaps')
@@ -134,6 +138,7 @@ class Workspace:
             raise
         finally:
             if self.session:_restore(self.session.core)
+            else:_restore(saved)
 
     def clear_preview(self):self.preview=None;self.preview_scene=None;self.preview_key=None
 
@@ -145,7 +150,7 @@ class Workspace:
             return self.scene
 
     def close(self):
-        self.pool.shutdown(wait=True,cancel_futures=True);self.uploads.close()
+        self.pool.shutdown(wait=True,cancel_futures=True);self.uploads.close();self.mapping.close()
 
 
 class GoogleTiles:
@@ -248,8 +253,8 @@ class SliceInput(Payload):
 class BoxInput(Payload):bounds:tuple[float,float,float,float]
 
 
-def create_app(*,default_path=DEFAULT_WEB_DATA,initial_height=5.,autoload=True,workspace=None):
-    w=workspace or Workspace(default_path,initial_height)
+def create_app(*,default_path=DEFAULT_WEB_DATA,initial_height=5.,autoload=True,workspace=None,mapping_paths=None):
+    w=workspace or Workspace(default_path,initial_height,mapping_paths)
     google=GoogleTiles(os.environ.get('GOOGLE_MAPS_API_KEY',''))
     @asynccontextmanager
     async def lifespan(app):
@@ -281,6 +286,9 @@ def create_app(*,default_path=DEFAULT_WEB_DATA,initial_height=5.,autoload=True,w
         from automatic_generalization import AutomaticSettings
         return dict(default_dataset=Path(default_path).name,initial_height=initial_height,google_available=bool(google.key),automatic_defaults=asdict(AutomaticSettings()))
 
+    from web_mapping_api import attach_mapping_routes
+    attach_mapping_routes(app,w)
+
     @app.get('/api/state')
     def state():
         with w.lock:
@@ -303,8 +311,10 @@ def create_app(*,default_path=DEFAULT_WEB_DATA,initial_height=5.,autoload=True,w
     def cancel_job(token:str):
         with w.lock:
             if token not in w.jobs:raise HTTPException(404,'Job is missing or expired.')
-            if w.jobs[token]['action']!='automatic':raise ValueError('Cancellation is supported for automatic runs.')
-            if w.revision!=w.jobs[token]['revision']:return dict(status='complete',message='The result has already been published.')
+            action=w.jobs[token]['action']
+            if action!='automatic' and not action.startswith('mapping:'):raise ValueError('Cancellation is supported for automatic and Mapping jobs.')
+            revision=w.mapping.revision if action.startswith('mapping:') else w.revision
+            if revision!=w.jobs[token]['revision']:return dict(status='complete',message='The result has already been published.')
             if w.jobs[token]['status']=='running':w.cancellations[token].set()
             return dict(status=w.jobs[token]['status'])
 
@@ -392,11 +402,14 @@ def main():
     parser.add_argument('--input-shp',default=DEFAULT_WEB_DATA)
     parser.add_argument('--port',type=int,default=None,help='Local port; default prefers 8766, then an available port.')
     parser.add_argument('--initial-height',type=float,default=5.)
+    from mapping_data import DEFAULT_MAPPING_SOURCE,DEFAULT_MAPPING_TARGET
+    parser.add_argument('--mapping-source',default=DEFAULT_MAPPING_SOURCE)
+    parser.add_argument('--mapping-target',default=DEFAULT_MAPPING_TARGET)
     parser.add_argument('--no-browser',action='store_true')
     args=parser.parse_args()
     if not math.isfinite(args.initial_height) or args.initial_height<=0:parser.error('Initial height must be positive and finite.')
     from web_launch import run_local
-    try:run_local(create_app(default_path=args.input_shp,initial_height=args.initial_height),port=args.port,open_browser=not args.no_browser)
+    try:run_local(create_app(default_path=args.input_shp,initial_height=args.initial_height,mapping_paths=dict(source=args.mapping_source,target=args.mapping_target)),port=args.port,open_browser=not args.no_browser)
     except (OSError,ValueError) as exc:parser.error(str(exc))
 
 

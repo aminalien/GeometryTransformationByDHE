@@ -32,7 +32,7 @@ for(const match of html.matchAll(/<([\w-]+)\b([^>]*\bid="([^"]+)"[^>]*)>/g)){
 for(const match of html.matchAll(/<select[^>]*id="([^"]+)"[^>]*>([\s\S]*?)<\/select>/g)){
   const e=elements.get(match[1]);for(const option of match[2].matchAll(/<option([^>]*)>(.*?)<\/option>/g))e.append(new OptionElement(option[2],option[1].match(/value="([^"]*)"/)?.[1]||option[2]));
 }
-const tabs=['generalize','inspect'].map(tab=>{const e=new Element('button');e.dataset.tab=tab;return e;});
+const tabs=['generalize','inspect','mapping'].map(tab=>{const e=new Element('button');e.dataset.tab=tab;return e;});
 const hops=['nf','s','adjacent'].map(hop=>{const e=new Element('button');e.dataset.hop=hop;return e;});
 const documentEvents={};
 const document={hidden:false,activeElement:new Element('body'),getElementById:id=>{assert.ok(elements.has(id),id);return elements.get(id);},
@@ -84,6 +84,7 @@ async function fetchLocal(path,options){
   return realFetch(new URL(path,origin),options);
 }
 const context=vm.createContext({console,document,window:{},location:{origin},fetch:fetchLocal,Option:OptionElement,URLSearchParams,FormData,setTimeout,clearTimeout,setInterval:()=>0});
+vm.runInContext(await fs.readFile(new URL('./web_generalization/mapping.js',import.meta.url),'utf8'),context);
 const source=await fs.readFile(new URL('./web_generalization/app.js',import.meta.url),'utf8');
 const module=new vm.SourceTextModule(source,{context});
 await module.link(async specifier=>{
@@ -171,3 +172,37 @@ assert.equal(automaticSubmitted.settings.final_kind,'polygon');assert.deepEqual(
 assert.ok(el('status').textContent.includes('atomic automatic rejection'));assert.equal(context.window.dheAtlas.revision,revision);
 assert.equal(el('cancel-automatic').hidden,true);
 console.log('Client integration passed: map/section controls, primal/dual sizing, selection and OSM drawing, level queue/duplicate guards, real mixed-level preview, automatic request settings, and atomic failure preservation.');
+if(process.env.DHE_WEB_TEST_MAPPING==='1'){
+  // Use an isolated server whose mapping defaults are disposable fixture layers.
+  const previous=await (await realFetch(origin+'/api/scene')).json();
+  await tabs.find(t=>t.dataset.tab==='mapping').emit('click');
+  assert.equal(el('mapping-tab').hidden,false);assert.equal(el('generalize-tab').hidden,true);
+  for(const side of ['source','target'])await el('mapping-default-'+side).emit('click');
+  assert.ok(layer('mapping-input-fills').data.length);
+  el('mapping-mode').value='classic';await el('mapping-analyze').emit('click');
+  assert.ok(el('mapping-group-rows').children.length);await el('mapping-review-open').emit('click');
+  assert.ok(el('mapping-review-dialog').open);await el('mapping-confirm-matches').emit('click');await el('mapping-unmatched').emit('click');
+  await el('mapping-save-review').emit('click');
+  assert.ok(el('mapping-summary').textContent.includes('confirmed'));
+  // Regrouping and splitting must retain complete feature coverage as draft rows.
+  el('mapping-edit-sources').value='s1';el('mapping-edit-targets').value='t1';
+  el('mapping-edit-decision').value='map';await el('mapping-regroup').emit('click');
+  await el('mapping-save-review').emit('click');
+  await el('mapping-preview').emit('click');
+  await waitFor(()=>el('scene-title').textContent==='Validated preview'&&layer('slice-fills')?.data.length,'Mapping preview');
+  assert.ok(layer('dhe-faces')?.data.length===undefined||layer('dhe-faces').data.length>0);
+  const previewState=await (await realFetch(origin+'/api/mapping/state')).json();assert.ok(previewState.has_preview);assert.equal(previewState.has_result,false);
+  await el('mapping-discard').emit('click');assert.equal((await (await realFetch(origin+'/api/mapping/state')).json()).has_preview,false);
+  await el('mapping-build').emit('click');
+  const report=await (await realFetch(origin+'/api/mapping/report')).json();assert.equal(report.endpoint_validation,'passed');
+  assert.ok(report.routing.every(g=>g.builder==='classic'));
+  assert.deepEqual(await (await realFetch(origin+'/api/scene')).json(),previous);
+  el('show-3d').checked=true;await el('show-3d').emit('change');
+  await tabs.find(t=>t.dataset.tab==='inspect').emit('click');
+  el('edge-select').value=el('edge-select').children[1].value;await el('edge-select').emit('change');
+  assert.ok(el('edge-details').textContent.includes('source')||el('edge-details').textContent.includes('target'));
+  await tabs.find(t=>t.dataset.tab==='generalize').emit('click');
+  assert.equal(el('mapping-tab').hidden,true);assert.equal(context.window.dheAtlas.revision,revision);
+  assert.equal(layer('mapping-input-fills'),undefined);
+  console.log('Mapping client integration passed: independent inputs, correspondence review/regrouping, real Classic preview/publication/slicing, inspector metadata, and restoration of Generalize.');
+}

@@ -126,7 +126,8 @@ def fetch_web_osm(bounds):
 
 class UploadStore:
     """Bounded temporary files; archive names never become arbitrary disk paths."""
-    def __init__(self):
+    def __init__(self,*,allow_symbols=False):
+        self.allow_symbols=allow_symbols
         self.temporary=tempfile.TemporaryDirectory(prefix='dhe-web-');self.root=Path(self.temporary.name);self.items={};self.lock=threading.RLock()
 
     def add(self,name,payload):
@@ -177,7 +178,7 @@ class UploadStore:
                 if not choices:raise ValueError('The ZIP contains no Shapefile (.shp and accompanying files).')
             else:
                 for layer,kind in pyogrio.list_layers(path):
-                    if kind is not None and ('Polygon' in str(kind) or str(kind)=='Unknown'):
+                    if kind is not None and ('Polygon' in str(kind) or str(kind)=='Unknown' or self.allow_symbols and any(t in str(kind) for t in ('Point','LineString'))):
                         choices.append(dict(name=str(layer),path=path,layer=str(layer)))
                 if not choices:raise ValueError('No polygonal layers found.')
         except (BadZipFile,pyogrio.errors.DataSourceError) as exc:
@@ -204,13 +205,24 @@ class UploadStore:
         shutil.rmtree(target)
 
     def read(self,token,layer,crs=None,override_crs=None,accept_declared_crs=False):
+        frame,source=self.read_frame(token,layer,crs,override_crs,accept_declared_crs)
+        return prepare_web_frame(frame,source,notes=frame.attrs.get('web_import_notes',()))
+
+    def read_frame(self,token,layer,crs=None,override_crs=None,accept_declared_crs=False):
         if token not in self.items:raise ValueError('Upload is missing or expired. Upload it again.')
         item=self.items[token]
         choice=next((c for c in item['choices'] if c['name']==layer),None)
         if choice is None:raise ValueError('Choose one of the uploaded polygon layers.')
         if item['metadata'][layer]['suspicious'] and not override_crs and not accept_declared_crs:
             raise ValueError('Suspicious declared CRS: explicitly confirm it or choose a CRS override before loading.')
-        return read_web_dataset(choice['path'],layer=choice['layer'],crs=crs,override_crs=override_crs,source=item['name']+' / '+layer)
+        frame=gpd.read_file(choice['path'],layer=choice['layer'])
+        if override_crs:
+            note=f'Explicit CRS interpretation override: {frame.crs or "missing"} -> {override_crs}; source files unchanged.'
+            frame=frame.set_crs(override_crs,allow_override=True);frame.attrs['web_import_notes']=[note]
+        if frame.crs is None:
+            if not crs:raise ValueError('This dataset has no CRS. Supply its EPSG code before loading.')
+            frame=frame.set_crs(crs)
+        return frame,item['name']+' / '+layer
 
     def close(self):
         with self.lock:self.temporary.cleanup()

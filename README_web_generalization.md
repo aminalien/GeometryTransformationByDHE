@@ -65,6 +65,87 @@ With **3D on**, coloured sections lie on the actual cutting plane. With **3D off
 
 Point/polyline targets are terminal in the existing engine. A logical symbol may persist in the current-top map after its DHE cell ends. Missing terminal features at a later actual top section are disclosed; no fabricated solid or section geometry is inserted.
 
+## Mapping two independent layers
+
+**Mapping** has its own inputs, revisions, preview and published model. Generalize
+and its history remain available when switching back. Both workspaces use the same
+single construction worker, preventing concurrent changes to DHECore globals.
+Mapping uses the existing map, plane controls, current-top map and Inspect DHE.
+
+1. Open the default source and target, or upload each separately. Defaults are
+   `C:/University/PhD/Data/Kleczkow Updated/osm_data.shp` and
+   `C:/University/PhD/Data/Kleczkow Updated/citygml_data.shp`. Override them with
+   `--mapping-source PATH --mapping-target PATH`. Sources must be polygonal; targets
+   can also be points or simple open lines. Upload formats and CRS preflight match
+   Generalize. A common metre CRS and XY origin are used for construction.
+2. Review positive-area overlaps **within each layer**. Assign the overlap to a
+   chosen feature, explicitly union the features, or exclude the other feature.
+   These edits affect in-memory inputs only. Unlike Generalize imports, Mapping
+   never automatically unions different feature identities. Invalid polygon
+   components are repaired/dissolved within their original row, with repair notes.
+3. Set the mapping path and source/target Z (defaults 5 and 15). Optional scale
+   denominators, dates and source labels are report metadata. Z represents the
+   transition dimension, not building height; the lower datum is zero.
+4. **Suggest matches**, then **Review / edit**. Polygon links use intersection area
+   divided by the smaller area (default minimum 25%); contained target symbols also
+   propose links. Proximity candidates within 10 m are shown for review and are
+   never automatically accepted. Connected links form proposed groups. Confirm
+   matches, regroup using the `s…` and `t…` IDs, or split groups into singletons.
+   Every input must belong to one group. Unmatched features require an explicit
+   appearance, disappearance or exclusion decision. The optional starting-vertex
+   index forces cyclic pairing for a one-to-one polygon transition; inspect the
+   resulting preview before building. Original dataset IDs remain visible.
+5. **Preview** constructs and validates a temporary DHE snapshot. **Build mapping**
+   publishes a validated result. Both save the current review first and require all
+   groups to be confirmed. Failed or cancelled jobs retain the previous published
+   model. Cancellation is checked between planning groups and construction stages;
+   an active core construction finishes before cancellation takes effect.
+6. Use the source/target slice shortcuts, vertical/inclined planes and Inspect DHE.
+   **Download report** includes the construction's saved review, routing reasons,
+   settings, repairs, original identities, attributes, members and endpoint checks.
+   Later review edits mark the displayed built result as stale without rewriting
+   its report. This is an in-memory session; saving a report does not persist a
+   reloadable model.
+
+| Path | Construction |
+| --- | --- |
+| Classic | Source cells extend from Z=0 to the midpoint of source/target Z; supplied target cells extend from that interface to target Z. Coplanar cap overlays are partitioned into common faces and joined using actual DHE `JoinByFace` topology. No deep merge erases the two layer identities. |
+| Smooth | One-to-one rigid displacement/orientation connects cyclically corresponding vertices, with automatic rigid-fit alignment. Other polygon changes use the existing polygon transition. Point and line collapses use the supplied target, subject to the existing visibility/ridge conditions. Separated-source aggregation first reaches the convex hull, then transitions to the supplied target in the same upper cell; the target is not replaced by that hull. |
+| Hybrid | Adjacent-source merging (including displacement plus merging), splits, many-to-many groups and explicit appearances/disappearances use Classic. One-to-one changes/collapses and separated-source aggregation use Smooth. The review/report records each group's builder and reason. |
+
+Classic point targets are actual two-half-edge vertical DHE edge primitives;
+Classic line targets are actual two-sided vertical DHE sheets, one per line
+segment. Their shared primal vertices and edge/vertex contact registry are
+validated separately from positive-volume solid cells. **Edge / vertex contact**
+in Inspect DHE follows these reciprocal incidences; ordinary shared-face
+navigation retains its existing meaning. Dual links identify face, edge or vertex
+incidence. A semantic correspondence can exist without geometric contact at the
+Classic interface; the report does not invent adjacency for displaced footprints.
+
+Smooth-only fails explicitly for unsupported splits, many-to-many groups, unmatched
+features or invalid geometry; it never silently changes to Classic. Polygon
+components currently require hole-free boundaries. MultiPolygon identities retain
+their components as separate cells in Classic; Smooth requires one target polygon.
+Intersecting transition shells are rejected, even when their endpoint polygons are
+individually valid. Arithmetic conformity is distinct from the editable rigid-fit
+tolerance. Actual source-Z and target-Z sections are compared with the approved
+input footprints before publication.
+
+The supplied defaults contain 674 source and 431 target records. The target export
+has coincident polygon components requiring per-feature repair. There are five
+source and three target cross-feature overlap pairs; these require review in the
+interface. The original Shapefiles are never changed.
+
+Validation of the complete defaults used in-memory copies with eight explicit
+ownership assignments (the lower numeric workspace ID retained each overlap),
+confirmed proposed correspondences, and explicit appearance/disappearance for
+unmatched records. Classic constructed **1,105 cells, 1,658 shared faces and
+110,516 directed half-edges**, with every source-Z and target-Z section matching
+its approved input. Construction, scene preparation and endpoint validation took
+about **8.7 minutes** on the test machine. This QA policy is not automatically
+applied to the interactive workspace. The focused regression suite has 81 passing
+tests; the real-API client test also covers Mapping with a mock DOM/WebGL adapter.
+
 ## Backgrounds
 
 OpenStreetMap is the default. Light/dark OpenFreeMap styles, Esri World Imagery, White / no background, and a custom Web Mercator XYZ tile URL are available. Custom services need `{z}`, `{x}`, `{y}`, browser-accessible HTTP(S), and attribution. Visible provider/data attribution is retained.
@@ -91,11 +172,17 @@ The shared construction engine now uses `SewComplex` to compose internal and ext
 Run the portable integration tests:
 
 ```powershell
-.\.venv\Scripts\python.exe -B -m unittest test_web_generalization -v
+.\.venv\Scripts\python.exe -B -m unittest test_web_launch test_web_generalization test_mapping test_transition_conformity.WallGroupingTests -v
 node --check web_generalization/app.js
+node --check web_generalization/mapping.js
 ```
 
 With a local server already running, `node --experimental-vm-modules test_web_generalization_client.mjs` checks client control/data flow against its actual section API using a mock DOM/WebGL adapter. Set `DHE_WEB_TEST_URL` to change the test URL. This is not a visual rendering test, and Node is not required to run the application.
+
+On an isolated QA server with small disposable source/target defaults, set
+`DHE_WEB_TEST_MAPPING=1` to also exercise Mapping loading, review/regrouping,
+Classic preview/build, slicing, inspector metadata and return to Generalize.
+This test changes that QA server's in-memory review and published Mapping model.
 
 Set `DHE_WEB_STRESS_INSPECTOR=1` for the client test to repeat actual edge records in its mock scene, exercising a menu with over 50,000 candidates. This is only a menu stress test; server topology and geometry are unchanged.
 

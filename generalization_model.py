@@ -13,9 +13,9 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import numpy as np
-from shapely import constrained_delaunay_triangles, union_all
+from shapely import constrained_delaunay_triangles, union_all, STRtree, points as geometry_points
 from shapely.affinity import translate
-from shapely.geometry import Polygon, Point, LineString
+from shapely.geometry import Polygon, Point, LineString, box
 from shapely.geometry.polygon import orient
 from shapely.ops import polygonize, unary_union
 
@@ -232,6 +232,9 @@ def _node_faces(faces):
             if np.linalg.norm(np.sum(np.cross(arr-arr[0], np.roll(arr-arr[0], -1, axis=0)), axis=0)) > TOL*TOL:
                 cleaned.append(Face(face.owner, points, face.part))
     vertices = np.array(sorted({p for f in cleaned for p in f.points}))
+    # The index only removes impossible XY candidates. The original 3D arithmetic
+    # predicate below still decides incidence, including vertical junctions.
+    index=STRtree(geometry_points(vertices[:,:2])) if len(vertices)>1000 else None
     result = []
     for face in cleaned:
         points = []
@@ -242,12 +245,17 @@ def _node_faces(faces):
             resolution=float(np.max(np.abs(d)/registry.axis_bounds))
             if resolution <= 1:
                 raise ValueError("Geometry contains a boundary segment below the construction tolerance.")
-            delta = vertices-a
+            if index is None:candidates=vertices
+            else:
+                lower=np.nextafter(np.minimum(a,b)[:2]-registry.axis_bounds[:2],-np.inf)
+                upper=np.nextafter(np.maximum(a,b)[:2]+registry.axis_bounds[:2],np.inf)
+                candidates=vertices[np.sort(index.query(box(*lower,*upper)))]
+            delta = candidates-a
             t = delta@d/(length*length)
             mask = (t > 1/resolution) & (t < 1-1/resolution)
             indices = np.flatnonzero(mask & np.all(np.abs(delta-t[:,None]*d)<=registry.axis_bounds,axis=1))
             points.append(xyz(a))
-            points.extend(xyz(vertices[i]) for i in sorted(indices, key=lambda i: t[i]))
+            points.extend(xyz(candidates[i]) for i in sorted(indices, key=lambda i: t[i]))
         result.append(Face(face.owner, points, face.part))
     # Dissolve coincident faces within a newly merged logical cell.
     groups = defaultdict(list)
@@ -274,7 +282,7 @@ def _vertical(face):
     return length>0 and abs(normal[2])<=arithmetic_bound(points)*length
 
 
-def _remove_redundant_walls(faces):
+def _remove_redundant_walls(faces,required_vertices=()):
     """Dissolve only adjacent coplanar walls with the same interface owner."""
     matching=defaultdict(list)
     for i,face in enumerate(faces):matching[tuple(sorted(face.points))].append(i)
@@ -321,7 +329,7 @@ def _remove_redundant_walls(faces):
         else:result.extend(faces[i] for i in sorted(group))
     # A node remains if ANY incident face needs a true corner there. This also
     # retains old inclined transitions and interface ownership junctions.
-    required=set()
+    required=set(required_vertices)
     for face in result:
         p=face.points
         for i,b in enumerate(p):
@@ -345,7 +353,7 @@ def _lift_unchanged_isolated(state, old, new, lo, hi):
     return lifted
 
 
-def realize(faces, origin):
+def realize(faces, origin, *, required_vertices=()):
     """Realize checked shells with the existing Euler and sewing operators."""
     from main import ExtrudedCell, ExtrusionModel, validate_model
     from aggregation_layer import _check_vertex_links
@@ -360,7 +368,7 @@ def realize(faces, origin):
             exc.report.update(cell=owner,stage='conforming_boundary')
             exc.args=(f"Feature {owner}: {exc}",)
             raise
-    faces = _remove_redundant_walls(faces)
+    faces = _remove_redundant_walls(faces,required_vertices)
     groups = defaultdict(list)
     for face in faces:
         groups[face.owner].append(face)

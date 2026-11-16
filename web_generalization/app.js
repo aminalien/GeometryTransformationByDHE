@@ -12,6 +12,7 @@ const state={scene:null,preview:null,section:null,revision:0,selected:new Set(),
   sliceInFlight:false,sliceQueued:false,inputPreview:null,inputPreviewJob:null,miniFitPending:false,
   topologyScene:null,edgeMap:new Map(),faceMap:new Map(),edgesByCell:new Map(),fallback:new Set(),mapWarnings:new Map(),
   levelActions:[],levelStep:null,jobId:null,automaticReport:null,autoInputs:{}};
+let mapping=null;
 // Shared unit sphere: only the instance centres/colours/scales vary between cells.
 function unitSphere(){
   const positions=[],normals=[],indices=[],rows=16,cols=24;
@@ -32,7 +33,7 @@ const help={simplification:'Reduce boundary detail with a tolerance in metres.',
 function status(message,error=false){$('status').textContent=message;$('status').style.color=error?'#ffd4b2':'';}
 function number(id){const value=Number($(id).value);if(!Number.isFinite(value))throw new Error('Enter a finite value for '+id.replaceAll('-',' '));return value;}
 function color(a){return `rgb(${a[0]},${a[1]},${a[2]})`;}
-function displayScene(){return state.preview||state.scene;}
+function displayScene(){return mapping?.active?mapping.scene:state.preview||state.scene;}
 function baseStyle(kind){
   let tiles=[],attribution='',tileSize=256;
   if(kind==='osm'){tiles=['https://tile.openstreetmap.org/{z}/{x}/{y}.png'];attribution='© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a>';}
@@ -160,6 +161,7 @@ async function refreshScene(reset=false){
 
 function feature(k){return state.scene?.features.features.find(f=>f.properties.index===Number(k));}
 function selectFeature(k,add=false){
+  if(mapping?.active){mapping.pickCell(k);return;}
   if(state.busy)return;const f=feature(k);
   if(!f){status('This is a retained historical cell. Choose a current feature from the selection map.');return;}
   if(f.properties.kind!=='Polygon'){status('Point and polyline symbols are terminal; choose a current polygon.');return;}
@@ -246,14 +248,15 @@ function addMiniLayers(){
   mini.addLayer({id:'current-point',type:'circle',source:'current',filter:['==',['geometry-type'],'Point'],paint:{'circle-color':['get','css_color'],'circle-radius':5,'circle-stroke-color':'#fff','circle-stroke-width':1}});
 }
 function updateMini(){
-  if(!state.miniReady||!mini.getSource('current')||!state.scene)return;
-  const collection={...state.scene.features,features:state.scene.features.features.map(f=>({...f,properties:{...f.properties,css_color:color(f.properties.color)}}))};
+  const scene=displayScene();if(!state.miniReady||!mini.getSource('current'))return;
+  if(!scene){mini.getSource('current').setData(empty);return;}
+  const collection={...scene.features,features:scene.features.features.map(f=>({...f,properties:{...f.properties,css_color:color(f.properties.color)}}))};
   mini.getSource('current').setData(collection);
   const selected=['in',['get','index'],['literal',[...state.selected]]];
   mini.setPaintProperty('current-fill','fill-opacity',['case',selected,.65,.22]);
   mini.setPaintProperty('current-line','line-width',['case',selected,3,1.2]);
   for(const marker of state.markers)marker.remove();state.markers=[];
-  if(state.scene.features.features.length<=300)for(const f of state.scene.features.features){
+  if(scene.features.features.length<=300)for(const f of scene.features.features){
     const el=document.createElement('span');el.textContent=f.properties.index;el.style.cssText='font-size:10px;font-weight:700;color:#163e39;text-shadow:0 0 3px white;pointer-events:none';
     state.markers.push(new maplibregl.Marker({element:el}).setLngLat(f.properties.label_position).addTo(mini));
   }
@@ -270,6 +273,8 @@ function inspectEdge(id){
   topology();const edge=state.edgeMap.get(id);if(!edge)return;
   state.edge=id;$('edge-cell').value=String(edge.owner);edgeOptions();$('edge-select').value=id;
   $('edge-details').textContent=`${edge.label} · raw ID ${edge.raw_id}\nCell ${edge.owner} · face ${edge.face}\nZ ${edge.source[2].toFixed(3)} → ${edge.target[2].toFixed(3)}\nNF: ${edge.nf??'—'} · S: ${edge.s??'—'}\nAdjacent: ${edge.adjacent??'exterior'}`;render();
+  if(mapping?.active)$('edge-details').textContent+=`\n${edge.layer} ${edge.feature_id} · original ID ${edge.original_id}\nPrimitive dimension: ${edge.dimension} · group ${edge.group}\nEdge/vertex contact edges: ${(edge.contacts||[]).join(', ')||'none'}`;
+  $('mapping-contact-hop').hidden=!(mapping?.active&&edge.contacts?.length);
 }
 function updateEdges(){
   topology();const previous=$('edge-cell').value;
@@ -310,10 +315,25 @@ function render(){
       new PathLayer({id:'prepared-input-boundaries',data:polygons.flatMap(p=>p.rings),getPath:d=>d,getColor:[21,94,82],getWidth:1,widthUnits:'pixels'})]});
     $('scene-title').textContent='Input preview — constructing DHE';return;
   }
-  if(!scene){overlay.setProps({layers:[]});return;}
+  const inputLayers=[];
+  if(mapping?.active){
+    const polygons=[],paths=[],points=[];
+    for(const f of mapping.inputFeatures()){
+      const p=f.properties,g=f.geometry,c=p.side==='source'?[52,124,201,100]:[227,139,53,100];
+      const lift=ring=>ring.map(q=>zpoint([q[0],q[1],p.z],!$('show-3d').checked));
+      const common={uid:p.uid,color:c,selected:p.selected,label:`${p.side} ${p.uid} · ${p.original_id}`};
+      if(g.type==='Polygon'||g.type==='MultiPolygon')for(const rings of g.type==='Polygon'?[g.coordinates]:g.coordinates){polygons.push({...common,rings:rings.map(lift)});for(const ring of rings)paths.push({...common,path:lift(ring)});}
+      else if(g.type==='LineString')paths.push({...common,path:lift(g.coordinates)});
+      else if(g.type==='Point')points.push({...common,position:zpoint([...g.coordinates,p.z],!$('show-3d').checked)});
+    }
+    inputLayers.push(new SolidPolygonLayer({id:'mapping-input-fills',data:polygons,_full3d:true,getPolygon:d=>d.rings,getFillColor:d=>d.color,opacity:.35,material:false,pickable:true,onClick:i=>i.object&&mapping.pick(i.object.uid),onHover:i=>hover(i,d=>d.label)}));
+    inputLayers.push(new PathLayer({id:'mapping-input-outlines',data:paths,getPath:d=>d.path,getColor:d=>d.color,getWidth:d=>d.selected?4:1.4,widthUnits:'pixels',pickable:true,onClick:i=>i.object&&mapping.pick(i.object.uid),onHover:i=>hover(i,d=>d.label)}));
+    inputLayers.push(new ScatterplotLayer({id:'mapping-input-points',data:points,getPosition:d=>d.position,getFillColor:d=>d.color,getRadius:5,radiusUnits:'pixels',pickable:true,onClick:i=>i.object&&mapping.pick(i.object.uid)}));
+  }
+  if(!scene){overlay.setProps({layers:inputLayers});if(mapping?.active)$('scene-title').textContent='Mapping inputs · review before construction';return;}
   topology();
   const show3d=$('show-3d').checked&&!state.mode?.startsWith('osm');const primal=show3d&&$('primal').checked;
-  const dual=show3d&&$('dual').checked;const chosen=state.edgeMap.get(state.edge);const layers=[];
+  const dual=show3d&&$('dual').checked;const chosen=state.edgeMap.get(state.edge);const layers=[...inputLayers];
   const faceMap=state.faceMap;const opacity=number('opacity');
   if(primal){
     if($('fill').checked)layers.push(new SolidPolygonLayer({id:'dhe-faces',data:scene.triangles.filter(t=>t.face!==chosen?.face),_full3d:true,
@@ -339,11 +359,11 @@ function render(){
     }else layers.push(new ScatterplotLayer({id:'dual-vertices',data:nodes,getPosition:d=>zpoint(d.position),getFillColor:d=>d.color,getRadius:number('dual-size'),radiusUnits:'pixels',stroked:true,getLineColor:[22,43,44],lineWidthUnits:'pixels',getLineWidth:1,pickable:true,onHover:info=>hover(info,d=>'Dual vertex · cell '+d.id)}));
     layers.push(new LineLayer({id:'dual-edges',data:scene.dual_edges.filter(d=>$('exterior').checked||!d.exterior),getSourcePosition:d=>zpoint(d.source),getTargetPosition:d=>zpoint(d.target),
       getColor:d=>d.exterior?[145,67,194]:d.source[2]===d.target[2]?[38,156,116]:[229,131,57],getWidth:number('dual-width'),widthUnits:'pixels',pickable:true,
-      onClick:info=>info.object&&inspectEdge(faceMap.get(info.object.face).edge),onHover:info=>hover(info,d=>'Dual interface · '+d.owners.join(' ↔ '))}));
+      onClick:info=>info.object&&inspectEdge(faceMap.get(info.object.face)?.edge||info.object.edge),onHover:info=>hover(info,d=>'Dual '+(d.kind||'face')+' interface · '+d.owners.join(' ↔ '))}));
     if($('dual-labels').checked)layers.push(new TextLayer({id:'dual-labels',data:nodes,getPosition:d=>zpoint(d.position),getText:d=>'d'+d.id,getSize:12,getPixelOffset:[9,-9],getColor:[20,45,44],getTextAnchor:'start'}));
   }
   const section=state.section;
-  if(section&&section.revision===state.revision&&section.preview_id===(state.preview?.preview_id||null)){
+  if(section&&section.revision===(mapping?.active?mapping.revision:state.revision)&&section.preview_id===(scene.preview_id||null)){
     const flat=!show3d;const polygons=[],paths=[],points=[];
     for(const f of $('show-sections').checked?section.features.features:[]){
       const g=f.geometry,p=f.properties;
@@ -365,7 +385,7 @@ function render(){
     }
   }
   overlay.setProps({layers});
-  $('scene-title').textContent=state.preview?'Validated preview':show3d?'DHE transition space':'Projected cross-section';
+  $('scene-title').textContent=scene.preview?'Validated preview':mapping?.active?(show3d?'DHE two-layer mapping':'Mapping cross-section'):show3d?'DHE transition space':'Projected cross-section';
   for(const id of ['primal','dual','fill','opacity','exaggeration','show-plane'])$(id).disabled=!$('show-3d').checked;
 }
 function rgba(k){return displayScene().duals.find(d=>d.owner===k)?.color||[26,120,105,255];}
@@ -389,11 +409,11 @@ function requestSlice(){
   state.sliceTimer=setTimeout(sendSlice,75);
 }
 async function sendSlice(){
-    if(!state.scene)return;
+    if(!displayScene())return;
     if(state.sliceInFlight){state.sliceQueued=true;return;}
     state.sliceInFlight=true;state.sliceQueued=false;const serial=state.sliceSerial;
     try{
-      sliceHeading();const section=await api('/api/slice',{revision:state.revision,preview_id:state.preview?.preview_id||null,
+      sliceHeading();const section=await api(mapping?.active?'/api/mapping/slice':'/api/slice',{revision:mapping?.active?mapping.revision:state.revision,preview_id:displayScene()?.preview_id||null,
         orientation:$('orientation').value,value:number('slice-value'),tilt:number('tilt'),azimuth:number('azimuth'),include_sections:$('show-sections').checked,clamp_position:true});
       if(serial!==state.sliceSerial)return;
       state.section=section;$('slice-slider').min=section.bounds[0];$('slice-slider').max=section.bounds[1];$('slice-slider').value=section.value;
@@ -412,14 +432,14 @@ function moveSlice(direction){
   $('slice-value').value=Number(value.toPrecision(12));$('slice-slider').value=value;requestSlice();
 }
 function fitData(){
-  if(!state.scene)return;const b=state.scene.bounds;
+  const scene=displayScene();if(!scene){if(mapping?.active)fitMappingInputs(mapping.inputFeatures());return;}const b=scene.bounds;
   const width=$('map').clientWidth||800;
   map.fitBounds([[b[0],b[1]],[b[2],b[3]]],{padding:{top:75,left:Math.min(50,width*.1),right:Math.min(250,width*.3),bottom:40},maxZoom:20,duration:400});
   state.miniFitPending=true;fitMini();
 }
 function fitMini(){
-  if(!state.scene||!state.miniReady||$('mini-panel').hidden||!state.miniFitPending)return;
-  const b=state.scene.bounds;mini.resize();mini.fitBounds([[b[0],b[1]],[b[2],b[3]]],{padding:22,maxZoom:20,duration:0});state.miniFitPending=false;
+  const scene=displayScene();if(!scene||!state.miniReady||$('mini-panel').hidden||!state.miniFitPending)return;
+  const b=scene.bounds;mini.resize();mini.fitBounds([[b[0],b[1]],[b[2],b[3]]],{padding:22,maxZoom:20,duration:0});state.miniFitPending=false;
 }
 
 function addDrawingSource(m){
@@ -490,10 +510,14 @@ async function googleAttribution(){
 map.on('moveend',googleAttribution);
 mini.on('moveend',googleAttribution);
 
-for(const button of document.querySelectorAll('[data-tab]'))button.onclick=()=>{
+for(const button of document.querySelectorAll('[data-tab]'))button.onclick=guard(async()=>{
   for(const b of document.querySelectorAll('[data-tab]'))b.classList.toggle('active',b===button);
   $('generalize-tab').hidden=button.dataset.tab!=='generalize';$('inspect-tab').hidden=button.dataset.tab!=='inspect';
-};
+  $('mapping-tab').hidden=button.dataset.tab!=='mapping';
+  if(button.dataset.tab==='mapping')await mapping?.activate();
+  if(button.dataset.tab==='generalize'&&mapping?.active){mapping.deactivate();state.section=null;state.edge=null;await refreshScene(false);}
+  $('open-import').hidden=Boolean(mapping?.active);$('draw-bbox').hidden=Boolean(mapping?.active);
+});
 $('operation').onchange=()=>{discardPreview();operationFields();};
 for(const id of ['dz','tolerance','iterations','ratio','winner'])$(id).addEventListener('input',discardPreview);
 $('preview').onclick=guard(()=>levelJob(true));
@@ -628,7 +652,25 @@ async function boot(){
 boot().catch(error=>{setBusy(false);status(error.message,true);$('scene-subtitle').textContent='Load another polygon dataset to begin.';});
 setInterval(async()=>{
   if(state.busy||document.hidden)return;
+  if(mapping?.active){try{await mapping.poll();}catch{}return;}
   try{const current=await api('/api/state');if(current.revision!==state.revision)await refreshScene(true);}catch{}
 },5000);
 // Immutable scene data stays on the server. This small handle supports local browser diagnostics.
 window.dheAtlas={get revision(){return state.revision;},get loaded(){return Boolean(state.scene);}};
+function fitMappingInputs(features){
+  const pairs=value=>Array.isArray(value)&&typeof value[0]==='number'?[value]:Array.isArray(value)?value.flatMap(pairs):[];
+  const points=features.flatMap(f=>pairs(f.geometry.coordinates));if(!points.length)return;
+  const bounds=[Infinity,Infinity,-Infinity,-Infinity];for(const p of points){bounds[0]=Math.min(bounds[0],p[0]);bounds[1]=Math.min(bounds[1],p[1]);bounds[2]=Math.max(bounds[2],p[0]);bounds[3]=Math.max(bounds[3],p[1]);}
+  map.fitBounds([[bounds[0],bounds[1]],[bounds[2],bounds[3]]],{padding:65,duration:300});
+}
+function mappingChanged(reset){
+  if(!mapping?.active)return;
+  const scene=mapping.scene;if(reset){state.edge=null;state.section=null;updateEdges();updateMini();}
+  $('dataset-name').textContent=scene?.dataset||'Mapping · source and target inputs';
+  $('scene-subtitle').textContent=scene?`${scene.cells} DHE cells/primitives${scene.stale?' · built from an earlier review':''}`:'Input overlays are not a constructed DHE model';
+  $('model-count').textContent=scene?`${scene.cells} Mapping cells/primitives`:'Mapping · review correspondences';
+  $('data-details').textContent=scene?`${scene.crs} · two independent layers; Z is a transition coordinate.`:'Load source and target layers in Mapping.';
+  if(reset&&scene){resetSlice(true);fitData();}render();
+}
+mapping=window.createMapping?.({api,status,setBusy,changed:mappingChanged,fitInputs:fitMappingInputs})||null;
+$('mapping-contact-hop').onclick=()=>{const e=state.edgeMap.get(state.edge);if(e?.contacts?.length)inspectEdge(e.contacts[0]);};
