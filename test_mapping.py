@@ -47,6 +47,21 @@ def build(ss,ts,mode='hybrid',groups=None,**settings):
     return result,snapshot
 
 
+def column_incidence_pair():
+    """Uploaded g452, in its original local coordinates to retain the roundoff case."""
+    source=Polygon([(2363.7959625789663,372.2462239218876),(2395.423565129633,385.8105986500159),
+                    (2397.237442058744,381.63545775972307),(2402.938486811996,368.33560357708484),
+                    (2388.935286090942,362.38957109488547),(2394.1817785343155,350.1585506685078),
+                    (2394.728644794901,348.87590237054974),(2404.423820657481,326.2593891294673),
+                    (2387.0544989314512,318.5006736610085),(2377.156339039444,341.37846569437534),
+                    (2376.701194608584,342.4250780399889),(2375.230645991338,345.8235570276156),
+                    (2371.3926687092753,354.69113831501454)])
+    target=Polygon([(2363.7959625789663,372.2462239218876),(2395.423565129633,385.8105986500159),
+                    (2402.938486811996,368.33560357708484),(2388.935286090942,362.38957109488547),
+                    (2404.423820657481,326.2593891294673),(2387.0544989314512,318.5006736610085)])
+    return source,target
+
+
 class MappingDataTests(unittest.TestCase):
     def test_automatic_union_chains_containment_duplicates_and_provenance(self):
         gs=[box(0,0,4,4),box(3,0,7,4),box(6,0,10,4),box(10,0,12,4),box(1,1,2,2),box(3,0,7,4)]
@@ -243,6 +258,43 @@ class MappingBuilderTests(unittest.TestCase):
         # before the later face-intersection check is needed.
         self.assertTrue(any(f['classification']=='interface_orientation_or_ownership' for f in failures))
         self.assertTrue(all(f['features'] for f in failures))
+
+    def test_actual_column_incidence_retries_only_affected_group_and_identifies_inputs(self):
+        source,target=column_incidence_pair();stable=box(0,0,2,2)
+        gs=[group(['s1'],['t1'],id='g452'),group(['s2'],['t2'],id='stable')]
+        r,s=build([source,stable],[target,stable],groups=gs)
+        self.assertEqual(r.origin,(0.,0.))
+        self.assertEqual(r.report['construction_attempts'],2)
+        self.assertEqual([g['builder'] for g in r.report['routing']],['classic','smooth'])
+        self.assertEqual(r.report['retry_history'][0]['groups'],['g452'])
+        failure=r.report['retry_history'][0]['failures'][0]
+        self.assertEqual(failure['classification'],'transition_column_incidence')
+        self.assertEqual(failure['incidence'],3)
+        self.assertEqual({(f['layer'],f['feature_id'],f['original_id']) for f in failure['features']},
+                         {('source','s1','0'),('target','t1','0')})
+        self.assertEqual(r.report['endpoint_validation'],'passed')
+        self.assertNotIn('fallback',r.report['routing'][1])
+        before=_core()
+        with self.assertRaises(MappingBuildError) as caught:build([source,stable],[target,stable],mode='smooth',groups=gs)
+        self.assertEqual(_core(),before)
+        report=caught.exception.report
+        self.assertEqual(report['phase'],'group_planning');self.assertEqual(report['retry_history'],[])
+        self.assertEqual(report['failures'][0]['classification'],'transition_column_incidence')
+        self.assertIn('source s1 (original 0, group g452',str(caught.exception))
+        self.assertIn('target t1 (original 0, group g452',str(caught.exception))
+
+    def test_cancel_after_actual_column_incidence_preserves_core(self):
+        source,target=column_incidence_pair();stable=box(0,0,2,2)
+        s,t=layers([source,stable],[target,stable])
+        gs=[group(['s1'],['t1'],id='g452'),group(['s2'],['t2'],id='stable')]
+        stop=Event();messages=[];before=_core()
+        def progress(message):
+            messages.append(message)
+            if message.startswith('Retrying g452 through Classic: transition_column_incidence'):stop.set()
+        with self.assertRaisesRegex(ValueError,'cancelled'):
+            build_mapping(s,t,gs,dict(mode='hybrid'),progress=progress,cancelled=stop.is_set)
+        self.assertTrue(stop.is_set());self.assertEqual(_core(),before)
+        self.assertFalse(any('Conforming common interfaces' in message for message in messages))
 
     def test_independent_shell_failures_are_batched_and_valid_smooth_group_remains(self):
         def incomplete(owner,sources,target,*args,**kwargs):
@@ -519,6 +571,37 @@ class MappingApiTests(unittest.TestCase):
         gs=deepcopy(self.w.mapping.groups)
         for g in gs:g['confirmed']=True
         self.command('review',{'groups':gs,'settings':{'mode':'classic'}})
+
+    def test_actual_column_retry_preview_publication_strict_failure_and_cancel_are_atomic(self):
+        source,target=column_incidence_pair();stable=box(0,0,2,2);root=Path(self.temp.name)
+        for side,geometry in (('source',source),('target',target)):
+            gpd.GeoDataFrame({'id':['failing','stable']},geometry=[geometry,stable],crs=2180).to_file(root/(side+'.geojson'),driver='GeoJSON')
+        self.ready();self.command('build');previous=self.w.mapping.result
+        gs=[group(['s1'],['t1'],id='g452'),group(['s2'],['t2'],id='stable')]
+        self.command('review',{'groups':gs,'settings':{'mode':'hybrid'}})
+        self.command('build',{'preview':True})
+        self.assertIs(self.w.mapping.result,previous)
+        preview=self.w.mapping.preview
+        report=self.client.get('/api/mapping/report',params={'preview_id':preview.preview_id}).json()
+        self.assertEqual(report['endpoint_validation'],'passed')
+        self.assertEqual(report['retry_history'][0]['failures'][0]['classification'],'transition_column_incidence')
+        state=self.client.get('/api/mapping/state').json()
+        self.assertEqual([g['builder'] for g in state['groups']],['classic','smooth'])
+        self.assertEqual(state['groups'][0]['initial_builder'],'smooth');self.assertTrue(state['groups'][0]['fallback'])
+        self.command('build');published=self.w.mapping.result
+        self.assertIsNone(self.w.mapping.preview)
+        self.assertEqual(published.result.report['endpoint_validation'],'passed')
+        stop=Event();m=self.w.mapping;revision=m.revision;inputs=m.layers;groups=m.groups
+        with self.assertRaisesRegex(ValueError,'cancelled'):
+            m.execute('build',revision,progress=lambda message:stop.set() if message.startswith('Retrying ') else None,cancelled=stop.is_set)
+        self.assertTrue(stop.is_set());self.assertIs(m.result,published)
+        self.assertEqual(m.revision,revision);self.assertIs(m.layers,inputs);self.assertIs(m.groups,groups)
+        self.command('review',{'groups':gs,'settings':{'mode':'smooth'}})
+        revision=m.revision;job=self.command('build',success=False)
+        self.assertEqual(job['diagnostic']['failures'][0]['classification'],'transition_column_incidence')
+        self.assertEqual(job['diagnostic']['retry_history'],[])
+        self.assertIn('original failing, group g452',job['error'])
+        self.assertEqual(m.revision,revision);self.assertIs(m.result,published)
 
     def test_id_setting_before_import_batch_build_and_switch_back(self):
         root=Path(self.temp.name)

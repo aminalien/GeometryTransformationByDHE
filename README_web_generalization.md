@@ -159,6 +159,12 @@ Independent intersection failures are collected together. During retries, a cell
 successful geometry checks are reused only when its exact coordinates, winding
 and face labels are unchanged; combined interfaces and live DHE topology are
 validated again on every attempt.
+Hybrid also retries an attributed `transition_column_incidence` failure raised
+while planning a Smooth group: more than two transition columns met along one
+projected edge. Only the affected group changes to Classic; its supplied source
+and target endpoints still undergo the normal validation. Planning diagnostics
+include the group and original source/target feature IDs. Smooth-only continues
+to report the construction failure.
 Only attributed topology failures qualify. Classic-only failures, unidentifiable
 errors, invalid parameters, unexpected allocation errors and cancellation are not
 hidden by retries. Preview/build remains atomic, and supplied endpoints are retained.

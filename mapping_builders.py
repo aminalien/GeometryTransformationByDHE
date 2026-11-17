@@ -286,16 +286,20 @@ class MappingResult:
     report:dict
 
 
-def _mapping_failure(exc,metadata,routing,phase):
+def _mapping_failure(exc,metadata,routing,phase,*,group=None):
     """Attach semantic identities without guessing from a transient cell number."""
     evidence=getattr(exc,'report',{})
     failures=[]
     for item in evidence.get('failures',[evidence]):
         owners=set(item.get('owners',[]))
         if item.get('cell') is not None:owners.add(item['cell'])
+        owners.update(c[key] for c in item.get('columns',[]) for key in ('old','new') if c.get(key) is not None)
+        if group is not None:owners.update(k for k,m in metadata.items() if m['group']==group['id'])
         features=[dict(cell=int(k),feature_id=metadata[k]['feature_id'],original_id=metadata[k]['original_id'],
                        layer=metadata[k]['layer'],group=metadata[k]['group']) for k in sorted(owners) if k in metadata]
-        failures.append({**item,'features':features,'groups':sorted({f['group'] for f in features})})
+        groups={f['group'] for f in features}
+        if group is not None:groups.add(group['id'])
+        failures.append({**item,'features':features,'groups':sorted(groups)})
     identified=[f for failure in failures for f in failure['features']]
     names=', '.join(dict.fromkeys(f"{f['layer']} {f['feature_id']} (original {f['original_id']}, group {f['group']}, cell {f['cell']})" for f in identified))
     classifications=', '.join(dict.fromkeys(f.get('classification','construction_error') for f in failures))
@@ -440,8 +444,7 @@ def _build_mapping_once(source,target,groups,settings,*,forced_classic,validated
                 if details is not None:
                     row['construction']=({k:v for k,v in details.items() if k not in ('source','target')} if isinstance(details,dict) else details)
         except ValueError as exc:
-            failure=_mapping_failure(exc,metadata,routing,'group_planning')
-            for item in failure.report['failures']:item['groups']=[group['id']]
+            failure=_mapping_failure(exc,metadata,routing,'group_planning',group=group)
             raise failure from exc
     saved=_core()
     try:
@@ -474,7 +477,8 @@ def _build_mapping_once(source,target,groups,settings,*,forced_classic,validated
 # unexpected allocation errors retain their original failure behavior.
 _RETRYABLE_TOPOLOGY={'unmatched_edges','nonmanifold_edge_incidence','inconsistent_orientation',
                     'invalid_vertex_link','disconnected_shell','unsupported_genus','self_intersection',
-                    'nonmanifold_interface','interface_orientation_or_ownership','degenerate_edge'}
+                    'nonmanifold_interface','interface_orientation_or_ownership','degenerate_edge',
+                    'transition_column_incidence'}
 
 
 def build_mapping(source,target,groups,settings,*,progress=lambda *a:None,cancelled=lambda:False):
