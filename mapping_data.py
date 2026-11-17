@@ -130,11 +130,24 @@ def member_records(feature):
     return deepcopy(feature.member_records or (dict(uid=feature.uid,original_id=feature.original_id,attributes=feature.attributes),))
 
 
-def union_overlaps(layer,*,cancelled=lambda:False):
+def matching_id(feature):
+    """A supplied original ID shared by all members; row-number fallbacks never match."""
+    values={next((str(r['attributes'][k]) for k in ('osm_id','gml_id','id','fid','objectid')
+                  if k in r['attributes'] and r['attributes'][k] is not None),None)
+            for r in member_records(feature)}
+    if len(values)!=1:return None
+    value=next(iter(values))
+    return value if value is not None and value.strip() else None
+
+
+def union_overlaps(layer,*,match_by_id=False,cancelled=lambda:False):
     """Union whole positive-area overlap components, never touching neighbours."""
     graph=defaultdict(set)
+    identities={k:matching_id(f) for k,f in layer.features.items()} if match_by_id else {}
     for pair in overlap_review(layer):
-        a,b=pair['ids'];graph[a].add(b);graph[b].add(a)
+        a,b=pair['ids']
+        if match_by_id and (identities[a] is None or identities[a]!=identities[b]):continue
+        graph[a].add(b);graph[b].add(a)
     if not graph:return layer
     order={k:i for i,k in enumerate(layer.features)};seen=set();result=layer
     for uid in layer.features:
@@ -148,7 +161,7 @@ def union_overlaps(layer,*,cancelled=lambda:False):
         keeper=min(ids,key=lambda k:(-layer.features[k].geometry.area,order[k]))
         result=resolve_overlap(result,ids,'union',keeper)
         note={**result.notes[-1], 'explicit_review':False,'automatic':True,
-              'policy':'Largest area, then input order',
+              'policy':('Same supplied ID; largest area, then input order' if match_by_id else 'Largest area, then input order'),
               'member_records':list(member_records(result.features[keeper]))}
         result=replace(result,notes=(*result.notes[:-1],note))
     return result
@@ -198,6 +211,30 @@ def suggest_groups(source,target,*,overlap_fraction=.25,search_distance=10.):
         groups.append(dict(id=f'g{len(groups)+1}',sources=ss,targets=ts,
                            decision='map' if ss and ts else 'unresolved',confirmed=False,anchor=None))
     return groups,dict(edges=edges,proximity_candidates=sorted(near,key=lambda e:e['distance']))
+
+
+def id_groups(source,target):
+    """Batch all same-ID polygons; unmatched and symbol rows stay one-sided."""
+    buckets={}
+    for side,layer in (('sources',source),('targets',target)):
+        for uid,f in layer.features.items():
+            value=matching_id(f) if f.geometry.geom_type in ('Polygon','MultiPolygon') else None
+            key=value if value is not None else (side,uid)
+            bucket=buckets.setdefault(key,dict(sources=[],targets=[]))
+            bucket[side].append(uid)
+    groups=[dict(id=f'g{i}',**b,decision='map' if b['sources'] and b['targets'] else 'unresolved',confirmed=False,anchor=None)
+            for i,b in enumerate(buckets.values(),1)]
+    return groups,dict(edges=[],proximity_candidates=[])
+
+
+def validate_id_groups(groups,source,target):
+    """Enforce complete ID buckets even for direct API/build callers."""
+    validate_groups(groups,source,target)
+    expected,_=id_groups(source,target)
+    expected=automatic_review(expected,source,target)
+    signature=lambda g:(frozenset(g['sources']),frozenset(g['targets']),g['decision'])
+    if {signature(g) for g in groups}!={signature(g) for g in expected}:
+        raise ValueError('ID-only matching requires one automatic group per supplied polygon ID; manual regrouping and cross-ID mappings are disabled.')
 
 
 def validate_groups(groups,source,target,*,require_confirmed=True):

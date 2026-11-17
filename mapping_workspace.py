@@ -10,7 +10,7 @@ import geopandas as gpd
 
 from mapping_data import (DEFAULT_MAPPING_SOURCE,DEFAULT_MAPPING_TARGET,prepare_layer,reproject_layer,
                           overlap_review,resolve_overlap,suggest_groups,route_group,union_overlaps,
-                          automatic_review,review_summary,member_records)
+                          automatic_review,review_summary,member_records,id_groups,validate_id_groups,matching_id)
 from mapping_builders import build_mapping
 from mapping_scene import MappingScene
 from web_generalization_data import UploadStore
@@ -20,7 +20,8 @@ class MappingWorkspace:
     def __init__(self,paths=None):
         self.paths=paths or dict(source=DEFAULT_MAPPING_SOURCE,target=DEFAULT_MAPPING_TARGET)
         self.layers={};self.groups=[];self.suggestions={};self.revision=0;self.result=None;self.preview=None
-        self.settings=dict(mode='hybrid',source_z=5.,target_z=15.,geometry_tolerance=.01,
+        self.input_layers={}
+        self.settings=dict(mode='hybrid',match_by_id=False,source_z=5.,target_z=15.,geometry_tolerance=.01,
                            overlap_fraction=.25,search_distance=10.,source_label='',target_label='',source_scale=None,target_scale=None,source_time='',target_time='')
         self.uploads=UploadStore(allow_symbols=True);self.lock=RLock()
 
@@ -28,15 +29,19 @@ class MappingWorkspace:
         if revision!=self.revision:raise ValueError('Mapping changed in another tab. Refresh its inputs and review again.')
 
     def _prepare(self,layers,settings,*,groups=None,suggestions=None,regenerate=False,progress=lambda *a:None,cancelled=lambda:False):
-        progress('Automatically unioning overlaps within each mapping layer')
-        prepared={k:union_overlaps(l,cancelled=cancelled) for k,l in layers.items()}
+        only_ids=settings['match_by_id']
+        progress('Automatically unioning same-ID overlaps' if only_ids else 'Automatically unioning overlaps within each mapping layer')
+        prepared={k:union_overlaps(l,match_by_id=only_ids,cancelled=cancelled) for k,l in layers.items()}
         changed=any(prepared[k] is not layers[k] for k in layers)
         if len(prepared)!=2:return prepared,[],{}
         if regenerate or changed or not groups:
-            progress('Automatically matching features and classifying appearances/disappearances')
-            groups,suggestions=suggest_groups(prepared['source'],prepared['target'],
-                overlap_fraction=settings['overlap_fraction'],search_distance=settings['search_distance'])
+            progress('Matching all polygons by supplied ID' if only_ids else 'Automatically matching features and classifying appearances/disappearances')
+            if only_ids:groups,suggestions=id_groups(prepared['source'],prepared['target'])
+            else:
+                groups,suggestions=suggest_groups(prepared['source'],prepared['target'],
+                    overlap_fraction=settings['overlap_fraction'],search_distance=settings['search_distance'])
         groups=automatic_review(groups,prepared['source'],prepared['target'])
+        if only_ids:validate_id_groups(groups,prepared['source'],prepared['target'])
         # The client can send rows previously decorated by state(). Those are
         # snapshot diagnostics, not persistent instructions for a later build.
         for g in groups:
@@ -85,22 +90,29 @@ class MappingWorkspace:
             layer=prepare_layer(frame,side,name,crs=p.get('crs'),override_crs=p.get('override_crs'))
             other=self.layers.get('target' if side=='source' else 'source')
             if other is not None:layer=reproject_layer(layer,other.crs)
-            layers,groups,suggestions=self._prepare({**self.layers,side:layer},self.settings,regenerate=True,progress=progress,cancelled=cancelled)
+            inputs={**self.layers,**self.input_layers,side:layer}
+            layers,groups,suggestions=self._prepare(inputs,self.settings,regenerate=True,progress=progress,cancelled=cancelled)
             if cancelled():raise ValueError('Mapping load cancelled; previous inputs preserved.')
-            with self.lock:self.layers=layers;self.groups=groups;self.suggestions=suggestions;self.preview=None;self.revision+=1
+            with self.lock:self.input_layers=inputs;self.layers=layers;self.groups=groups;self.suggestions=suggestions;self.preview=None;self.revision+=1
         elif action=='overlap':
             side=p['side']
             if side not in self.layers:raise ValueError('Load this layer first.')
+            if self.settings['match_by_id'] and p['resolution']=='union':
+                features=self.layers[side].features
+                values={matching_id(features[k]) for k in p['ids'] if k in features}
+                if len(values)!=1 or None in values:raise ValueError('ID-only matching cannot union polygons with different or missing supplied IDs; assign the overlap or exclude a polygon.')
             layer=resolve_overlap(self.layers[side],p['ids'],p['resolution'],p.get('keeper'))
-            layers,groups,suggestions=self._prepare({**self.layers,side:layer},self.settings,regenerate=True,progress=progress,cancelled=cancelled)
+            inputs={**self.layers,**self.input_layers,side:layer}
+            layers,groups,suggestions=self._prepare(inputs,self.settings,regenerate=True,progress=progress,cancelled=cancelled)
             if cancelled():raise ValueError('Mapping preparation cancelled; previous inputs preserved.')
-            with self.lock:self.layers=layers;self.groups=groups;self.suggestions=suggestions;self.preview=None;self.revision+=1
+            with self.lock:self.input_layers=inputs;self.layers=layers;self.groups=groups;self.suggestions=suggestions;self.preview=None;self.revision+=1
         elif action in ('analyze','review'):
-            if len(self.layers)!=2:raise ValueError('Load both source and target layers first.')
+            if action=='review' and len(self.layers)!=2:raise ValueError('Load both source and target layers first.')
             settings={**self.settings,**p.get('settings',{})}
             allowed=set(self.settings)
             if set(settings)-allowed:raise ValueError('Unknown mapping settings.')
             if settings['mode'] not in ('classic','smooth','hybrid'):raise ValueError('Choose Classic, Smooth, or Hybrid.')
+            if not isinstance(settings['match_by_id'],bool):raise ValueError('match_by_id must be true or false.')
             for key in ('source_z','target_z','geometry_tolerance','overlap_fraction','search_distance'):
                 if not isinstance(settings[key],(int,float)) or isinstance(settings[key],bool) or not isfinite(settings[key]):raise ValueError(f'{key} must be finite.')
             if not 0<settings['source_z']<settings['target_z'] or settings['geometry_tolerance']<=0 or not 0<settings['overlap_fraction']<=1 or settings['search_distance']<0:
@@ -109,8 +121,10 @@ class MappingWorkspace:
                 if settings[key] is not None and (not isinstance(settings[key],(int,float)) or isinstance(settings[key],bool) or not isfinite(settings[key]) or settings[key]<=0):raise ValueError('Scale denominators must be positive.')
             for key in ('source_label','target_label','source_time','target_time'):
                 if not isinstance(settings[key],str):raise ValueError('Layer labels and times must be text.')
-            regenerate=action=='analyze' or any(settings[k]!=self.settings[k] for k in ('overlap_fraction','search_distance'))
-            layers,groups,suggestions=self._prepare(self.layers,settings,groups=p.get('groups',self.groups),suggestions=self.suggestions,
+            matching_changed=settings['match_by_id']!=self.settings['match_by_id']
+            regenerate=action=='analyze' or matching_changed or any(settings[k]!=self.settings[k] for k in ('overlap_fraction','search_distance'))
+            inputs={**self.layers,**self.input_layers} if matching_changed else self.layers
+            layers,groups,suggestions=self._prepare(inputs,settings,groups=p.get('groups',self.groups),suggestions=self.suggestions,
                                                    regenerate=regenerate,progress=progress,cancelled=cancelled)
             if cancelled():raise ValueError('Mapping review cancelled; previous inputs preserved.')
             with self.lock:self.layers=layers;self.groups=groups;self.suggestions=suggestions;self.settings=settings;self.preview=None;self.revision+=1

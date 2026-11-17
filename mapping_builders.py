@@ -15,7 +15,7 @@ from shapely.ops import unary_union,polygonize,nearest_points
 import DHECore as dhe
 from generalization_model import (Face,_prism,_polygon_patches,_collapse_patches,_layer_faces,
                                  _conform_footprints,realize,_core,_restore)
-from mapping_data import polygons,validate_groups,route_group,overlap_review,member_records,review_summary
+from mapping_data import polygons,validate_groups,route_group,overlap_review,member_records,review_summary,validate_id_groups
 from shell_conformity import CoordinateRegistry,arithmetic_bound
 
 
@@ -479,6 +479,7 @@ _RETRYABLE_TOPOLOGY={'unmatched_edges','nonmanifold_edge_incidence','inconsisten
 
 def build_mapping(source,target,groups,settings,*,progress=lambda *a:None,cancelled=lambda:False):
     validate_groups(groups,source,target)
+    if settings.get('match_by_id',False):validate_id_groups(groups,source,target)
     initial={g['id']:route_group(g,source,target,settings.get('mode','hybrid'))[0] for g in groups}
     forced={};history=[];validated_shells=set()
     while True:

@@ -18,7 +18,8 @@ from shapely.ops import unary_union
 import DHECore as dhe
 from generalization_model import _core,_restore,Face,_node_faces,_prism,realize
 from mapping_data import (prepare_layer,reproject_layer,overlap_review,resolve_overlap,
-                          suggest_groups,validate_groups,route_group,union_overlaps,automatic_review)
+                          suggest_groups,validate_groups,route_group,union_overlaps,automatic_review,
+                          id_groups,matching_id,validate_id_groups)
 from mapping_builders import build_mapping,MappingBuildError,_partition_plane,smooth_faces,centroid_faces
 from shell_conformity import TransitionShellError,check_face_intersections
 from mapping_scene import MappingScene
@@ -118,6 +119,75 @@ class MappingDataTests(unittest.TestCase):
                (group(['s1'],['t1']),'smooth'),(group([],['t2'],'appearance'),'smooth')]
         for g,expected in cases:self.assertEqual(route_group(g,s,t,'hybrid')[0],expected)
         self.assertEqual(route_group(cases[2][0],s,t,'smooth')[0],'unsupported')
+
+
+class MappingIdTests(unittest.TestCase):
+    def identified(self,ss,ts):
+        result=[]
+        for side,records in (('source',ss),('target',ts)):
+            result.append(prepare_layer(gpd.GeoDataFrame({'osm_id' if side=='source' else 'gml_id':[k for k,g in records]},
+                geometry=[g for k,g in records],crs=2180),side,side))
+        return result
+
+    def accepted(self,s,t):
+        gs,info=id_groups(s,t)
+        self.assertEqual(info,dict(edges=[],proximity_candidates=[]))
+        return automatic_review(gs,s,t)
+
+    def test_exact_ids_ignore_location_and_batch_duplicate_ids(self):
+        s,t=self.identified([('A',box(0,0,2,2)),('B',box(10,0,12,2)),('A',box(20,0,22,2))],
+                            [('B',box(0,0,2,2)),('A',box(100,0,102,2)),('A',box(110,0,112,2))])
+        gs=self.accepted(s,t)
+        self.assertEqual([(g['sources'],g['targets']) for g in gs],[(['s1','s3'],['t2','t3']),(['s2'],['t1'])])
+        validate_id_groups(gs,s,t)
+        spatial,_=suggest_groups(s,t)
+        self.assertNotEqual([(g['sources'],g['targets']) for g in spatial],[(g['sources'],g['targets']) for g in gs])
+        before=_core();r=build_mapping(s,t,gs,dict(mode='classic',match_by_id=True))
+        self.assertEqual(_core(),before)
+        snapshot=MappingScene(r,1);snapshot.validate_endpoints(s,t,gs)
+        self.assertTrue(r.report['settings']['match_by_id']);self.assertEqual(len(r.report['groups']),2)
+
+    def test_missing_blank_case_and_leading_zeros_do_not_create_false_matches(self):
+        ids=[None,'','  ','001','1','A','a',' A',0]
+        s,t=self.identified([(k,box(i*10,0,i*10+2,2)) for i,k in enumerate(ids)],
+                            [(k,box(i*10,0,i*10+2,2)) for i,k in enumerate(ids)])
+        gs=self.accepted(s,t)
+        self.assertEqual(sum(g['decision']=='map' for g in gs),6)
+        for i in range(1,4):
+            self.assertIsNone(matching_id(s.features[f's{i}']))
+            self.assertTrue(any(g['sources']==[f's{i}'] and not g['targets'] for g in gs))
+            self.assertTrue(any(g['targets']==[f't{i}'] and not g['sources'] for g in gs))
+        for i in range(4,10):self.assertTrue(any(g['sources']==[f's{i}'] and g['targets']==[f't{i}'] for g in gs))
+        fallback=prepare_layer(gpd.GeoDataFrame(geometry=[box(0,0,2,2)],crs=2180),'source','no fields')
+        self.assertIsNone(matching_id(fallback.features['s1']))
+
+    def test_unmatched_ids_and_symbols_keep_appearance_disappearance(self):
+        s,t=self.identified([('source-only',box(0,0,2,2)),('symbol',box(10,0,12,2))],
+                            [('target-only',box(0,0,2,2)),('symbol',Point(11,1)),('symbol',LineString([(10,0),(12,0)]))])
+        gs=self.accepted(s,t)
+        self.assertEqual([g['decision'] for g in gs],['disappearance','disappearance','appearance','appearance','appearance'])
+
+    def test_id_unions_keep_different_and_missing_ids_separate(self):
+        s,t=self.identified([('A',box(0,0,4,4)),('B',box(1,0,5,4)),('A',box(3,0,7,4)),(None,box(2,0,6,4))],
+                            [('A',box(0,0,7,4))])
+        result=union_overlaps(s,match_by_id=True)
+        self.assertEqual(set(result.features),{'s1','s2','s4'})
+        self.assertEqual(result.features['s1'].members,('s1','s3'))
+        self.assertEqual(matching_id(result.features['s1']),'A')
+        self.assertTrue(overlap_review(result));self.assertEqual(len(s.features),4)
+        spatial=union_overlaps(s)
+        self.assertEqual(len(spatial.features),1)
+        self.assertIsNone(matching_id(next(iter(spatial.features.values()))))
+
+    def test_direct_build_rejects_cross_id_and_partial_id_groups(self):
+        s,t=self.identified([('A',box(0,0,2,2)),('A',box(4,0,6,2)),('B',box(10,0,12,2))],
+                            [('A',box(0,0,6,2)),('B',box(10,0,12,2))])
+        bad=[[group(['s1','s2'],['t2']),group(['s3'],['t1'],id='g2')],
+             [group(['s1'],['t1']),group(['s2'],[],'disappearance','g2'),group(['s3'],['t2'],id='g3')]]
+        before=_core()
+        for gs in bad:
+            with self.assertRaisesRegex(ValueError,'ID-only'):build_mapping(s,t,gs,dict(mode='classic',match_by_id=True))
+            self.assertEqual(_core(),before)
 
 
 class MappingBuilderTests(unittest.TestCase):
@@ -449,6 +519,59 @@ class MappingApiTests(unittest.TestCase):
         gs=deepcopy(self.w.mapping.groups)
         for g in gs:g['confirmed']=True
         self.command('review',{'groups':gs,'settings':{'mode':'classic'}})
+
+    def test_id_setting_before_import_batch_build_and_switch_back(self):
+        root=Path(self.temp.name)
+        for side,ids in (('source',['A','B']),('target',['B','A'])):
+            gpd.GeoDataFrame({'id':ids},geometry=[box(0,0,2,2),box(10,0,12,2)],crs=2180).to_file(root/(side+'.geojson'),driver='GeoJSON')
+        self.assertFalse(self.w.mapping.settings['match_by_id'])
+        self.command('analyze',{'settings':{'match_by_id':True,'mode':'classic'}})
+        self.assertTrue(self.w.mapping.settings['match_by_id']);self.assertEqual(self.w.mapping.groups,[])
+        for side in ('source','target'):self.command('load',{'side':side})
+        pairs=lambda:[(g['sources'],g['targets']) for g in self.w.mapping.groups]
+        self.assertEqual(pairs(),[(['s1'],['t2']),(['s2'],['t1'])])
+        self.command('build',{'preview':True});self.assertIsNotNone(self.w.mapping.preview)
+        self.command('build');old=self.w.mapping.result
+        self.assertTrue(old.result.report['settings']['match_by_id'])
+        self.assertEqual(old.result.report['endpoint_validation'],'passed')
+        self.command('analyze',{'settings':{'match_by_id':False}})
+        self.assertEqual(pairs(),[(['s1'],['t1']),(['s2'],['t2'])])
+        self.assertIs(self.w.mapping.result,old)
+        self.assertTrue(self.client.get('/api/mapping/scene').json()['stale'])
+        self.command('build',{'preview':True})
+        self.command('analyze',{'settings':{'match_by_id':True}})
+        self.assertIsNone(self.w.mapping.preview)
+        self.assertEqual(pairs(),[(['s1'],['t2']),(['s2'],['t1'])])
+        bad=[group(['s1'],['t1']),group(['s2'],['t2'],id='g2')]
+        revision=self.w.mapping.revision
+        self.command('review',{'groups':bad},success=False)
+        self.assertEqual(self.w.mapping.revision,revision)
+        self.command('analyze',{'settings':{'match_by_id':'true'}},success=False)
+        self.assertEqual(self.w.mapping.revision,revision)
+
+    def test_id_mode_restores_inputs_and_keeps_explicit_overlap_resolution(self):
+        root=Path(self.temp.name)
+        gpd.GeoDataFrame({'id':['A','B']},geometry=[box(0,0,4,4),box(3,0,7,4)],crs=2180).to_file(root/'source.geojson',driver='GeoJSON')
+        gpd.GeoDataFrame({'id':['A']},geometry=[box(0,0,4,4)],crs=2180).to_file(root/'target.geojson',driver='GeoJSON')
+        for side in ('source','target'):self.command('load',{'side':side})
+        self.assertEqual(len(self.w.mapping.layers['source'].features),1)
+        originals={k:f.geometry.wkb for k,f in self.w.mapping.input_layers['source'].features.items()}
+        saved_layers=self.w.mapping.layers;revision=self.w.mapping.revision
+        with self.assertRaisesRegex(ValueError,'cancelled'):
+            self.w.mapping.execute('analyze',revision,settings={'match_by_id':True},cancelled=lambda:True)
+        self.assertIs(self.w.mapping.layers,saved_layers);self.assertFalse(self.w.mapping.settings['match_by_id'])
+        self.command('analyze',{'settings':{'match_by_id':True,'mode':'classic'}})
+        self.assertEqual({k:f.geometry.wkb for k,f in self.w.mapping.layers['source'].features.items()},originals)
+        self.assertTrue(self.client.get('/api/mapping/state').json()['layers']['source']['overlaps'])
+        self.command('build',success=False)
+        self.command('overlap',{'side':'source','ids':['s1','s2'],'resolution':'union','keeper':'s1'},success=False)
+        self.command('overlap',{'side':'source','ids':['s1','s2'],'resolution':'assign','keeper':'s1'})
+        resolved={k:f.geometry.wkb for k,f in self.w.mapping.layers['source'].features.items()}
+        self.assertFalse(overlap_review(self.w.mapping.layers['source']))
+        self.command('build')
+        for value in (False,True):
+            self.command('analyze',{'settings':{'match_by_id':value}})
+            self.assertEqual({k:f.geometry.wkb for k,f in self.w.mapping.layers['source'].features.items()},resolved)
 
     def test_automatic_unmatched_centroid_preview_build_and_slicing(self):
         root=Path(self.temp.name)

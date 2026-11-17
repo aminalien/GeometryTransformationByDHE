@@ -3,12 +3,20 @@ window.createMapping=function({api,status,setBusy,changed,fitInputs}){
   const $=id=>document.getElementById(id);
   const controller={active:false,scene:null,revision:0,data:null,groups:[],jobId:null,busy:false,selected:new Set()};
   let upload=null,uploadSide='source',sequence=0;
-  const fields={mode:'mode',source_z:'source-z',target_z:'target-z',geometry_tolerance:'geometry-tolerance',overlap_fraction:'overlap-fraction',search_distance:'search-distance',source_label:'source-label',target_label:'target-label',source_scale:'source-scale',target_scale:'target-scale',source_time:'source-time',target_time:'target-time'};
+  const fields={mode:'mode',match_by_id:'match-by-id',source_z:'source-z',target_z:'target-z',geometry_tolerance:'geometry-tolerance',overlap_fraction:'overlap-fraction',search_distance:'search-distance',source_label:'source-label',target_label:'target-label',source_scale:'source-scale',target_scale:'target-scale',source_time:'source-time',target_time:'target-time'};
   const numeric=new Set(['source_z','target_z','geometry_tolerance','overlap_fraction','search_distance','source_scale','target_scale']);
-  const controlIds=['default-source','default-target','upload-source','upload-target','analyze','save-review','confirm-matches','unmatched','regroup','split-group','preview','build','upload-load'];
+  const controlIds=['default-source','default-target','upload-source','upload-target','analyze','save-review','confirm-matches','unmatched','regroup','split-group','preview','build','upload-load','match-by-id'];
+  const manualIds=['confirm-matches','unmatched','regroup','split-group','edit-sources','edit-targets','edit-decision','edit-anchor'];
+  const idOnly=()=>$('mapping-match-by-id').checked;
+  function controls(){
+    for(const id of controlIds)$('mapping-'+id).disabled=controller.busy;
+    for(const id of manualIds)$('mapping-'+id).disabled=controller.busy||idOnly();
+    for(const id of ['overlap-fraction','search-distance'])$('mapping-'+id).disabled=controller.busy||idOnly();
+  }
   function settings(){
     const result={};
     for(const [key,id] of Object.entries(fields)){
+      if(key==='match_by_id'){result[key]=$('mapping-'+id).checked;continue;}
       const value=$('mapping-'+id).value;
       result[key]=numeric.has(key)?(value===''&&key.endsWith('_scale')?null:Number(value)):value;
       if(numeric.has(key)&&result[key]!==null&&!Number.isFinite(result[key]))throw new Error('Enter a finite '+key.replaceAll('_',' '));
@@ -44,7 +52,7 @@ window.createMapping=function({api,status,setBusy,changed,fitInputs}){
       for(const text of [g.id,g.sources.map(label).join(', ')||'—',g.targets.map(label).join(', ')||'—']){const cell=document.createElement('td');cell.textContent=text;row.append(cell);}
       const cell=document.createElement('td'),choice=document.createElement('select');
       for(const value of ['map','appearance','disappearance','exclude','unresolved'])choice.append(new Option(value==='unresolved'?'Automatic':value,value));
-      choice.value=g.decision;choice.onchange=()=>{g.decision=choice.value;g.confirmed=choice.value!=='unresolved';check.checked=g.confirmed;summarize();};cell.append(choice);row.append(cell);
+      choice.value=g.decision;choice.disabled=controller.busy||idOnly();choice.onchange=()=>{g.decision=choice.value;g.confirmed=choice.value!=='unresolved';check.checked=g.confirmed;summarize();};cell.append(choice);row.append(cell);
       const route=document.createElement('td');route.textContent=(g.builder||'Save review to classify')+(g.fallback?' (initially '+g.initial_builder+')':'')+' · '+(g.reason||'');row.append(route);body.append(row);
     }
     summarize();
@@ -54,6 +62,7 @@ window.createMapping=function({api,status,setBusy,changed,fitInputs}){
     const review=controller.data?.automatic_review;
     $('mapping-summary').textContent=`Automatic review · ${controller.groups.length} groups · ${confirmed} accepted · ${review?.union_groups||0} overlap group(s) unioned · ${review?.holed_features||0} holed feature(s) preserved (Classic/Hybrid).`;
     const retries=controller.groups.filter(g=>g.fallback).length;if(retries)$('mapping-summary').textContent+=` ${retries} group(s) retried through Classic after validation.`;
+    if(idOnly())$('mapping-summary').textContent+=' ID-only matching · exact original IDs; manual regrouping is disabled. Resolve any different-ID overlaps before building.';
   }
   function overlapControls(){
     const body=$('mapping-overlaps');body.replaceChildren();
@@ -66,14 +75,18 @@ window.createMapping=function({api,status,setBusy,changed,fitInputs}){
       const p=document.createElement('p');p.textContent=`${side}: ${overlap.ids.map(label).join(' / ')} · ${overlap.area.toPrecision(5)} m² overlap`;div.append(p);
       const keeper=document.createElement('select');keeper.append(...overlap.ids.map(k=>new Option('Retain '+label(k),k)));div.append(keeper);
       for(const [resolution,title] of [['assign','Assign overlap'],['union','Union features'],['exclude','Exclude other']]){
-        const button=document.createElement('button');button.textContent=title;button.onclick=safe(()=>job('overlap',{side,ids:resolution==='exclude'?overlap.ids.filter(k=>k!==keeper.value):overlap.ids,resolution,keeper:keeper.value}));div.append(button);
+        const button=document.createElement('button');button.textContent=title;button.disabled=controller.busy||(idOnly()&&resolution==='union');button.onclick=safe(()=>job('overlap',{side,ids:resolution==='exclude'?overlap.ids.filter(k=>k!==keeper.value):overlap.ids,resolution,keeper:keeper.value}));div.append(button);
       }
       body.append(div);
     }
   }
   controller.refresh=async()=>{
     const data=await api('/api/mapping/state');controller.data=data;controller.revision=data.revision;controller.groups=data.groups.map(g=>({...g,sources:[...g.sources],targets:[...g.targets]}));
-    for(const [key,id] of Object.entries(fields))$('mapping-'+id).value=data.settings[key]??'';
+    for(const [key,id] of Object.entries(fields)){
+      if(key==='match_by_id')$('mapping-'+id).checked=Boolean(data.settings[key]);
+      else $('mapping-'+id).value=data.settings[key]??'';
+    }
+    controls();
     for(const side of ['source','target']){const l=data.layers[side];$('mapping-'+side+'-name').textContent=l?`${l.name} · ${l.count} features · ${l.crs} · ${l.notes.length} repair/review note(s)`:(data.default_paths[side]||'Upload a layer');}
     const suffix=data.preview_id?'?preview_id='+encodeURIComponent(data.preview_id):'';
     controller.scene=(data.has_result||data.has_preview)?await api('/api/mapping/scene'+suffix):null;
@@ -83,7 +96,7 @@ window.createMapping=function({api,status,setBusy,changed,fitInputs}){
   };
   async function job(action,parameters={}){
     if(controller.busy)throw new Error('Wait for the current Mapping job to finish.');
-    controller.busy=true;setBusy(true,'Mapping · '+action);for(const id of controlIds)$('mapping-'+id).disabled=true;
+    controller.busy=true;setBusy(true,'Mapping · '+action);controls();rows();overlapControls();
     try{
       const answer=await api('/api/mapping/'+action,{revision:controller.revision,parameters});controller.jobId=answer.job_id;$('mapping-cancel').hidden=false;
       for(;;){
@@ -99,7 +112,7 @@ window.createMapping=function({api,status,setBusy,changed,fitInputs}){
       note(action==='build'?(parameters.preview?'Mapping preview validated; published model preserved.':'Mapping built and validated. Use slicing and Inspect DHE.'):'Mapping '+action+' complete.');
       return controller.data;
     }finally{
-      controller.busy=false;controller.jobId=null;$('mapping-cancel').hidden=true;setBusy(false);for(const id of controlIds)$('mapping-'+id).disabled=false;
+      controller.busy=false;controller.jobId=null;$('mapping-cancel').hidden=true;setBusy(false);controls();rows();overlapControls();
     }
   }
   controller.activate=safe(async()=>{controller.active=true;await controller.refresh();fitInputs(controller.inputFeatures());});
@@ -111,6 +124,10 @@ window.createMapping=function({api,status,setBusy,changed,fitInputs}){
     $('mapping-show-'+side).onchange=()=>changed(false);
   }
   $('mapping-analyze').onclick=safe(()=>job('analyze',{settings:settings()}));
+  $('mapping-match-by-id').onchange=safe(async()=>{
+    try{await job('analyze',{settings:settings()});controller.selected.clear();changed(false);}
+    catch(error){$('mapping-match-by-id').checked=Boolean(controller.data?.settings.match_by_id);controls();rows();overlapControls();throw error;}
+  });
   $('mapping-review-open').onclick=()=>{$('mapping-review-dialog').showModal();rows();};
   $('mapping-confirm-matches').onclick=()=>{for(const g of controller.groups)if(g.decision==='map')g.confirmed=true;rows();};
   $('mapping-unmatched').onclick=()=>{for(const g of controller.groups){if(!g.sources.length){g.decision='appearance';g.confirmed=true;}else if(!g.targets.length){g.decision='disappearance';g.confirmed=true;}}rows();};

@@ -114,6 +114,26 @@ Mapping uses the existing map, plane controls, current-top map and Inspect DHE.
 | Smooth | One-to-one rigid displacement/orientation connects cyclically corresponding vertices, with automatic rigid-fit alignment. Other polygon changes use the existing polygon transition. Point and line collapses use the supplied target, subject to the existing visibility/ridge conditions. Unmatched features use generated centroid transitions as described below. Separated-source aggregation first reaches the convex hull, then transitions to the supplied target in the same upper cell; the target is not replaced by that hull. |
 | Hybrid | Groups containing polygon holes, adjacent-source merging (including displacement plus merging), splits and many-to-many groups use Classic. Other supported one-to-one changes/collapses, unmatched centroid transitions and separated-source aggregation first use Smooth; groups implicated in diagnosed topology failures retry through Classic. The review/report records the initial and final builders and each retry reason. |
 
+**Map only by ID** is off by default. Enable it in the Mapping tab to match every
+polygon by its displayed original ID in one batch, regardless of location or
+overlap. For example, a source `osm_id` matches a target `gml_id` only when their
+string values are equal. Comparisons preserve case, spaces, and leading zeros;
+blank or missing supplied IDs never match generated row numbers. Repeated IDs
+form one group containing all source and target polygons with that ID. IDs on
+only one side disappear or appear, and point/line targets remain appearances.
+The existing Classic/Smooth/Hybrid construction rules still apply to each group.
+
+Changing the checkbox refreshes all matches and clears previews; an existing
+published result stays available and is marked stale. The option can be set
+before importing either layer. While enabled, spatial matching settings and
+manual group edits are disabled. Overlapping polygons with the same supplied ID
+are unioned automatically; overlaps between different IDs must be assigned or
+excluded using the overlap controls before building. Cross-ID unions are
+disabled. Original inputs are retained before automatic unions, so turning the
+option off restores spatial matching and turning it back on recovers those IDs.
+Explicit overlap resolutions are retained. The boolean `match_by_id` setting is
+included in Mapping state and construction/export reports.
+
 In Smooth and Hybrid, a group without a target disappears by uniformly scaling
 its polygon to its area centroid between source and target Z. A group without a
 source appears by reversing that transition. Concave polygons use their true
