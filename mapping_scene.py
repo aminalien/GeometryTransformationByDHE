@@ -29,7 +29,8 @@ class MappingScene:
         self.slicer.vertices=np.array([(e.V.x,e.V.y,e.V.z) for e in edges])
         self.slicer.minimum=self.slicer.vertices.min(axis=0);self.slicer.maximum=self.slicer.vertices.max(axis=0)
         self.slicer.center=(self.slicer.minimum+self.slicer.maximum)/2
-        self.features={o:g for o,g in result.geometries.items() if result.metadata[o]['layer']=='target'}
+        self.features={o:g for o,g in result.geometries.items()
+                       if result.metadata[o]['layer']=='target' and not result.metadata[o].get('intermediate',False)}
         records={};edge_faces={};triangles=[]
         for f,seed in face_records:
             key=tuple(sorted(tuple(p) for p in f.points))

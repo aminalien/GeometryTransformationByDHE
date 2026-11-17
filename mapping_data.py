@@ -234,7 +234,7 @@ def route_group(group,source,target,mode):
     if holed:
         return ('unsupported','Smooth-only cannot preserve polygon holes; choose Classic or Hybrid for '+', '.join(holed)) if mode=='smooth' else ('classic','Hole-preserving automatic decomposition: '+', '.join(holed))
     if decision in ('appearance','disappearance'):
-        return ('unsupported','Smooth-only requires a supplied supported transition target') if mode=='smooth' else ('classic','Explicit appearance/disappearance')
+        return 'smooth','Centroid-based '+decision
     if len(ss)==1 and len(ts)==1:return 'smooth','One-to-one boundary change, displacement/orientation or collapse'
     if len(ts)>1:
         if mode=='smooth':return 'unsupported','Splits and many-to-many groups require Classic'

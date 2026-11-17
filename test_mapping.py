@@ -12,14 +12,14 @@ import numpy as np
 
 import geopandas as gpd
 from shapely.geometry import box,Polygon,MultiPolygon,Point,LineString
-from shapely.affinity import rotate,translate
+from shapely.affinity import rotate,translate,scale
 from shapely.ops import unary_union
 
 import DHECore as dhe
 from generalization_model import _core,_restore,Face,_node_faces,_prism,realize
 from mapping_data import (prepare_layer,reproject_layer,overlap_review,resolve_overlap,
                           suggest_groups,validate_groups,route_group,union_overlaps,automatic_review)
-from mapping_builders import build_mapping,MappingBuildError,_partition_plane,smooth_faces
+from mapping_builders import build_mapping,MappingBuildError,_partition_plane,smooth_faces,centroid_faces
 from shell_conformity import TransitionShellError,check_face_intersections
 from mapping_scene import MappingScene
 from plane_slicing import SlicePlane
@@ -115,7 +115,7 @@ class MappingDataTests(unittest.TestCase):
         s,t=layers([box(0,0,2,2),box(2,0,4,2),box(8,0,10,2)],[box(0,0,10,2),box(20,0,22,2)])
         cases=[(group(['s1','s2'],['t1']),'classic'),(group(['s1','s3'],['t1']),'smooth'),
                (group(['s1'],['t1','t2']),'classic'),(group(['s1','s2'],['t1','t2']),'classic'),
-               (group(['s1'],['t1']),'smooth'),(group([],['t2'],'appearance'),'classic')]
+               (group(['s1'],['t1']),'smooth'),(group([],['t2'],'appearance'),'smooth')]
         for g,expected in cases:self.assertEqual(route_group(g,s,t,'hybrid')[0],expected)
         self.assertEqual(route_group(cases[2][0],s,t,'smooth')[0],'unsupported')
 
@@ -297,7 +297,8 @@ class MappingBuilderTests(unittest.TestCase):
                   [box(0,0,4,2),box(11,0,13,2)],groups=groups)
         self.assertEqual([g['builder'] for g in r.report['routing']],['classic','smooth'])
         r,s=build([box(0,0,2,2)],[box(8,0,10,2)],groups=[group(['s1'],[],'disappearance','a'),group([],['t1'],'appearance','b')])
-        self.assertEqual(len(r.model.shared_walls),0)
+        self.assertTrue(all(r.metadata[int(a.D.V.i)]['group']==r.metadata[int(b.D.V.i)]['group'] for a,b in r.model.shared_walls))
+        self.assertEqual([g['builder'] for g in r.report['routing']],['smooth','smooth'])
 
     def test_collisions_overlaps_and_cancellation_never_publish_bad_geometry(self):
         ss,ts=layers([box(0,0,2,2)],[box(0,0,2,2)]);groups=[group(['s1'],['t1'])]
@@ -308,6 +309,117 @@ class MappingBuilderTests(unittest.TestCase):
         with self.assertRaises(MappingBuildError):
             build([box(0,0,2,2),box(6,0,8,2)],[box(6,0,8,2),box(0,0,2,2)],mode='smooth',
                   groups=[group(['s1'],['t1'],id='a'),group(['s2'],['t2'],id='b')])
+
+
+class MappingCentroidTests(unittest.TestCase):
+    def unmatched(self,geometry,appearance,mode='smooth'):
+        other=box(-30,-30,-28,-28)
+        return build([other] if appearance else [geometry],[geometry] if appearance else [other],mode=mode,
+                     groups=[group([] if appearance else ['s1'],['t1'] if appearance else [],
+                                   'appearance' if appearance else 'disappearance'),
+                             group(['s1'] if appearance else [],[] if appearance else ['t1'],'exclude','excluded')])
+
+    def section(self,result,scene,z):
+        sections=scene.slicer.sections(SlicePlane.horizontal(z),include_degenerate=True)
+        return unary_union(list(sections.values()))
+
+    def test_uniform_centroid_scaling_and_terminal_point_in_both_modes(self):
+        # The L's true centroid is outside its footprint. It must still scale
+        # uniformly instead of inheriting supplied-point visibility conditions.
+        shapes=[box(100,200,108,204),Polygon([(0,0),(6,0),(6,1),(1,1),(1,6),(0,6)])]
+        self.assertFalse(shapes[1].covers(shapes[1].centroid))
+        for geometry in shapes:
+            for appearance in (False,True):
+                for mode in ('smooth','hybrid'):
+                    with self.subTest(geometry=geometry.wkt,appearance=appearance,mode=mode):
+                        r,s=self.unmatched(geometry,appearance,mode)
+                        local=translate(geometry,xoff=-r.origin[0],yoff=-r.origin[1])
+                        for z in (7.5,10.,12.5):
+                            factor=(z-5)/10 if appearance else (15-z)/10
+                            expected=scale(local,xfact=factor,yfact=factor,origin='centroid')
+                            actual=self.section(r,s,z)
+                            self.assertLess(actual.symmetric_difference(expected).area,1e-7)
+                            self.assertAlmostEqual(actual.area,geometry.area*factor**2)
+                        apex=self.section(r,s,5 if appearance else 15)
+                        self.assertEqual(apex.geom_type,'Point');self.assertLess(apex.distance(local.centroid),1e-7)
+                        self.assertEqual(r.report['routing'][0]['builder'],'smooth')
+                        np.testing.assert_allclose(r.report['routing'][0]['construction']['centroid'],geometry.centroid.coords[0],rtol=0,atol=1e-7)
+                        self.assertEqual(r.report['endpoint_validation'],'passed')
+                        self.assertEqual(len(s.payload['features']['features']),int(appearance))
+
+    def test_multipart_classic_hull_stage_and_reverse_appearance(self):
+        geometry=MultiPolygon([box(0,0,2,2),box(6,0,10,2)])
+        for appearance in (False,True):
+            for mode in ('smooth','hybrid'):
+                with self.subTest(appearance=appearance,mode=mode):
+                    r,s=self.unmatched(geometry,appearance,mode)
+                    hull=translate(geometry.convex_hull,xoff=-r.origin[0],yoff=-r.origin[1])
+                    # Below/above ownership selects the union cell at the interface.
+                    sections=s.slicer.sections(SlicePlane.horizontal(10),horizontal_side='below' if appearance else 'above')
+                    self.assertLess(unary_union(list(sections.values())).symmetric_difference(hull).area,1e-7)
+                    expected=scale(hull,xfact=.5,yfact=.5,origin='centroid')
+                    self.assertLess(self.section(r,s,7.5 if appearance else 12.5).symmetric_difference(expected).area,1e-7)
+                    self.assertEqual(r.report['routing'][0]['construction']['stage_z'],10)
+                    self.assertEqual(len(s.features),2 if appearance else 0)
+                    self.assertTrue(all(not r.metadata[o].get('intermediate') for o in s.features))
+                    self.assertEqual(r.report['endpoint_validation'],'passed')
+
+    def test_multiple_features_keep_union_provenance(self):
+        for appearance in (False,True):
+            for touching in (False,True):
+                parts=[box(0,0,2,2),box(2 if touching else 6,0,10,2)];other=[box(30,0,32,2)]
+                ids=['t1','t2'] if appearance else ['s1','s2']
+                r,s=build(other if appearance else parts,parts if appearance else other,mode='smooth',
+                          groups=[group([] if appearance else ids,ids if appearance else [],'appearance' if appearance else 'disappearance'),
+                                  group(['s1'] if appearance else [],[] if appearance else ['t1'],'exclude','excluded')])
+                union=next(m for m in r.metadata.values() if m.get('intermediate'))
+                self.assertEqual(union['members'],ids)
+                self.assertEqual({m['uid'] for m in union['member_records']},set(ids))
+                self.assertEqual(r.report['logical_features']['target' if appearance else 'source'],2)
+                self.assertEqual(len(s.features),2 if appearance else 0)
+
+    def test_grouped_polygon_and_symbol_appearances_keep_all_targets(self):
+        targets=[box(0,0,2,2),box(4,0,6,2),Point(12,3),LineString([(15,0),(17,2)])]
+        r,s=build([box(-30,-30,-28,-28)],targets,mode='smooth',
+                  groups=[group([],['t1','t2','t3','t4'],'appearance'),group(['s1'],[],'exclude','excluded')])
+        self.assertEqual({r.metadata[o]['feature_id'] for o in s.features},{'t1','t2','t3','t4'})
+        self.assertEqual(len(r.report['routing'][0]['construction']['transitions']),3)
+        self.assertEqual(r.report['endpoint_validation'],'passed')
+
+    def test_generated_shell_failures_use_hybrid_fallback_and_smooth_stays_strict(self):
+        def incomplete(*args,**kwargs):return centroid_faces(*args,**kwargs)[:-1]
+        for appearance in (False,True):
+            with patch('mapping_builders.centroid_faces',side_effect=incomplete):
+                r,s=self.unmatched(box(0,0,4,2),appearance,'hybrid')
+                self.assertEqual(r.report['construction_attempts'],2)
+                self.assertEqual(r.report['routing'][0]['builder'],'classic')
+                self.assertEqual(r.report['routing'][0]['initial_builder'],'smooth')
+                self.assertTrue(r.report['routing'][0]['fallback'])
+                with self.assertRaises(MappingBuildError):self.unmatched(box(0,0,4,2),appearance,'smooth')
+
+    def test_point_and_line_appearances_are_actual_primitives(self):
+        for geometry in (Point(4,3),LineString([(0,0),(6,0)]),LineString([(0,0),(2,3),(6,0)])):
+            for mode in ('smooth','hybrid'):
+                with self.subTest(geometry=geometry.wkt,mode=mode):
+                    r,s=self.unmatched(geometry,True,mode)
+                    local=translate(geometry,xoff=-r.origin[0],yoff=-r.origin[1])
+                    expected=scale(local,xfact=.5,yfact=.5,origin='centroid')
+                    middle=s.section('Horizontal',10)['features']['features']
+                    self.assertTrue(middle)
+                    actual=self.section(r,s,10) if geometry.geom_type!='Point' else Point(r.model.mapping_primitives[0].seed.V.x,r.model.mapping_primitives[0].seed.V.y)
+                    self.assertLess(actual.hausdorff_distance(expected),1e-7)
+                    self.assertEqual(r.report['endpoint_validation'],'passed')
+                    if geometry.geom_type=='LineString':
+                        self.assertTrue(all(len(f.points)==3 for f,_ in r.model.mapping_face_records))
+                        self.assertLess(self.section(r,s,5).distance(local.centroid),1e-7)
+
+    def test_unmatched_holes_keep_existing_routing(self):
+        geometry=Polygon(box(0,0,8,8).exterior.coords,[box(2,2,6,6).exterior.coords])
+        for appearance in (False,True):
+            r,s=self.unmatched(geometry,appearance,'hybrid')
+            self.assertEqual(r.report['routing'][0]['builder'],'classic')
+            with self.assertRaisesRegex(MappingBuildError,'holes'):
+                self.unmatched(geometry,appearance,'smooth')
 
 
 class MappingApiTests(unittest.TestCase):
@@ -337,6 +449,25 @@ class MappingApiTests(unittest.TestCase):
         gs=deepcopy(self.w.mapping.groups)
         for g in gs:g['confirmed']=True
         self.command('review',{'groups':gs,'settings':{'mode':'classic'}})
+
+    def test_automatic_unmatched_centroid_preview_build_and_slicing(self):
+        root=Path(self.temp.name)
+        for side,geometry in (('source',box(0,0,4,2)),('target',box(20,0,24,2))):
+            gpd.GeoDataFrame({'id':[side]},geometry=[geometry],crs=2180).to_file(root/(side+'.geojson'),driver='GeoJSON')
+        for side in ('source','target'):self.command('load',{'side':side})
+        for mode in ('smooth','hybrid'):
+            self.command('review',{'groups':deepcopy(self.w.mapping.groups),'settings':{'mode':mode}})
+            state=self.client.get('/api/mapping/state').json()
+            self.assertEqual([g['decision'] for g in state['groups']],['disappearance','appearance'])
+            self.assertTrue(all(g['builder']=='smooth' for g in state['groups']))
+            self.command('build',{'preview':True})
+            preview=self.w.mapping.preview
+            self.assertEqual(preview.result.report['endpoint_validation'],'passed')
+            response=self.client.post('/api/mapping/slice',json=dict(revision=self.w.mapping.revision,preview_id=preview.preview_id,value=10))
+            self.assertEqual(response.status_code,200,response.text)
+            self.assertEqual(len(response.json()['features']['features']),2)
+            self.command('build')
+            self.assertTrue(all(g['builder']=='smooth' for g in self.w.mapping.result.result.report['routing']))
 
     def test_load_and_build_automatically_union_review_and_preserve_union_hole(self):
         a=unary_union([box(0,0,4,1),box(0,0,1,4),box(3,0,4,4)])

@@ -111,8 +111,25 @@ Mapping uses the existing map, plane controls, current-top map and Inspect DHE.
 | Path | Construction |
 | --- | --- |
 | Classic | Source cells extend from Z=0 to the midpoint of source/target Z; supplied target cells extend from that interface to target Z. Coplanar cap overlays are partitioned into common faces and joined using actual DHE `JoinByFace` topology. No deep merge erases the two layer identities. |
-| Smooth | One-to-one rigid displacement/orientation connects cyclically corresponding vertices, with automatic rigid-fit alignment. Other polygon changes use the existing polygon transition. Point and line collapses use the supplied target, subject to the existing visibility/ridge conditions. Separated-source aggregation first reaches the convex hull, then transitions to the supplied target in the same upper cell; the target is not replaced by that hull. |
-| Hybrid | Groups containing polygon holes, adjacent-source merging (including displacement plus merging), splits, many-to-many groups and appearances/disappearances use Classic. Other supported one-to-one changes/collapses and separated-source aggregation first use Smooth; groups implicated in diagnosed topology failures retry through Classic. The review/report records the initial and final builders and each retry reason. |
+| Smooth | One-to-one rigid displacement/orientation connects cyclically corresponding vertices, with automatic rigid-fit alignment. Other polygon changes use the existing polygon transition. Point and line collapses use the supplied target, subject to the existing visibility/ridge conditions. Unmatched features use generated centroid transitions as described below. Separated-source aggregation first reaches the convex hull, then transitions to the supplied target in the same upper cell; the target is not replaced by that hull. |
+| Hybrid | Groups containing polygon holes, adjacent-source merging (including displacement plus merging), splits and many-to-many groups use Classic. Other supported one-to-one changes/collapses, unmatched centroid transitions and separated-source aggregation first use Smooth; groups implicated in diagnosed topology failures retry through Classic. The review/report records the initial and final builders and each retry reason. |
+
+In Smooth and Hybrid, a group without a target disappears by uniformly scaling
+its polygon to its area centroid between source and target Z. A group without a
+source appears by reversing that transition. Concave polygons use their true
+centroid even when it lies outside the footprint. These generated transitions do
+not change the visibility restrictions for explicitly supplied point targets.
+For multiple polygon parts in one unmatched group, disappearance uses Classic
+construction up to the Z midpoint, joins the source caps to one convex-hull
+cell, then smoothly collapses that hull to its centroid. Appearance reverses the
+sequence: centroid to hull, then Classic construction to the original target
+parts. Intermediate hulls retain member provenance and are not output features.
+An unmatched target line expands from its length-weighted centroid through real
+triangular DHE sheets; an unmatched point uses a vertical edge trajectory.
+Reports record transition direction, projected centroid coordinates and CRS, and
+the midpoint stage level when used. Both input layers are still required;
+polygons with holes keep their existing Classic/Hybrid handling and Smooth
+limitation.
 
 Hybrid collects independent shell failures before allocating DHE records and
 rebuilds the implicated Smooth groups through Classic, then reconforms and validates

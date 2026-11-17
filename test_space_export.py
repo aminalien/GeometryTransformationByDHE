@@ -8,14 +8,14 @@ from unittest.mock import patch
 from zipfile import ZipFile
 
 import geopandas as gpd
-from shapely.geometry import box,Polygon,Point,LineString
+from shapely.geometry import box,Polygon,MultiPolygon,Point,LineString
 
 from generalization_model import GeneralizationSession,_core
 from web_generalization_data import prepare_web_frame
 from web_generalization_scene import WebScene
 from web_generalization_app import Workspace,create_app
 from web_space_export import ExportSnapshot
-from test_mapping import build
+from test_mapping import build,group
 from fastapi.testclient import TestClient
 
 
@@ -121,6 +121,28 @@ class SpaceExportTests(unittest.TestCase):
             ps=[data['vertices'][v]['position'] for v in face['vertices']]
             if face['owner'] in targets and all(p[2]==15 for p in ps):area+=Polygon([(p[0],p[1]) for p in ps]).area
         self.assertAlmostEqual(area,donut.area)
+
+    def test_centroid_transitions_export_real_cells_primitives_and_union_provenance(self):
+        for geometry in (box(0,0,4,2),MultiPolygon([box(0,0,2,2),box(6,0,8,2)]),
+                         Point(2,1),LineString([(0,0),(2,3),(4,0)])):
+            for appearance in ((False,True) if geometry.geom_type in ('Polygon','MultiPolygon') else (True,)):
+                with self.subTest(geometry=geometry.wkt,appearance=appearance):
+                    other=box(-30,-30,-28,-28)
+                    r,s=build([other] if appearance else [geometry],[geometry] if appearance else [other],mode='smooth',
+                              groups=[group([] if appearance else ['s1'],['t1'] if appearance else [],'appearance' if appearance else 'disappearance'),
+                                      group(['s1'] if appearance else [],[] if appearance else ['t1'],'exclude','excluded')])
+                    data=parsed(s.export,revision=1);self.check_pointers(data)
+                    obj,meta,_=obj_files(s.export,revision=1)
+                    self.assertEqual(data['metadata']['mapping_report']['endpoint_validation'],'passed')
+                    self.assertTrue(all(c['metadata']['feature_id']==('t1' if appearance else 's1') for c in data['cells']))
+                    self.assertTrue(all(c['metadata']['member_records'] for c in data['cells']))
+                    if geometry.geom_type=='Point':self.assertIn('\nl ',obj)
+                    if geometry.geom_type=='LineString':
+                        self.assertTrue(all(len(f['vertices'])==3 for f in meta['face_uses']))
+                    if geometry.geom_type=='MultiPolygon':
+                        intermediate=[c for c in data['cells'] if c['metadata'].get('intermediate')]
+                        self.assertEqual(len(intermediate),1)
+                        self.assertEqual(intermediate[0]['metadata']['members'],['t1' if appearance else 's1'])
 
 
 class SpaceExportApiTests(unittest.TestCase):

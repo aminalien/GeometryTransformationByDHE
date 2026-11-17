@@ -92,6 +92,25 @@ def smooth_faces(owner,sources,target,lo,hi,tolerance,anchor=None):
     return faces,None
 
 
+def centroid_faces(owner,polygon,lo,hi,*,appearance=False):
+    """Homothetic cone, including concave bases with an exterior centroid.
+
+    Unlike a supplied interior collapse point, this generated apex describes
+    uniform scaling in XY. Its side facets need not project inside the base.
+    """
+    center=polygon.centroid
+    ring=list(orient(polygon,1).exterior.coords[:-1])
+    apex=(center.x,center.y,lo if appearance else hi)
+    base_z=hi if appearance else lo
+    faces=[Face(owner,[(*a,base_z),(*b,base_z),apex],'mapping')
+           for a,b in zip(ring,ring[1:]+ring[:1])]
+    if appearance:
+        faces=[Face(f.owner,list(reversed(f.points)),f.part) for f in faces]
+    faces.append(Face(owner,[(*p,base_z) for p in (ring if appearance else reversed(ring))],
+                      'top' if appearance else 'bottom'))
+    return faces
+
+
 def _partition_plane(faces,extra_lines=()):
     """Split coplanar faces into common pieces, preserving all incident owners."""
     first=np.asarray(faces[0].points,dtype=float);origin=first[0]
@@ -228,7 +247,7 @@ def add_primitives(model,specs,metadata):
     for cell in primitives:
         es=dhe.Cell(cell.seed);vs={e.V for e in es};fs=dhe.get_UniqueFace_in_cell(cell.seed)
         if cell.mapping_dimension==1 and (len(vs)!=2 or len(fs)!=1):raise ValueError('Invalid DHE point-extrusion edge primitive.')
-        if cell.mapping_dimension==2 and (len(vs)<4 or len(fs)!=2):raise ValueError('Invalid two-sided DHE line-extrusion sheet.')
+        if cell.mapping_dimension==2 and (len(vs)<3 or len(fs)!=2):raise ValueError('Invalid two-sided DHE line-transition sheet.')
     # Explicit lower-dimensional incidences, including containment bridge nodes.
     edge_cells=defaultdict(dict);vertex_cells=defaultdict(dict)
     for cell in all_cells:
@@ -332,13 +351,59 @@ def _build_mapping_once(source,target,groups,settings,*,forced_classic,validated
         if builder=='excluded':continue
         if builder=='unsupported':raise MappingBuildError(f"{group['id']}: {reason}",group=group['id'],routing=routing)
         progress(f"Planning mapping group {index}/{len(groups)}: {builder}")
+        unmatched=builder=='smooth' and group['decision'] in ('appearance','disappearance')
+        side='source' if group['decision']=='disappearance' else 'target'
+        present=group['sources'] if side=='source' else group['targets']
+        polygon_ids=[uid for uid in present if local[uid].geom_type in ('Polygon','MultiPolygon')] if unmatched else []
+        parts=[p for uid in polygon_ids for p in polygons(local[uid])]
+        multipart=len(parts)>1
         source_parts=[]
         for uid in group['sources']:
             for g in local_components[uid]:
                 o=allocate(uid,g,group['id'],'source');faces.extend(_prism(o,g,0.,lo));source_parts.append(g)
                 if builder=='classic':faces.extend(_prism(o,g,lo,mid))
+                elif unmatched and multipart:faces.extend(_prism(o,g,lo,mid))
         try:
-            if builder=='classic':
+            if unmatched:
+                appearance=group['decision']=='appearance'
+                # Intermediate cells carry reviewed provenance but never become
+                # extra endpoint features in the scene or the input layers.
+                plans=[(polygon_ids,unary_union(parts).convex_hull if multipart else parts[0])] if parts else []
+                plans.extend(([uid],local[uid]) for uid in present if uid not in polygon_ids)
+                construction=[]
+                for ids,geometry in plans:
+                    uid=ids[0];center=geometry.centroid
+                    staged=multipart and geometry.geom_type=='Polygon'
+                    details=dict(direction=group['decision'],feature_ids=ids,centroid=[center.x+origin[0],center.y+origin[1]],
+                                 centroid_crs=source.crs.to_string(),
+                                 stages=(['centroid_to_hull','classic_to_targets'] if appearance else
+                                         ['classic_to_hull','hull_to_centroid']) if staged else
+                                        ['centroid_to_target' if appearance else 'source_to_centroid'])
+                    if staged:details['stage_z']=mid
+                    construction.append(details)
+                    if geometry.geom_type=='Point':
+                        o=allocate(uid,geometry,group['id'],side,1)
+                        specs.append((o,[(center.x,center.y,lo),(center.x,center.y,hi)],1))
+                    elif geometry.geom_type=='LineString':
+                        apex=(center.x,center.y,lo)
+                        for a,b in zip(geometry.coords,list(geometry.coords)[1:]):
+                            o=allocate(uid,LineString([a,b]),group['id'],side,2)
+                            specs.append((o,[apex,(*a,hi),(*b,hi)],2))
+                    else:
+                        o=allocate(uid,geometry,group['id'],side)
+                        if staged:
+                            layer=source if side=='source' else target
+                            metadata[o].update(intermediate=True,
+                                members=[k for k in ids for k in layer.features[k].members],
+                                member_records=[r for k in ids for r in member_records(layer.features[k])])
+                        faces.extend(centroid_faces(o,geometry,lo if appearance or not staged else mid,
+                                                    mid if appearance and staged else hi,appearance=appearance))
+                        if appearance and staged:
+                            for uid in ids:
+                                for p in local_components[uid]:
+                                    o=allocate(uid,p,group['id'],'target');faces.extend(_prism(o,p,mid,hi))
+                row['construction']=construction[0] if len(construction)==1 else dict(direction=group['decision'],transitions=construction)
+            elif builder=='classic':
                 for uid in group['targets']:
                     g=local[uid]
                     if g.geom_type in ('Polygon','MultiPolygon'):
