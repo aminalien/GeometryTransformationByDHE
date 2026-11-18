@@ -131,7 +131,8 @@ def _influence(base,result,selected,lo):
         zs=[p[2] for p in face.points]
         if max(zs)<=lo or max(zs)==min(zs):continue
         p=Polygon([point[:2] for point in face.points])
-        if p.area>TOL*TOL:geometries.append(p)
+        xy=np.asarray([point[:2] for point in face.points]);span=max(np.linalg.norm(q-xy[0]) for q in xy)
+        if p.area>TOL*TOL and 2*p.area>arithmetic_bound(face.points)*span:geometries.append(p)
     return unary_union(geometries)
 
 
@@ -144,7 +145,7 @@ def preview_scheduled(session,actions,components,dz,*,cancelled=lambda:False):
     next_id=max(k for state in session.history for k in state.features)+1
     for unit in sorted((u for component in components for u in component),key=lambda u:(u['action']['selected'],u['action']['operation'])):
         if unit['action']['operation']=='aggregation':unit['aggregate_id']=next_id;next_id+=1
-    plans=[];schedule=[];records=[];affected=set();notes=[];selected={k for a in actions for k in a['selected']}
+    plans=[];schedule=[];records=[];recoveries=[];affected=set();notes=[];selected={k for a in actions for k in a['selected']}
     for component_index,component in enumerate(components,1):
         check_cancel()
         fork=copy(session);fork.history=list(session.history[:session.cursor+1]);remaining=list(component)
@@ -159,10 +160,11 @@ def preview_scheduled(session,actions,components,dz,*,cancelled=lambda:False):
                 with _planning_action(unit['original'],unit['index']):score,source_area,target_area=_priority(fork.state,unit['action'])
                 ranked.append((score,unit['action']['selected'],unit['action']['operation'],unit,source_area,target_area))
             score,_,_,unit,source_area,target_area=min(ranked,key=lambda r:r[:3]);remaining.remove(unit)
-            kwargs=dict(unit['action'])
-            if 'aggregate_id' in unit:kwargs['_aggregate_id']=unit['aggregate_id']
             prior=fork.state
-            try:proposal=fork._preview_single(**kwargs,dz=end-start)
+            try:
+                from generalization_recovery import preview_unit
+                proposal=preview_unit(fork,unit['action'],end-start,cancelled=cancelled,
+                                      **({'_aggregate_id':unit['aggregate_id']} if 'aggregate_id' in unit else {}))
             except ValueError as exc:
                 # A complete private unit includes neighbour and shell checks.
                 # Failure here is not proof the original action fails alone.
@@ -172,6 +174,7 @@ def preview_scheduled(session,actions,components,dz,*,cancelled=lambda:False):
                 exc.report=report
                 raise
             r=proposal.state.operation
+            recoveries.extend(r.diagnostics.get('simplification_recovery',()))
             if unit['action']['operation']=='aggregation':
                 members=[prior.features[k] for k in unit['action']['selected']];f=proposal.state.features[r.winner]
                 for field,value in members[0].attributes.items():
@@ -197,7 +200,8 @@ def preview_scheduled(session,actions,components,dz,*,cancelled=lambda:False):
                     'level_transition_overlap',stage='scheduled_components',failure_scope='level',
                     component_actions=[a['actions'],b['actions']])
         region=unary_union([p['region'] for p in plans]);upper=[]
-        boundaries=sorted({lo,hi,*[s['z_s'] for s in schedule],*[s['z_t'] for s in schedule]})
+        boundaries=sorted({lo,hi,*[s['z_s'] for s in schedule],*[s['z_t'] for s in schedule],
+            *[s[key] for r in recoveries for a in r['attempts'] if a['status']=='passed' for s in a['steps'] for key in ('z_s','z_t')]})
         def clip_bands(face,footprint,*,outside=False):
             if len({p[2] for p in face.points})==1:
                 return _clip_face(face,footprint,lo,hi,outside=outside)
@@ -227,10 +231,11 @@ def preview_scheduled(session,actions,components,dz,*,cancelled=lambda:False):
                     features[k]=Feature(f.index,f.geometry,dict(f.attributes),f.lineage,f.label)
         for k,f in features.items():
             if f.geometry.geom_type!='Polygon':continue
+            if k in selected or k not in base.features:continue
             pieces=[polygons[k].difference(region)] if k in polygons else []
             pieces.extend(p['state'].features[k].geometry.intersection(p['region']) for p in plans
                           if k in p['state'].features and p['state'].features[k].geometry.geom_type=='Polygon')
-            g=unary_union(pieces)
+            g=unary_union([polygon for piece in pieces for polygon in _polygons(piece)])
             if g.is_empty or g.geom_type!='Polygon' or g.interiors or not g.is_valid:
                 raise ValueError(f'Scheduled neighbour update makes feature {k} empty, split, holed, or invalid.')
             f.geometry=g
@@ -248,6 +253,7 @@ def preview_scheduled(session,actions,components,dz,*,cancelled=lambda:False):
         session.history[session.cursor-1].z if session.cursor else min(p[2] for f in base.faces for p in f.points),lo,hi,
         winner=records[0]['winner'] if len(records)==1 else None,retired=tuple(sorted(selected-set(features))),
         parameters=dict(dz=dz,**parameters),diagnostics=dict(adjacent_schedule=schedule),actions=tuple(records))
+    if recoveries:record.diagnostics['simplification_recovery']=recoveries
     label=' + '.join(f"{a['operation']} {','.join(map(str,a['selected']))}" for a in actions)
     state=State(features,faces,hi,f'Level: {label}; adjacent substeps; Z={lo:g}–{hi:g}',tuple(sorted(affected)),record,parent_step_id=base.step_id)
     targets={k:f.geometry for k,f in features.items() if k in selected or k not in base.features}

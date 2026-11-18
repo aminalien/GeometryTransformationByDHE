@@ -67,12 +67,22 @@ def preview_level(session,actions,*,dz=10.,cancelled=lambda:False):
         components=adjacent_components(actions,session.state)
         if cancelled():raise ValueError('Generalization cancelled; original workspace preserved.')
         if any(len(c)>1 for c in components):return preview_scheduled(session,actions,components,dz,cancelled=cancelled)
-        if len(actions)==1:
-            action=actions[0];proposal=session._preview_single(**action,dz=dz)
-            r=proposal.state.operation
-            r.actions=(_action_record(action,r.winner,r.affected,r.retired,r.z_s,r.z_t),)
+        from generalization_recovery import preview_unit,recoverable_level
+        try:
+            if len(actions)==1:
+                action=actions[0]
+                proposal=(preview_unit(session,action,dz,cancelled=cancelled) if len(action['selected'])==1
+                          else session._preview_single(**action,dz=dz))
+                r=proposal.state.operation
+                r.actions=(_action_record(action,r.winner,r.affected,r.retired,r.z_s,r.z_t),)
+                return proposal
+            return _mixed(session,actions,dz)
+        except ValueError as exc:
+            if not recoverable_level(exc,actions) or len(actions)==1 and len(actions[0]['selected'])==1:raise
+            proposal=preview_scheduled(session,actions,components,dz,cancelled=cancelled)
+            proposal.state.operation.diagnostics['direct_level_failure']=dict(exc.report)
+            session.last_diagnostic=None
             return proposal
-        return _mixed(session,actions,dz)
     except ValueError as exc:
         report=getattr(exc,'report',dict(classification='level_planning_constraint',message=str(exc)))
         report.update(level_actions=actions,source_z=session.state.z)

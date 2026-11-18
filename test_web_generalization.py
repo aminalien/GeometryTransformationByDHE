@@ -189,6 +189,32 @@ class WebApiTests(unittest.TestCase):
         with patch('web_generalization_app.read_web_dataset',return_value=prepare_web_frame(frame(polygons))):
             answer=self.job('/api/load-default',{});self.assertEqual(answer['status'],'complete',answer)
 
+    def test_simplification_recovery_preview_apply_export_and_failed_retry_are_atomic(self):
+        from test_generalization_recovery import reported_data
+        from shell_conformity import TransitionShellError
+        with patch('web_generalization_app.read_web_dataset',return_value=reported_data()):
+            self.assertEqual(self.job('/api/load-default',{})['status'],'complete')
+        w=self.workspace;base=w.session.state;revision=w.revision
+        parameters=dict(operation='simplification',selected=[3],tolerance=1.,dz=10.)
+        job=self.job('/api/preview',parameters);self.assertEqual(job['status'],'complete',job)
+        self.assertEqual(w.revision,revision);self.assertIs(w.session.state,base)
+        scene=self.client.get('/api/scene',params={'preview_id':job['result']['preview_id']}).json()
+        recovery=scene['operation']['diagnostics']['simplification_recovery'][0]
+        self.assertEqual(recovery['status'],'passed');self.assertEqual(recovery['successful_substeps'],2)
+        self.assertEqual(scene['operation']['parameters']['tolerance'],1.)
+        export=self.client.get('/api/export/duality',params={'workspace_name':'generalize','snapshot_id':scene['snapshot_id']})
+        self.assertEqual(export.status_code,200)
+        self.assertEqual(export.json()['metadata']['operation']['diagnostics']['simplification_recovery'][0],recovery)
+        self.assertEqual(self.job('/api/apply',parameters)['status'],'complete')
+        self.assertEqual(w.revision,revision+1);self.assertEqual(len(w.session.history),2)
+        self.assertEqual(self.job('/api/history',dict(index=0))['status'],'complete')
+        published=w.scene;revision=w.revision
+        with patch.object(GeneralizationSession,'_preview_single',side_effect=TransitionShellError('Still invalid','nonmanifold_edge_incidence',cell=3)):
+            failed=self.job('/api/apply',parameters)
+        self.assertEqual(failed['status'],'failed')
+        self.assertEqual(failed['diagnostic']['simplification_recovery'][0]['status'],'exhausted')
+        self.assertEqual(w.revision,revision);self.assertIs(w.scene,published);self.assertIs(w.session.state,base)
+
     def test_adjacent_substeps_preview_apply_history_and_export_are_one_transaction(self):
         self.load([box(0,0,2,2),box(2,0,6,2)])
         w=self.workspace;base=w.session.state;revision=w.revision

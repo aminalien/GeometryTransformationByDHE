@@ -831,7 +831,7 @@ class GeneralizationSession:
         return preview_level(self,actions,dz=dz,cancelled=cancelled)
 
     @diagnosed_transition
-    def _preview_single(self, operation, selected, *, dz=10., tolerance=1., iterations=1, ratio=.25, winner=None, _aggregate_id=None):
+    def _preview_single(self, operation, selected, *, dz=10., tolerance=1., iterations=1, ratio=.25, winner=None, _aggregate_id=None, _simplification_targets=None):
         selected=tuple(sorted(set(map(int,selected))))
         state=self.state
         if not selected:
@@ -887,7 +887,10 @@ class GeneralizationSession:
             for k in selected:
                 source=sources[k]
                 if operation in ("simplification","smoothing"):
-                    target=polygon_target(state.features[k].geometry,operation,tolerance,iterations,ratio)
+                    target=(_simplification_targets[k] if operation=='simplification' and _simplification_targets is not None
+                            else polygon_target(state.features[k].geometry,operation,tolerance,iterations,ratio))
+                    if target.geom_type!='Polygon' or target.is_empty or not target.is_valid or target.interiors:
+                        raise ValueError('A simplification target must be a valid, nonempty, hole-free polygon.')
                     ps,extended=_polygon_patches(k,source,target,lo,hi)
                     patches.extend(ps)
                     if extended:

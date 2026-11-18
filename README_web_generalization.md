@@ -64,6 +64,25 @@ those subinterval endpoints; the eleven whole-level profile samples stay unchang
 An early point/line collapse ends its geometry at its own target Z, retaining the
 existing terminal-symbol behaviour in later slices.
 
+Simplification first tries the requested tolerance directly. If a diagnosed
+transition-topology failure occurs, it privately retries 2, 4, 8, then 16 equal
+subintervals, stopping at the first validated sequence. For requested tolerance T
+and N substeps, the tolerances are T/N, 2T/N, …, T. Every intermediate target is
+generated from the original source for that feature's assigned window, and the
+last target is the original requested polygon. It does not repeatedly simplify
+the intermediate outputs into a potentially different final footprint. Unchanged
+intermediate targets remain timed holds. Arithmetic-equivalent boundary
+evaluations use the current cap's representation; existing target, shell and
+section checks remain required.
+
+Recovery keeps the same final Z and one History entry. Inside an adjacent schedule
+it subdivides only the affected feature's assigned window. Successful direct
+operations are unchanged. Preview notes, operation/export diagnostics and automatic
+summaries include `simplification_recovery`, with attempted counts, tolerances,
+intervals and failures. Exhausted recovery reports the original error and retry
+history; invalid parameters, unsupported geometry and allocation errors are not
+hidden. Cancellation or any failed attempt preserves the published workspace.
+
 **Automatic…** builds a complete selected-family consolidation in one background job and displays only its final result. Starting scale defaults to 1:10,000, with editable scale multiplier, ΔZ, final geometry, optional class constraint, thresholds and limits. The selected family becomes one logical feature; its historical DHE cells remain. Neighbours can receive normal geometry updates. Cancel, validation failure, or an unfinished run keeps the original scene and revision. Successful runs publish once and expose every new level in History. **Run summary** explains selected actions and provides a JSON download. See [selection rules and methodology](AUTOMATIC_GENERALIZATION.md).
 
 Select current polygons using the feature list, indices such as `1, 3-6`, or the **Current top** map. Click selects one; Shift-click adds/removes features. List checkboxes toggle individual features. **Box select** expands the current-top map for rectangle selection. The selection map always shows the active top representation, even while the main view slices earlier levels.

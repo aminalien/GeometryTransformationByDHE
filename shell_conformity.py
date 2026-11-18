@@ -60,7 +60,7 @@ def diagnosed_transition(method):
         except ValueError as exc:
             report=getattr(exc,'report',dict(classification='planning_constraint',message=str(exc)))
             effective=dict(dz=10.,tolerance=1.,iterations=1,ratio=.25,winner=None)
-            effective.update(parameters)
+            effective.update({k:v for k,v in parameters.items() if not k.startswith('_')})
             levels=dict(z_b=min(p[2] for f in self.state.faces for p in f.points),z_s=self.state.z,z_t=self.state.z+effective['dz'])
             if operation=='aggregation':levels['z_m']=self.state.z+.8*effective['dz']
             report.update(operation=operation,selected=selected,parameters=effective,levels=levels,

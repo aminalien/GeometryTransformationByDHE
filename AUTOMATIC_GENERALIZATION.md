@@ -85,6 +85,22 @@ selected IDs and changed/source/target areas. Automatic summaries include this
 schedule without increasing the constructed-level count. Action endpoint summaries
 use actual subinterval sections; whole-level profiles retain their eleven samples.
 
+Simplification execution has bounded continuation recovery after a diagnosed
+transition-topology failure. It tries 2, 4, 8, then 16 equal subintervals within
+the assigned feature window. Targets at T/N through T are generated from that
+window's original source, with the requested final target frozen; cumulative
+simplification of intermediate polygons cannot replace the requested result.
+Each attempt restarts from the original state, retains timed holds, and validates
+the actual DHE transitions and endpoint. Only nonmanifold edge incidence,
+unmatched edges, inconsistent orientation, invalid vertex links, self-intersection
+and transition-column incidence qualify. Other failures stop normally, and an
+exhausted retry preserves the original failure plus its continuation history.
+No shell checks are relaxed. The original requested tolerance stays in the action
+record, and `simplification_recovery` diagnostics expose successful and failed
+substeps in preview/export and automatic summaries. Recovery is one constructed
+level, so internal attempts and substeps do not consume `max_levels` or publish
+partial states. Successful direct simplifications retain their existing path.
+
 Quantitative Evaluation remains **manual**. Last-operation analysis of a mixed level provides per-action feature/group scopes plus the affected context; whole-history analysis retains common comparable metrics. All eleven sampled sections still come from actual DHE boundaries. Planner measurements are prospective selection diagnostics and are not automatically generated journal evaluations.
 
 The completed-run summary lists scale, Z interval, assignments, chosen costs, reasons, and affected context per level. **Save decision summary** writes JSON only when requested. It includes settings, measured source indicators, score terms, Hausdorff limitations, rejected candidates/constructions, final lineage/type, and residual violations. This supports reproducibility; it does not establish optimality or replace independent quality assessment.

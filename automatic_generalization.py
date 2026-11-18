@@ -257,6 +257,8 @@ def build_automatic_run(session,selected,settings=None,*,cancelled=lambda:False,
             affected=list(proposal.affected),notes=list(proposal.notes))
         if 'adjacent_schedule' in proposal.state.operation.diagnostics:
             step['adjacent_schedule']=proposal.state.operation.diagnostics['adjacent_schedule']
+        if 'simplification_recovery' in proposal.state.operation.diagnostics:
+            step['simplification_recovery']=proposal.state.operation.diagnostics['simplification_recovery']
         assigned={k for c in chosen for k in c.action['selected']}
         step['neighbour_changes']=[k for k in proposal.affected if k in proposal.base.features and k not in assigned]
         proposal.state.operation.diagnostics['automatic']=step
