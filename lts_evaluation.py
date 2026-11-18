@@ -334,7 +334,8 @@ def evaluate_history(history,end_index,mode,live_model,dataset,session_id,*,rela
                 else:
                     for k in action.selected:descriptor_actions[f'Action {index}: {action.name} feature {k}']=action
         elif op.name in ('merging','aggregation'):descriptor_actions['Selected group']=op
-        else:descriptor_actions.update({f'Feature {k}':op for k in op.selected})
+        else:
+            descriptor_actions.update({f'Feature {k}':next((a for a in operation_actions(op) if k in a.selected),op) for k in op.selected})
     slicers={i:_state_sections(states[i]) for i in range(first,len(states))}
     actual={i:_actual(slicers[i],states[i].z,states[i].features) for i in slicers}
     references={};baselines={}
@@ -346,12 +347,20 @@ def evaluate_history(history,end_index,mode,live_model,dataset,session_id,*,rela
         s=states[i]
         for scope,(keys,totals) in scopes.items():
             gs=[g for k,g in actual[i].items() if k in keys]
+            descriptor_before=baselines[scope]
             row=dict(scope=scope,step=i,step_id=s.step_id,z=s.z,reference_step=first,
                 reference_z=states[first].z,**scope_metadata.get(scope,{}),**_comparison(gs,baselines[scope],references[scope],totals))
             if mode=='last_operation' and i==len(states)-1 and scope in descriptor_actions:
                 op=descriptor_actions[scope]
+                if op and s.operation.diagnostics.get('adjacent_schedule'):
+                    before=_actual(slicers[i],op.z_s,keys);after=_actual(slicers[i],op.z_t,keys)
+                    descriptor_before=list(before.values());gs=list(after.values())
+                    reference=DisplacementReference(descriptor_before,relative_spacing,max_samples)
+                    row.update(z=op.z_t,reference_z=op.z_s,action_source_z=op.z_s,action_target_z=op.z_t,
+                               measurement_scope='Scheduled action endpoints',
+                               **_comparison(gs,descriptor_before,reference,totals))
                 try:
-                    label,value=(_case_descriptor(op.name,unary_union(baselines[scope]),unary_union(gs)) if op else
+                    label,value=(_case_descriptor(op.name,unary_union(descriptor_before),unary_union(gs)) if op else
                                  ('N/A','This feature scope does not match a single action in the last operation.'))
                 except (ValueError,AttributeError,ZeroDivisionError):label,value='N/A','Descriptor is undefined for actual geometry.'
                 row.update(operation_descriptor=label,descriptor_value=None if label=='N/A' else value,

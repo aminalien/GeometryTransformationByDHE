@@ -189,6 +189,26 @@ class WebApiTests(unittest.TestCase):
         with patch('web_generalization_app.read_web_dataset',return_value=prepare_web_frame(frame(polygons))):
             answer=self.job('/api/load-default',{});self.assertEqual(answer['status'],'complete',answer)
 
+    def test_adjacent_substeps_preview_apply_history_and_export_are_one_transaction(self):
+        self.load([box(0,0,2,2),box(2,0,6,2)])
+        w=self.workspace;base=w.session.state;revision=w.revision
+        parameters=dict(operation='point',selected=[1,2],dz=10.)
+        preview=self.job('/api/preview',parameters);self.assertEqual(preview['status'],'complete',preview)
+        token=preview['result']['preview_id'];self.assertIs(w.session.state,base)
+        scene=self.client.get('/api/scene',params={'preview_id':token}).json()
+        windows=scene['operation']['diagnostics']['adjacent_schedule']
+        self.assertEqual([(r['z_s'],r['z_t']) for r in windows],[(5.,10.),(10.,15.)])
+        sliced=self.client.post('/api/slice',json=dict(revision=revision,preview_id=token,orientation='Horizontal',value=10.)).json()
+        self.assertEqual(next(f['geometry']['type'] for f in sliced['features']['features'] if f['properties']['owner']==1),'Point')
+        export=self.client.get('/api/export/duality',params={'workspace_name':'generalize','snapshot_id':scene['snapshot_id']}).json()
+        self.assertEqual(export['metadata']['operation']['diagnostics']['adjacent_schedule'],windows)
+        applied=self.job('/api/apply',parameters);self.assertEqual(applied['status'],'complete',applied)
+        self.assertEqual(w.revision,revision+1);self.assertEqual(w.session.cursor,1);self.assertEqual(len(w.session.history),2)
+        self.assertEqual(self.job('/api/history',dict(index=0))['status'],'complete')
+        self.assertIs(w.session.state,base)
+        self.assertEqual(self.job('/api/history',dict(index=1))['status'],'complete')
+        self.assertEqual(w.session.state.z,15.)
+
     def test_prepared_preview_progress_last_failure_and_hidden_sections(self):
         self.load();w=self.workspace
         token=list(w.jobs)[-1]

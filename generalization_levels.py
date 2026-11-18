@@ -57,12 +57,16 @@ def _action_record(action,winner,affected,retired,lo,hi):
         parameters={k:action[k] for k in ('tolerance','iterations','ratio')})
 
 
-def preview_level(session,actions,*,dz=10.):
+def preview_level(session,actions,*,dz=10.,cancelled=lambda:False):
     saved=_core()
     session.last_diagnostic=None
     try:
         actions=normalize_actions(actions,session.state)
         if not isfinite(dz) or dz<=TOL:raise ValueError('Height increment must be finite and positive.')
+        from generalization_schedule import adjacent_components,preview_scheduled
+        components=adjacent_components(actions,session.state)
+        if cancelled():raise ValueError('Generalization cancelled; original workspace preserved.')
+        if any(len(c)>1 for c in components):return preview_scheduled(session,actions,components,dz,cancelled=cancelled)
         if len(actions)==1:
             action=actions[0];proposal=session._preview_single(**action,dz=dz)
             r=proposal.state.operation

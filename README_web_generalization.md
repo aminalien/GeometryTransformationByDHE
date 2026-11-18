@@ -41,6 +41,29 @@ Network failures try the Private.coffee public Overpass instance after the defau
 
 The **Level operations · one ΔZ** table supports independent operations in one source–target interval. Add each selection with its parameters, edit/remove rows, then Preview/Apply the complete level. Duplicate source assignments are rejected by the client and server. Emptying the table restores the existing single-operation behavior.
 
+Adjacent selected operations are automatically staged inside that same level.
+Two adjacent features over Z=5–15 receive 5–10 and 10–15; three receive thirds.
+Adjacency requires a shared boundary segment longer than the existing modelling
+tolerance, so corner-only contact does not count. Each connected group divides
+the whole interval equally by its number of operation units; separate groups
+run in parallel. Simplification, smoothing, point and line selections are split
+into individual units, while each merge or aggregation remains one intact unit.
+Before each subinterval, the remaining unit with the smallest changed footprint
+area (source/target symmetric difference, in m²) runs next. Priorities and targets
+are recalculated from the updated footprints, including passive neighbour changes.
+Group scores compare the union of inputs with the group target. Ties use feature
+IDs then operation name; unchanged results still occupy their assigned slot.
+The initial components stay fixed, and conflicts between parallel components
+remain validation errors.
+
+This is one preview/apply transaction, one History entry and one automatic level,
+with cancellation checked between substeps. Preview notes and exported operation
+diagnostics include `adjacent_schedule`: component, slot, source action, selected
+IDs, priority area and actual Z interval. Individual action evaluations measure
+those subinterval endpoints; the eleven whole-level profile samples stay unchanged.
+An early point/line collapse ends its geometry at its own target Z, retaining the
+existing terminal-symbol behaviour in later slices.
+
 **Automatic…** builds a complete selected-family consolidation in one background job and displays only its final result. Starting scale defaults to 1:10,000, with editable scale multiplier, ΔZ, final geometry, optional class constraint, thresholds and limits. The selected family becomes one logical feature; its historical DHE cells remain. Neighbours can receive normal geometry updates. Cancel, validation failure, or an unfinished run keeps the original scene and revision. Successful runs publish once and expose every new level in History. **Run summary** explains selected actions and provides a JSON download. See [selection rules and methodology](AUTOMATIC_GENERALIZATION.md).
 
 Select current polygons using the feature list, indices such as `1, 3-6`, or the **Current top** map. Click selects one; Shift-click adds/removes features. List checkboxes toggle individual features. **Box select** expands the current-top map for rectangle selection. The selection map always shows the active top representation, even while the main view slices earlier levels.

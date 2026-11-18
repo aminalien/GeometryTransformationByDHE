@@ -247,7 +247,7 @@ def build_automatic_run(session,selected,settings=None,*,cancelled=lambda:False,
         check_cancel()
         if fork.cursor-start>=settings.max_levels:raise AutomaticRunError('Maximum constructed levels reached before the requested final representation.',report)
         progress(f'Constructing private level {fork.cursor-start+1} at scale 1:{scale:g}')
-        proposal=fork.preview_level([c.action for c in chosen],dz=settings.dz)
+        proposal=fork.preview_level([c.action for c in chosen],dz=settings.dz,cancelled=cancelled)
         for c in chosen:
             if c.action['operation']=='aggregation' and settings.class_field:
                 action=next(a for a in proposal.state.operation.actions if tuple(a['selected'])==tuple(c.action['selected']))
@@ -255,6 +255,8 @@ def build_automatic_run(session,selected,settings=None,*,cancelled=lambda:False,
         step=dict(scale=scale,z_s=proposal.state.operation.z_s,z_t=proposal.state.operation.z_t,step_id=proposal.state.step_id,
             actions=[dict(**c.action,score=c.score,measurements=c.measurements,reason=c.reason) for c in chosen],
             affected=list(proposal.affected),notes=list(proposal.notes))
+        if 'adjacent_schedule' in proposal.state.operation.diagnostics:
+            step['adjacent_schedule']=proposal.state.operation.diagnostics['adjacent_schedule']
         assigned={k for c in chosen for k in c.action['selected']}
         step['neighbour_changes']=[k for k in proposal.affected if k in proposal.base.features and k not in assigned]
         proposal.state.operation.diagnostics['automatic']=step

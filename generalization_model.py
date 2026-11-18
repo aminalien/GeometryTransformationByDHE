@@ -822,16 +822,16 @@ class GeneralizationSession:
     def state(self):
         return self.history[self.cursor]
 
-    def preview(self, operation, selected, *, dz=10., tolerance=1., iterations=1, ratio=.25, winner=None):
+    def preview(self, operation, selected, *, dz=10., tolerance=1., iterations=1, ratio=.25, winner=None,cancelled=lambda:False):
         return self.preview_level([dict(operation=operation,selected=list(selected),winner=winner,
-            tolerance=tolerance,iterations=iterations,ratio=ratio)],dz=dz)
+            tolerance=tolerance,iterations=iterations,ratio=ratio)],dz=dz,cancelled=cancelled)
 
-    def preview_level(self, actions, *, dz=10.):
+    def preview_level(self, actions, *, dz=10.,cancelled=lambda:False):
         from generalization_levels import preview_level
-        return preview_level(self,actions,dz=dz)
+        return preview_level(self,actions,dz=dz,cancelled=cancelled)
 
     @diagnosed_transition
-    def _preview_single(self, operation, selected, *, dz=10., tolerance=1., iterations=1, ratio=.25, winner=None):
+    def _preview_single(self, operation, selected, *, dz=10., tolerance=1., iterations=1, ratio=.25, winner=None, _aggregate_id=None):
         selected=tuple(sorted(set(map(int,selected))))
         state=self.state
         if not selected:
@@ -870,7 +870,7 @@ class GeneralizationSession:
                 if extended:
                     notes.append(f"{extended} nested/complex active regions use the existing conforming boundary-distance lift.")
             else:
-                aggregate=max([*state.features,*[f for s in self.history for f in s.features]])+1
+                aggregate=_aggregate_id if _aggregate_id is not None else max([*state.features,*[f for s in self.history for f in s.features]])+1
                 from aggregation_geometry import build_aggregation_preview
                 from aggregation_layer import _plan_upper_shell
                 preview=build_aggregation_preview({str(k):sources[k] for k in selected},tolerance=TOL)

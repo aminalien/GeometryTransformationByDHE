@@ -108,11 +108,14 @@ class Workspace:
                 return dict(revision=self.revision,automatic_report=run.report)
             if action in ('preview','apply','preview-level','apply-level'):
                 key=json.dumps(p,sort_keys=True);proposal=self.preview if self.preview_key==key else None
-                if proposal is None:proposal=self.session.preview_level(**p) if action.endswith('-level') else self.session.preview(**p)
+                if proposal is None:proposal=self.session.preview_level(**p,cancelled=cancelled) if action.endswith('-level') else self.session.preview(**p,cancelled=cancelled)
+                if cancelled():raise ValueError('Generalization cancelled; original workspace preserved.')
                 _restore(proposal.core)
                 if action in ('preview','preview-level'):
                     token=uuid4().hex;snapshot=WebScene(self.session,self.revision,proposal=proposal,preview_id=token)
-                    with self.lock:self.preview=proposal;self.preview_scene=snapshot;self.preview_key=key
+                    with self.lock:
+                        if cancelled():raise ValueError('Generalization cancelled; original workspace preserved.')
+                        self.preview=proposal;self.preview_scene=snapshot;self.preview_key=key
                     return dict(revision=self.revision,preview_id=token)
                 # Serialize and validate display data before committing the application state.
                 snapshot=WebScene(self.session,self.revision+1,proposal=proposal)
@@ -121,6 +124,7 @@ class Workspace:
                     history=[dict(index=i,label=s.description,step_id=s.step_id,z=s.z) for i,s in enumerate(next_history)])
                 snapshot.preview_id=None
                 snapshot.refresh_export_metadata()
+                if cancelled():raise ValueError('Generalization cancelled; original workspace preserved.')
                 self.session.apply(proposal)
                 with self.lock:self.revision+=1;self.scene=snapshot;self.clear_preview()
                 return dict(revision=self.revision)

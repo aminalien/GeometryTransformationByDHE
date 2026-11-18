@@ -26,6 +26,7 @@
     <div class="section-title"><span>02 / TRANSFORMATION</span></div>
     <label>Operation<select id="operation"><option value="simplification">Simplification</option><option value="smoothing">Smoothing</option><option value="point">Collapse to point</option><option value="polyline">Collapse to polyline</option><option value="merging">Merging</option><option value="aggregation">Aggregation</option></select></label>
     <div class="form-grid"><label>Top-up ΔZ<input id="dz" type="number" min="0.000001" step="1" value="10"></label><label id="tolerance-field">Tolerance (m)<input id="tolerance" type="number" min="0" step="0.1" value="1"></label></div>
+    <p class="hint">Adjacent selected operations use equal subintervals, least changed footprint area first. Separate groups run in parallel within one history step; preview notes show the schedule.</p>
     <div class="form-grid" id="smoothing-fields" hidden><label>Iterations<input id="iterations" type="number" min="1" max="8" value="1"></label><label>Corner ratio<input id="ratio" type="number" min="0.01" max="0.49" step="0.01" value="0.25"></label></div>
     <label id="winner-field" hidden>Merge winner<select id="winner"></select></label>
     <div id="operation-help" class="hint operation-help"></div>
