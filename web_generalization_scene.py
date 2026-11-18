@@ -18,6 +18,16 @@ from web_space_export import ExportSnapshot
 def rgba(owner):return [round(v*255) for v in feature_color(int(owner))]
 
 
+def _crs_label(crs):
+    """Short CRS label for UI status; avoid dumping full WKT into the footer."""
+    epsg=getattr(crs,'to_epsg',lambda:None)()
+    if epsg:return f'EPSG:{epsg}'
+    name=getattr(crs,'name',None)
+    if name:return str(name)
+    text=crs.to_string()
+    return text if len(text)<=64 else text[:61]+'…'
+
+
 def display_triangles(points):
     """Tessellate a planar DHE face in its own plane, never changing its boundary."""
     a=np.asarray(points,dtype=float);origin=a[0]
@@ -110,10 +120,15 @@ class WebScene:
         if state.operation and state.operation.z_m is not None:levels['z_m']=state.operation.z_m
         coordinates=[p['position'] for p in vertices.values()]
         bounds=[min(p[0] for p in coordinates),min(p[1] for p in coordinates),max(p[0] for p in coordinates),max(p[1] for p in coordinates)]
+        notes=list(session.data.rejected)+(list(proposal.notes) if proposal else [])
+        if state.operation and state.operation.diagnostics.get('feature_errors'):
+            notes.append('Feature errors: '+'; '.join(
+                f"{err.get('operation','?')} {','.join(map(str,err.get('selected',())))}: {err.get('message',err)}"
+                for err in state.operation.diagnostics['feature_errors']))
         self.payload=dict(revision=revision,preview_id=preview_id,preview=proposal is not None,
             workspace='generalize',
-            dataset=session.data.source,crs=session.data.frame.crs.to_string(),origin=list(session.origin),
-            notes=list(session.data.rejected)+(list(proposal.notes) if proposal else []),
+            dataset=session.data.source,crs=_crs_label(session.data.frame.crs),origin=list(session.origin),
+            notes=notes,
             levels=levels,bounds=bounds,features=dict(type='FeatureCollection',features=features),
             faces=faces,triangles=triangles,edges=list(segments.values()),halfedges=halfedges,vertices=list(vertices.values()),
             duals=list(duals.values()),dual_edges=links,cells=len(model.cells),

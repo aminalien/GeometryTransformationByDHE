@@ -51,6 +51,16 @@ def _priority(state,action):
     return float(source.symmetric_difference(target).area),float(source.area),float(target.area)
 
 
+def select_priority_unit(state,units):
+    """Return the unit with least changed footprint area (ties: IDs, then operation)."""
+    ranked=[]
+    for unit in units:
+        score,source_area,target_area=_priority(state,unit['action'])
+        ranked.append((score,unit['action']['selected'],unit['action']['operation'],unit,source_area,target_area))
+    score,_,_,unit,source_area,target_area=min(ranked,key=lambda r:r[:3])
+    return unit,score,source_area,target_area
+
+
 def _polygons(g):
     yield from parts(g)
 
@@ -145,34 +155,45 @@ def preview_scheduled(session,actions,components,dz,*,cancelled=lambda:False):
     next_id=max(k for state in session.history for k in state.features)+1
     for unit in sorted((u for component in components for u in component),key=lambda u:(u['action']['selected'],u['action']['operation'])):
         if unit['action']['operation']=='aggregation':unit['aggregate_id']=next_id;next_id+=1
-    plans=[];schedule=[];records=[];recoveries=[];affected=set();notes=[];selected={k for a in actions for k in a['selected']}
+    plans=[];schedule=[];records=[];recoveries=[];feature_errors=[];affected=set();notes=[]
+    requested={k for a in actions for k in a['selected']}
     for component_index,component in enumerate(components,1):
         check_cancel()
         fork=copy(session);fork.history=list(session.history[:session.cursor+1]);remaining=list(component)
-        count=len(component);times=[lo+dz*i/count for i in range(count)]+[hi]
-        if any(b-a<=TOL for a,b in zip(times,times[1:])):
+        if dz/len(component)<=TOL:
             raise TransitionShellError('Adjacent subintervals must be representable and longer than the geometric tolerance.',
                                        'unsupported_transition_interval',stage='adjacent_schedule',component=component_index)
-        for slot,(start,end) in enumerate(zip(times,times[1:]),1):
+        applied_owners=set();component_actions=[];slot=0
+        # Equal subintervals among units that still remain; a skipped failure
+        # redistributes the leftover height instead of leaving the level short.
+        while remaining:
             check_cancel()
+            count=len(remaining);start=fork.state.z;end=start+(hi-start)/count
+            if end-start<=TOL:
+                raise TransitionShellError('Adjacent subintervals must be representable and longer than the geometric tolerance.',
+                                           'unsupported_transition_interval',stage='adjacent_schedule',component=component_index)
             ranked=[]
             for unit in remaining:
                 with _planning_action(unit['original'],unit['index']):score,source_area,target_area=_priority(fork.state,unit['action'])
                 ranked.append((score,unit['action']['selected'],unit['action']['operation'],unit,source_area,target_area))
-            score,_,_,unit,source_area,target_area=min(ranked,key=lambda r:r[:3]);remaining.remove(unit)
+            score,_,_,unit,source_area,target_area=min(ranked,key=lambda r:r[:3]);remaining.remove(unit);slot+=1
             prior=fork.state
             try:
                 from generalization_recovery import preview_unit
                 proposal=preview_unit(fork,unit['action'],end-start,cancelled=cancelled,
                                       **({'_aggregate_id':unit['aggregate_id']} if 'aggregate_id' in unit else {}))
             except ValueError as exc:
-                # A complete private unit includes neighbour and shell checks.
-                # Failure here is not proof the original action fails alone.
+                if cancelled() or 'cancelled' in str(exc).lower():
+                    raise
+                # Skip this feature/unit and continue with the rest of the level.
                 report=dict(getattr(exc,'report',dict(classification='level_construction_failure',message=str(exc))))
-                report.update(failure_scope='level',scheduled_action=dict(unit['original']),
-                              scheduled_unit=dict(unit['action']),component=component_index,slot=slot,z_s=start,z_t=end)
-                exc.report=report
-                raise
+                report.update(failure_scope='feature',scheduled_action=dict(unit['original']),
+                              scheduled_unit=dict(unit['action']),component=component_index,slot=slot,z_s=start,z_t=end,
+                              selected=list(unit['action']['selected']),operation=unit['action']['operation'],
+                              message=str(exc))
+                feature_errors.append(report)
+                notes.append(f"Skipped {unit['action']['operation']} {','.join(map(str,unit['action']['selected']))}: {exc}")
+                continue
             r=proposal.state.operation
             recoveries.extend(r.diagnostics.get('simplification_recovery',()))
             if unit['action']['operation']=='aggregation':
@@ -187,9 +208,16 @@ def preview_scheduled(session,actions,components,dz,*,cancelled=lambda:False):
                 selected=list(r.selected),z_s=start,z_t=end,changed_area=score,source_area=source_area,target_area=target_area,
                 priority_metric='symmetric_difference_area_m2'))
             affected.update(proposal.affected);notes.extend(proposal.notes);fork.apply(proposal)
-        owners={k for unit in component for k in unit['action']['selected']}
-        plans.append(dict(state=fork.state,model=fork.model,core=fork.core,owners=owners,
-                          region=_influence(base,fork.state,owners,lo),actions=[u['original'] for u in component]))
+            applied_owners.update(unit['action']['selected']);component_actions.append(unit['original'])
+        if not applied_owners:
+            continue
+        plans.append(dict(state=fork.state,model=fork.model,core=fork.core,owners=applied_owners,
+                          region=_influence(base,fork.state,applied_owners,lo),actions=component_actions))
+    if not plans:
+        report=dict(classification='all_features_failed',message='Every selected feature failed during generalization.',
+                    failure_scope='level',feature_errors=feature_errors,level_actions=actions,source_z=lo)
+        exc=ValueError(report['message']);exc.report=report;raise exc
+    selected={k for r in records for k in r['selected']}
     if len(plans)==1:
         model=plans[0]['model'];faces=plans[0]['state'].faces;core=plans[0]['core'];features=plans[0]['state'].features
     else:
@@ -254,9 +282,17 @@ def preview_scheduled(session,actions,components,dz,*,cancelled=lambda:False):
         winner=records[0]['winner'] if len(records)==1 else None,retired=tuple(sorted(selected-set(features))),
         parameters=dict(dz=dz,**parameters),diagnostics=dict(adjacent_schedule=schedule),actions=tuple(records))
     if recoveries:record.diagnostics['simplification_recovery']=recoveries
-    label=' + '.join(f"{a['operation']} {','.join(map(str,a['selected']))}" for a in actions)
+    if feature_errors:
+        record.diagnostics['feature_errors']=feature_errors
+        skipped=sorted({k for err in feature_errors for k in err.get('selected',())})
+        notes.append('Skipped failed features (unchanged this step): '+', '.join(map(str,skipped)))
+    label=' + '.join(f"{r['name']} {','.join(map(str,r['selected']))}" for r in records) or 'empty'
+    skipped=requested-selected
     state=State(features,faces,hi,f'Level: {label}; adjacent substeps; Z={lo:g}–{hi:g}',tuple(sorted(affected)),record,parent_step_id=base.step_id)
     targets={k:f.geometry for k,f in features.items() if k in selected or k not in base.features}
-    notes.append('Adjacent operations staged by changed footprint area: '+ '; '.join(
-        f"{s['operation']} {','.join(map(str,s['selected']))}: Z={s['z_s']:g}–{s['z_t']:g}" for s in schedule))
+    if schedule:
+        notes.append('Adjacent operations staged by changed footprint area: '+ '; '.join(
+            f"{s['operation']} {','.join(map(str,s['selected']))}: Z={s['z_s']:g}–{s['z_t']:g}" for s in schedule))
+    if skipped and not feature_errors:
+        notes.append('Deferred selected features this step: '+', '.join(map(str,sorted(skipped))))
     return Proposal(base,state,model,core,targets,tuple(sorted(affected)),list(dict.fromkeys(notes)))

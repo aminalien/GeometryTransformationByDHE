@@ -92,7 +92,7 @@ async function api(path,body){
 function setBusy(busy,label='Constructing DHE…'){
   state.busy=busy;$('busy-overlay').hidden=!busy;$('busy-label').textContent=label;
   for(const id of ['apply','preview','undo','load-default','load-upload','draw-bbox','open-import','history','level-add','level-update','level-remove','level-clear','level-actions','open-automatic','run-automatic'])$(id).disabled=busy;
-  for(const id of ['operation','dz','tolerance','iterations','ratio','winner','initial-height'])$(id).disabled=busy;
+  for(const id of ['operation','dz','tolerance','iterations','ratio','winner','initial-height','consider-substeps'])$(id).disabled=busy;
   exportControls();
 }
 async function waitJob(id){
@@ -193,7 +193,8 @@ function discardPreview(){
 function operationParams(){
   if(!state.selected.size)throw new Error('Select one or more current polygons first.');
   return {operation:$('operation').value,selected:[...state.selected].sort((a,b)=>a-b),dz:number('dz'),tolerance:number('tolerance'),
-    iterations:number('iterations'),ratio:number('ratio'),winner:$('operation').value==='merging'?Number($('winner').value):null};
+    iterations:number('iterations'),ratio:number('ratio'),winner:$('operation').value==='merging'?Number($('winner').value):null,
+    consider_substeps:$('consider-substeps').checked};
 }
 function operationFields(){
   const op=$('operation').value;$('smoothing-fields').hidden=op!=='smoothing';$('tolerance-field').hidden=op!=='simplification';$('winner-field').hidden=op!=='merging';$('operation-help').textContent=help[op];
@@ -210,7 +211,7 @@ function editLevelAction(){
 }
 function storeLevelAction(edit=false){
   if(state.busy)return;
-  const {dz,...action}=operationParams();const actions=state.levelActions.map(a=>({...a}));
+  const {dz,consider_substeps,...action}=operationParams();const actions=state.levelActions.map(a=>({...a}));
   const index=edit?Number($('level-actions').value):actions.length;
   if(edit&&!actions[index])throw new Error('Choose a level action to update.');
   const assigned=new Set(actions.flatMap((a,i)=>i===index?[]:a.selected));
@@ -218,7 +219,7 @@ function storeLevelAction(edit=false){
   actions[index]=action;state.levelActions=actions;state.levelStep=state.scene.history[state.scene.cursor].step_id;discardPreview();updateLevelTable();
 }
 function levelJob(preview){
-  return state.levelActions.length?runJob('/api/'+(preview?'preview-level':'apply-level'),{actions:state.levelActions,dz:number('dz')},'Constructing the joint level…'):
+  return state.levelActions.length?runJob('/api/'+(preview?'preview-level':'apply-level'),{actions:state.levelActions,dz:number('dz'),consider_substeps:$('consider-substeps').checked},'Constructing the joint level…'):
     runJob('/api/'+(preview?'preview':'apply'),operationParams(),'Constructing the next DHE level…');
 }
 function automaticFields(){
@@ -604,10 +605,11 @@ $('show-sections').onchange=()=>{render();requestSlice();};
 $('show-plane').onchange=()=>{render();requestSlice();};
 $('edge-cell').onchange=edgeOptions;$('edge-search').oninput=edgeOptions;
 $('edge-select').onchange=()=>inspectEdge($('edge-select').value);
-for(const button of document.querySelectorAll('[data-hop]'))button.onclick=()=>{
-  topology();const edge=state.edgeMap.get(state.edge);const target=edge?.[button.dataset.hop];
+function hopEdge(relation){
+  topology();const edge=state.edgeMap.get(state.edge);const target=edge?.[relation];
   if(target)inspectEdge(target);else status('This relationship reaches the exterior or no edge is selected.');
-};
+}
+for(const button of document.querySelectorAll('[data-hop]'))button.onclick=()=>hopEdge(button.dataset.hop);
 $('orientation').onchange=()=>{
   $('slice-value').value=$('orientation').value==='Horizontal'?(displayScene()?.levels.z_t||0):0;
   $('slice-slider').min=$('orientation').value==='Horizontal'?0:-100000;$('slice-slider').max=$('orientation').value==='Horizontal'?(displayScene()?.levels.z_t||5):100000;
@@ -627,7 +629,13 @@ $('target-level').onclick=()=>resetSlice(true);
 document.addEventListener('keydown',event=>{
   if(event.key==='Escape'){endMode();return;}
   if(['INPUT','SELECT','TEXTAREA'].includes(document.activeElement?.tagName))return;
-  if(event.key==='ArrowUp'||event.key==='ArrowDown'){event.preventDefault();try{moveSlice(event.key==='ArrowUp'?1:-1);}catch(error){status(error.message,true);}}
+  if(event.key==='ArrowUp'||event.key==='ArrowDown'){event.preventDefault();try{moveSlice(event.key==='ArrowUp'?1:-1);}catch(error){status(error.message,true);}return;}
+  if($('inspect-tab').hidden||event.ctrlKey||event.metaKey||event.altKey)return;
+  const key=event.key.toLowerCase();
+  if(key==='f'){event.preventDefault();hopEdge('nf');}
+  else if(key==='s'){event.preventDefault();hopEdge('s');}
+  else if(key==='a'){event.preventDefault();hopEdge('adjacent');}
+  else if(key==='z'){event.preventDefault();$('focus-cell').click();}
 });
 $('basemap').onchange=guard(()=>changeBackground($('basemap').value));
 $('retry-background').onclick=guard(()=>changeBackground(state.background));

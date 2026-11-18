@@ -146,17 +146,47 @@ class AdjacentScheduleTests(unittest.TestCase):
         self.assertEqual({k:f.lineage for k,f in p.state.features.items()},{7:(1,2),8:(3,4),9:(5,6)})
         validate_model(p.model)
 
-    def test_scheduled_shell_failure_keeps_level_scope_and_original_action_context(self):
+    def test_scheduled_shell_failure_skips_features_then_reports_when_all_fail(self):
         from shell_conformity import TransitionShellError
         s=session([box(0,0,2,2),box(2,0,6,2)]);core=_core();base=s.state
         with patch.object(s.__class__,'_preview_single',side_effect=TransitionShellError('joint shell','self_intersection',cell=1)):
             with self.assertRaises(ValueError) as caught:s.preview('point',[1,2])
         report=caught.exception.report
-        self.assertEqual(report['failure_scope'],'level');self.assertNotIn('failed_action',report)
-        self.assertEqual(report['scheduled_action']['selected'],(1,2))
-        self.assertEqual(report['scheduled_unit']['selected'],(1,))
-        self.assertEqual((report['z_s'],report['z_t']),(5.,10.))
+        self.assertEqual(report['classification'],'all_features_failed')
+        self.assertEqual(report['failure_scope'],'level')
+        self.assertEqual(len(report['feature_errors']),2)
+        self.assertEqual(report['feature_errors'][0]['failure_scope'],'feature')
+        self.assertEqual(report['feature_errors'][0]['selected'],[1])
         self.assertIs(s.state,base);self.assertEqual(_core(),core)
+
+    def test_consider_substeps_off_applies_only_least_changed_unit(self):
+        s=session([box(0,0,2,2),box(2,0,6,2)]);base=s.state;core=_core()
+        p=s.preview('point',[1,2],consider_substeps=False)
+        choice=p.state.operation.diagnostics['priority_selection']
+        self.assertEqual(choice['selected'],[1])
+        self.assertEqual(choice['deferred'],[dict(selected=[2],operation='point')])
+        self.assertEqual(p.state.features[1].geometry.geom_type,'Point')
+        self.assertEqual(p.state.features[2].geometry.geom_type,'Polygon')
+        # Deferred feature is not collapsed; neighbour updates from the chosen unit may change its area.
+        self.assertGreater(p.state.features[2].geometry.area,0.)
+        self.assertEqual(p.state.z,15.)
+        self.assertIs(s.state,base);self.assertEqual(_core(),core);validate_model(p.model)
+
+    def test_feature_error_skips_failed_unit_and_continues(self):
+        from shell_conformity import TransitionShellError
+        s=session([box(0,0,2,2),box(2,0,6,2)]);base=s.state;core=_core();original=s._preview_single
+        def failing(operation,selected,*,dz=10.,**kwargs):
+            if tuple(selected)==(1,):
+                raise TransitionShellError('feature 1 failed','self_intersection',cell=1)
+            return original(operation,selected,dz=dz,**kwargs)
+        with patch.object(s.__class__,'_preview_single',side_effect=failing):
+            p=s.preview('point',[1,2])
+        errors=p.state.operation.diagnostics['feature_errors']
+        self.assertEqual([e['selected'] for e in errors],[[1]])
+        self.assertEqual(p.state.features[1].geometry.geom_type,'Polygon')
+        self.assertEqual(p.state.features[2].geometry.geom_type,'Point')
+        self.assertTrue(any('Skipped' in note for note in p.notes))
+        self.assertIs(s.state,base);self.assertEqual(_core(),core);validate_model(p.model)
 
     def test_parallel_components_can_update_separate_edges_of_one_passive_neighbor(self):
         s=session([box(0,0,2,2),box(2,0,4,2),box(10,0,12,2),box(12,0,14,2),box(0,-2,14,0)])

@@ -220,6 +220,7 @@ class OperationInput(Payload):
     iterations:int=Field(default=1,ge=1)
     ratio:float=Field(default=.25,gt=0,lt=.5)
     winner:int|None=None
+    consider_substeps:bool=True
 
 
 class HistoryInput(Payload):index:int=Field(ge=0)
@@ -238,6 +239,7 @@ class LevelAction(BaseModel):
 class LevelInput(Payload):
     actions:list[LevelAction]=Field(min_length=1)
     dz:float=Field(default=10.,gt=0)
+    consider_substeps:bool=True
 
 
 class AutomaticInput(Payload):

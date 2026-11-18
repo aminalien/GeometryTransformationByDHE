@@ -822,13 +822,13 @@ class GeneralizationSession:
     def state(self):
         return self.history[self.cursor]
 
-    def preview(self, operation, selected, *, dz=10., tolerance=1., iterations=1, ratio=.25, winner=None,cancelled=lambda:False):
+    def preview(self, operation, selected, *, dz=10., tolerance=1., iterations=1, ratio=.25, winner=None,cancelled=lambda:False,consider_substeps=True):
         return self.preview_level([dict(operation=operation,selected=list(selected),winner=winner,
-            tolerance=tolerance,iterations=iterations,ratio=ratio)],dz=dz,cancelled=cancelled)
+            tolerance=tolerance,iterations=iterations,ratio=ratio)],dz=dz,cancelled=cancelled,consider_substeps=consider_substeps)
 
-    def preview_level(self, actions, *, dz=10.,cancelled=lambda:False):
+    def preview_level(self, actions, *, dz=10.,cancelled=lambda:False,consider_substeps=True):
         from generalization_levels import preview_level
-        return preview_level(self,actions,dz=dz,cancelled=cancelled)
+        return preview_level(self,actions,dz=dz,cancelled=cancelled,consider_substeps=consider_substeps)
 
     @diagnosed_transition
     def _preview_single(self, operation, selected, *, dz=10., tolerance=1., iterations=1, ratio=.25, winner=None, _aggregate_id=None, _simplification_targets=None):

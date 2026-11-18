@@ -57,38 +57,84 @@ def _action_record(action,winner,affected,retired,lo,hi):
         parameters={k:action[k] for k in ('tolerance','iterations','ratio')})
 
 
-def preview_level(session,actions,*,dz=10.,cancelled=lambda:False):
+def preview_level(session,actions,*,dz=10.,cancelled=lambda:False,consider_substeps=True):
     saved=_core()
     session.last_diagnostic=None
     try:
         actions=normalize_actions(actions,session.state)
         if not isfinite(dz) or dz<=TOL:raise ValueError('Height increment must be finite and positive.')
-        from generalization_schedule import adjacent_components,preview_scheduled
+        from generalization_schedule import adjacent_components,preview_scheduled,select_priority_unit
         components=adjacent_components(actions,session.state)
         if cancelled():raise ValueError('Generalization cancelled; original workspace preserved.')
-        if any(len(c)>1 for c in components):return preview_scheduled(session,actions,components,dz,cancelled=cancelled)
+        units=[unit for component in components for unit in component]
+        priority_note=None
+        if not consider_substeps and len(units)>1:
+            # Only the least-changed footprint unit runs this step; others stay deferred.
+            chosen,score,source_area,target_area=select_priority_unit(session.state,units)
+            deferred=[unit for unit in units if unit is not chosen]
+            unit_action=dict(chosen['action'])
+            actions=normalize_actions([dict(operation=unit_action['operation'],selected=list(unit_action['selected']),
+                winner=unit_action.get('winner'),tolerance=unit_action.get('tolerance',1),
+                iterations=unit_action.get('iterations',1),ratio=unit_action.get('ratio',.25))],session.state)
+            components=adjacent_components(actions,session.state)
+            priority_note=dict(consider_substeps=False,selected=list(unit_action['selected']),
+                operation=unit_action['operation'],changed_area=score,source_area=source_area,target_area=target_area,
+                deferred=[dict(selected=list(u['action']['selected']),operation=u['action']['operation']) for u in deferred],
+                priority_metric='symmetric_difference_area_m2')
+        def _annotate(proposal):
+            if not priority_note:return proposal
+            proposal.state.operation.diagnostics['priority_selection']=priority_note
+            proposal.notes.append(
+                f"Substeps off: applied least-changed {priority_note['operation']} "
+                f"{','.join(map(str,priority_note['selected']))}; deferred "
+                + ', '.join(f"{d['operation']} {','.join(map(str,d['selected']))}" for d in priority_note['deferred']))
+            return proposal
+        if any(len(c)>1 for c in components):
+            return _annotate(preview_scheduled(session,actions,components,dz,cancelled=cancelled))
         from generalization_recovery import preview_unit,recoverable_level
         try:
             if len(actions)==1:
                 action=actions[0]
-                proposal=(preview_unit(session,action,dz,cancelled=cancelled) if len(action['selected'])==1
-                          else session._preview_single(**action,dz=dz))
+                try:
+                    proposal=(preview_unit(session,action,dz,cancelled=cancelled) if len(action['selected'])==1
+                              else session._preview_single(**action,dz=dz))
+                except ValueError as exc:
+                    if cancelled() or 'cancelled' in str(exc).lower():raise
+                    if len(action['selected'])<=1 or action['operation'] in ('merging','aggregation'):raise
+                    # Retryable simplification topology keeps the existing recovery path.
+                    if recoverable_level(exc,[action]):raise
+                    # Other multi-feature joint failures continue feature-by-feature.
+                    proposal=_resilient_features(session,action,dz,exc,cancelled=cancelled)
                 r=proposal.state.operation
-                r.actions=(_action_record(action,r.winner,r.affected,r.retired,r.z_s,r.z_t),)
-                return proposal
-            return _mixed(session,actions,dz)
+                if not r.actions:
+                    r.actions=(_action_record(action,r.winner,r.affected,r.retired,r.z_s,r.z_t),)
+                return _annotate(proposal)
+            return _annotate(_mixed(session,actions,dz))
         except ValueError as exc:
             if not recoverable_level(exc,actions) or len(actions)==1 and len(actions[0]['selected'])==1:raise
             proposal=preview_scheduled(session,actions,components,dz,cancelled=cancelled)
             proposal.state.operation.diagnostics['direct_level_failure']=dict(exc.report)
             session.last_diagnostic=None
-            return proposal
+            return _annotate(proposal)
     except ValueError as exc:
         report=getattr(exc,'report',dict(classification='level_planning_constraint',message=str(exc)))
         report.update(level_actions=actions,source_z=session.state.z)
         session.last_diagnostic=report;exc.report=report
         raise
     finally:_restore(saved)
+
+
+def _resilient_features(session,action,dz,original,cancelled=lambda:False):
+    """Apply one multi-feature action feature-by-feature, skipping failures."""
+    from generalization_schedule import adjacent_components,preview_scheduled
+    units=[dict(operation=action['operation'],selected=[k],winner=None,
+                tolerance=action['tolerance'],iterations=action['iterations'],ratio=action['ratio'])
+           for k in action['selected']]
+    components=adjacent_components(units,session.state)
+    proposal=preview_scheduled(session,units,components,dz,cancelled=cancelled)
+    proposal.state.operation.diagnostics['direct_level_failure']=dict(getattr(original,'report',dict(message=str(original))))
+    proposal.notes.append('Continued after a joint multi-feature failure; skipped features are listed in diagnostics.')
+    return proposal
 
 
 def _mixed(session,actions,dz):
