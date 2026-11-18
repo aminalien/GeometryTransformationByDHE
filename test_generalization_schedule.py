@@ -159,16 +159,16 @@ class AdjacentScheduleTests(unittest.TestCase):
         self.assertEqual(report['feature_errors'][0]['selected'],[1])
         self.assertIs(s.state,base);self.assertEqual(_core(),core)
 
-    def test_consider_substeps_off_applies_only_least_changed_unit(self):
+    def test_consider_substeps_off_applies_greatest_changed_unit_in_pair(self):
         s=session([box(0,0,2,2),box(2,0,6,2)]);base=s.state;core=_core()
         p=s.preview('point',[1,2],consider_substeps=False)
         choice=p.state.operation.diagnostics['priority_selection']
-        self.assertEqual(choice['selected'],[1])
-        self.assertEqual(choice['deferred'],[dict(selected=[2],operation='point')])
-        self.assertEqual(p.state.features[1].geometry.geom_type,'Point')
-        self.assertEqual(p.state.features[2].geometry.geom_type,'Polygon')
+        self.assertEqual(choice['selected'],[2])
+        self.assertEqual(choice['deferred'],[dict(selected=[1],operation='point')])
+        self.assertEqual(p.state.features[1].geometry.geom_type,'Polygon')
+        self.assertEqual(p.state.features[2].geometry.geom_type,'Point')
         # Deferred feature is not collapsed; neighbour updates from the chosen unit may change its area.
-        self.assertGreater(p.state.features[2].geometry.area,0.)
+        self.assertGreater(p.state.features[1].geometry.area,0.)
         self.assertEqual(p.state.z,15.)
         self.assertIs(s.state,base);self.assertEqual(_core(),core);validate_model(p.model)
 

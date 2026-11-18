@@ -63,34 +63,13 @@ def preview_level(session,actions,*,dz=10.,cancelled=lambda:False,consider_subst
     try:
         actions=normalize_actions(actions,session.state)
         if not isfinite(dz) or dz<=TOL:raise ValueError('Height increment must be finite and positive.')
-        from generalization_schedule import adjacent_components,preview_scheduled,select_priority_unit
+        from generalization_schedule import adjacent_components,preview_scheduled,preview_prioritized
         components=adjacent_components(actions,session.state)
         if cancelled():raise ValueError('Generalization cancelled; original workspace preserved.')
-        units=[unit for component in components for unit in component]
-        priority_note=None
-        if not consider_substeps and len(units)>1:
-            # Only the least-changed footprint unit runs this step; others stay deferred.
-            chosen,score,source_area,target_area=select_priority_unit(session.state,units)
-            deferred=[unit for unit in units if unit is not chosen]
-            unit_action=dict(chosen['action'])
-            actions=normalize_actions([dict(operation=unit_action['operation'],selected=list(unit_action['selected']),
-                winner=unit_action.get('winner'),tolerance=unit_action.get('tolerance',1),
-                iterations=unit_action.get('iterations',1),ratio=unit_action.get('ratio',.25))],session.state)
-            components=adjacent_components(actions,session.state)
-            priority_note=dict(consider_substeps=False,selected=list(unit_action['selected']),
-                operation=unit_action['operation'],changed_area=score,source_area=source_area,target_area=target_area,
-                deferred=[dict(selected=list(u['action']['selected']),operation=u['action']['operation']) for u in deferred],
-                priority_metric='symmetric_difference_area_m2')
-        def _annotate(proposal):
-            if not priority_note:return proposal
-            proposal.state.operation.diagnostics['priority_selection']=priority_note
-            proposal.notes.append(
-                f"Substeps off: applied least-changed {priority_note['operation']} "
-                f"{','.join(map(str,priority_note['selected']))}; deferred "
-                + ', '.join(f"{d['operation']} {','.join(map(str,d['selected']))}" for d in priority_note['deferred']))
-            return proposal
+        if not consider_substeps:
+            return preview_prioritized(session,actions,components,dz,cancelled=cancelled)
         if any(len(c)>1 for c in components):
-            return _annotate(preview_scheduled(session,actions,components,dz,cancelled=cancelled))
+            return preview_scheduled(session,actions,components,dz,cancelled=cancelled)
         from generalization_recovery import preview_unit,recoverable_level
         try:
             if len(actions)==1:
@@ -108,14 +87,14 @@ def preview_level(session,actions,*,dz=10.,cancelled=lambda:False,consider_subst
                 r=proposal.state.operation
                 if not r.actions:
                     r.actions=(_action_record(action,r.winner,r.affected,r.retired,r.z_s,r.z_t),)
-                return _annotate(proposal)
-            return _annotate(_mixed(session,actions,dz))
+                return proposal
+            return _mixed(session,actions,dz)
         except ValueError as exc:
             if not recoverable_level(exc,actions) or len(actions)==1 and len(actions[0]['selected'])==1:raise
             proposal=preview_scheduled(session,actions,components,dz,cancelled=cancelled)
             proposal.state.operation.diagnostics['direct_level_failure']=dict(exc.report)
             session.last_diagnostic=None
-            return _annotate(proposal)
+            return proposal
     except ValueError as exc:
         report=getattr(exc,'report',dict(classification='level_planning_constraint',message=str(exc)))
         report.update(level_actions=actions,source_z=session.state.z)

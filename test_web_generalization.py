@@ -215,6 +215,48 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(failed['diagnostic']['simplification_recovery'][0]['status'],'exhausted')
         self.assertEqual(w.revision,revision);self.assertIs(w.scene,published);self.assertIs(w.session.state,base)
 
+    def test_substeps_off_shared_winners_and_isolated_selection_preview_apply_export(self):
+        self.load([box(0,0,5,2),box(5,0,7.5,2),box(7.5,0,8,2),box(20,0,22,2)])
+        w=self.workspace;base=w.session.state;revision=w.revision
+        parameters=dict(operation='point',selected=[1,2,3,4],dz=10.,consider_substeps=False)
+        job=self.job('/api/preview',parameters);self.assertEqual(job['status'],'complete',job)
+        scene=self.client.get('/api/scene',params={'preview_id':job['result']['preview_id']}).json()
+        choice=scene['operation']['diagnostics']['priority_selection']
+        self.assertEqual(choice['selected'],[2,4]);self.assertEqual(len(choice['groups']),2)
+        self.assertEqual({(r['z_s'],r['z_t']) for r in scene['operation']['actions']},{(5.,15.)})
+        self.assertIs(w.session.state,base);self.assertEqual(w.revision,revision)
+        exported=self.client.get('/api/export/duality',params={'workspace_name':'generalize','snapshot_id':scene['snapshot_id']})
+        self.assertEqual(exported.status_code,200)
+        self.assertEqual(exported.json()['metadata']['operation']['diagnostics']['priority_selection'],choice)
+        self.assertEqual(self.job('/api/apply',parameters)['status'],'complete')
+        self.assertEqual(len(w.session.history),2);self.assertEqual(w.revision,revision+1)
+        self.assertEqual(self.job('/api/history',dict(index=0))['status'],'complete');self.assertIs(w.session.state,base)
+
+    def test_substeps_off_mixed_level_keeps_both_nonadjacent_endpoints(self):
+        self.load([box(0,0,5,2),box(5,0,6,2),box(6,0,9,2),box(20,0,22,2)])
+        parameters=dict(actions=[dict(operation='point',selected=[1,2,3]),dict(operation='point',selected=[4])],
+                        dz=10.,consider_substeps=False)
+        job=self.job('/api/preview-level',parameters);self.assertEqual(job['status'],'complete',job)
+        scene=self.client.get('/api/scene',params={'preview_id':job['result']['preview_id']}).json()
+        self.assertEqual(scene['operation']['diagnostics']['priority_selection']['selected'],[1,3,4])
+        self.assertEqual(scene['operation']['name'],'batch')
+        self.assertEqual(self.job('/api/apply-level',parameters)['status'],'complete')
+        self.assertEqual(len(self.workspace.session.history),2)
+
+    def test_substeps_off_failed_winner_is_reported_and_alternatives_apply(self):
+        self.load([box(0,0,5,2),box(5,0,7.5,2),box(7.5,0,8,2),box(20,0,22,2)])
+        original=GeneralizationSession._preview_single
+        def construct(owner,operation,selected,**kwargs):
+            if tuple(selected)==(2,):raise ValueError('Reported winner failure')
+            return original(owner,operation,selected,**kwargs)
+        with patch.object(GeneralizationSession,'_preview_single',construct):
+            job=self.job('/api/apply',dict(operation='point',selected=[1,2,3,4],consider_substeps=False))
+        self.assertEqual(job['status'],'complete',job)
+        scene=self.client.get('/api/scene').json();diagnostics=scene['operation']['diagnostics']
+        self.assertEqual(diagnostics['priority_selection']['selected'],[1,3,4])
+        self.assertEqual(diagnostics['feature_errors'][0]['selected'],[2])
+        self.assertEqual(diagnostics['feature_errors'][0]['message'],'Reported winner failure')
+
     def test_adjacent_substeps_preview_apply_history_and_export_are_one_transaction(self):
         self.load([box(0,0,2,2),box(2,0,6,2)])
         w=self.workspace;base=w.session.state;revision=w.revision

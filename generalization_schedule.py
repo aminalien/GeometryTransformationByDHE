@@ -10,7 +10,7 @@ from shapely.geometry.polygon import orient
 from shapely.ops import unary_union
 
 from generalization_geometry import TOL,polygon_target,visible_point,skeleton_ridge
-from generalization_model import Face,Feature,State,Proposal,OperationRecord,_prism,parts,realize
+from generalization_model import Face,Feature,State,Proposal,OperationRecord,_prism,parts,realize,_core,_restore
 from generalization_levels import _planning_action,_action_record
 from shell_conformity import arithmetic_bound,TransitionShellError
 
@@ -25,6 +25,8 @@ def adjacent_components(actions,state):
     for i,j in combinations(graph,2):
         if footprints[i].boundary.intersection(footprints[j].boundary).length>TOL:
             graph[i].add(j);graph[j].add(i)
+    for i,unit in enumerate(units):
+        unit['neighbours']=tuple(units[j]['action']['selected'] for j in sorted(graph[i]))
     components=[];unseen=set(graph)
     while unseen:
         pending=[min(unseen)];component=set()
@@ -51,14 +53,18 @@ def _priority(state,action):
     return float(source.symmetric_difference(target).area),float(source.area),float(target.area)
 
 
-def select_priority_unit(state,units):
-    """Return the unit with least changed footprint area (ties: IDs, then operation)."""
-    ranked=[]
-    for unit in units:
-        score,source_area,target_area=_priority(state,unit['action'])
-        ranked.append((score,unit['action']['selected'],unit['action']['operation'],unit,source_area,target_area))
-    score,_,_,unit,source_area,target_area=min(ranked,key=lambda r:r[:3])
-    return unit,score,source_area,target_area
+def _reserve_aggregates(session,components):
+    next_id=max(k for state in session.history for k in state.features)+1
+    for unit in sorted((u for component in components for u in component),key=lambda u:(u['action']['selected'],u['action']['operation'])):
+        if unit['action']['operation']=='aggregation':unit['aggregate_id']=next_id;next_id+=1
+
+
+def _aggregate_attributes(prior,unit,proposal):
+    if unit['action']['operation']!='aggregation':return
+    members=[prior.features[k] for k in unit['action']['selected']];f=proposal.state.features[proposal.state.operation.winner]
+    for field,value in members[0].attributes.items():
+        if all(str(m.attributes.get(field))==str(value) for m in members):f.attributes[field]=value
+    f.attributes['source_members']=[dict(index=m.index,lineage=list(m.lineage),attributes=dict(m.attributes)) for m in members]
 
 
 def _polygons(g):
@@ -146,15 +152,78 @@ def _influence(base,result,selected,lo):
     return unary_union(geometries)
 
 
+def _compose_plans(session,plans,selected,boundaries,lo,hi,check_cancel):
+    saved=_core()
+    try:return _compose(session,plans,selected,boundaries,lo,hi,check_cancel)
+    finally:_restore(saved)
+
+
+def _compose(session,plans,selected,boundaries,lo,hi,check_cancel):
+    """Compose validated private shells without modifying accepted plan states."""
+    base=session.state
+    if len(plans)==1:
+        model=plans[0]['model'];faces=plans[0]['state'].faces;core=plans[0]['core']
+        features={k:Feature(f.index,f.geometry,dict(f.attributes),f.lineage,f.label)
+                  for k,f in plans[0]['state'].features.items()}
+    else:
+        check_cancel()
+        for a,b in combinations(plans,2):
+            if a['region'].intersection(b['region']).area>TOL*TOL:
+                raise TransitionShellError('Parallel adjacent components have overlapping transition regions.',
+                    'level_transition_overlap',stage='scheduled_components',failure_scope='level',
+                    component_actions=[a['actions'],b['actions']])
+        region=unary_union([p['region'] for p in plans]);upper=[]
+        def clip_bands(face,footprint,*,outside=False):
+            if len({p[2] for p in face.points})==1:
+                return _clip_face(face,footprint,lo,hi,outside=outside)
+            return [f for start,end in zip(boundaries,boundaries[1:])
+                    for f in _clip_face(face,footprint,start,end,outside=outside)]
+        polygons={k:f.geometry for k,f in base.features.items() if f.geometry.geom_type=='Polygon'}
+        for owner,g in polygons.items():
+            if owner in selected:continue
+            for face in _prism(owner,g,lo,hi):
+                if face.part!='bottom':upper.extend(clip_bands(face,region,outside=True))
+        for plan in plans:
+            check_cancel()
+            owned=plan['owners']|{k for k in plan['state'].features if k not in base.features}
+            for face in plan['state'].faces:
+                if face.owner in selected and face.owner not in owned:continue
+                # Selected cells retain their own validated facets; passive
+                # neighbours are clipped to each plan's transition region.
+                upper.extend(clip_bands(face,None if face.owner in owned else plan['region']))
+        historical=[f for f in base.faces if not (f.owner in polygons and all(p[2]==lo for p in f.points))]
+        model,faces,core=realize([*historical,*upper],session.origin)
+        features={k:Feature(f.index,f.geometry,dict(f.attributes),f.lineage,f.label) for k,f in base.features.items()}
+        for plan in plans:
+            for k in plan['owners']:features.pop(k,None)
+            for k,f in plan['state'].features.items():
+                if k in plan['owners'] or k not in base.features:
+                    features[k]=Feature(f.index,f.geometry,dict(f.attributes),f.lineage,f.label)
+        for k,f in features.items():
+            if f.geometry.geom_type!='Polygon' or k in selected or k not in base.features:continue
+            pieces=[polygons[k].difference(region)] if k in polygons else []
+            pieces.extend(p['state'].features[k].geometry.intersection(p['region']) for p in plans
+                          if k in p['state'].features and p['state'].features[k].geometry.geom_type=='Polygon')
+            g=unary_union([polygon for piece in pieces for polygon in _polygons(piece)])
+            if g.is_empty or g.geom_type!='Polygon' or g.interiors or not g.is_valid:
+                raise ValueError(f'Scheduled neighbour update makes feature {k} empty, split, holed, or invalid.')
+            f.geometry=g
+    old={k:f.geometry for k,f in base.features.items() if f.geometry.geom_type=='Polygon'}
+    new={k:f.geometry for k,f in features.items() if f.geometry.geom_type=='Polygon'}
+    actual=session._validate_sections(model,old,new,lo,hi)
+    check_cancel()
+    for k,f in features.items():
+        if f.geometry.geom_type=='Polygon':f.geometry=actual[str(k)].simplify(arithmetic_bound(actual[str(k)].exterior.coords),preserve_topology=True)
+    return model,faces,core,features
+
+
 def preview_scheduled(session,actions,components,dz,*,cancelled=lambda:False):
     base=session.state;lo=base.z;hi=lo+dz
     def check_cancel():
         if cancelled():raise ValueError('Generalization cancelled; original workspace preserved.')
     if not isfinite(hi) or hi<=lo:raise ValueError('The target level is not representably above the source level.')
     # Reserve aggregate identities before priorities can change execution order.
-    next_id=max(k for state in session.history for k in state.features)+1
-    for unit in sorted((u for component in components for u in component),key=lambda u:(u['action']['selected'],u['action']['operation'])):
-        if unit['action']['operation']=='aggregation':unit['aggregate_id']=next_id;next_id+=1
+    _reserve_aggregates(session,components)
     plans=[];schedule=[];records=[];recoveries=[];feature_errors=[];affected=set();notes=[]
     requested={k for a in actions for k in a['selected']}
     for component_index,component in enumerate(components,1):
@@ -196,11 +265,7 @@ def preview_scheduled(session,actions,components,dz,*,cancelled=lambda:False):
                 continue
             r=proposal.state.operation
             recoveries.extend(r.diagnostics.get('simplification_recovery',()))
-            if unit['action']['operation']=='aggregation':
-                members=[prior.features[k] for k in unit['action']['selected']];f=proposal.state.features[r.winner]
-                for field,value in members[0].attributes.items():
-                    if all(str(m.attributes.get(field))==str(value) for m in members):f.attributes[field]=value
-                f.attributes['source_members']=[dict(index=m.index,lineage=list(m.lineage),attributes=dict(m.attributes)) for m in members]
+            _aggregate_attributes(prior,unit,proposal)
             action_record=_action_record(unit['action'],r.winner,r.affected,r.retired,start,end)
             if r.z_m is not None:action_record['z_m']=r.z_m
             records.append(action_record)
@@ -218,61 +283,9 @@ def preview_scheduled(session,actions,components,dz,*,cancelled=lambda:False):
                     failure_scope='level',feature_errors=feature_errors,level_actions=actions,source_z=lo)
         exc=ValueError(report['message']);exc.report=report;raise exc
     selected={k for r in records for k in r['selected']}
-    if len(plans)==1:
-        model=plans[0]['model'];faces=plans[0]['state'].faces;core=plans[0]['core'];features=plans[0]['state'].features
-    else:
-        check_cancel()
-        for a,b in combinations(plans,2):
-            if a['region'].intersection(b['region']).area>TOL*TOL:
-                raise TransitionShellError('Parallel adjacent components have overlapping transition regions.',
-                    'level_transition_overlap',stage='scheduled_components',failure_scope='level',
-                    component_actions=[a['actions'],b['actions']])
-        region=unary_union([p['region'] for p in plans]);upper=[]
-        boundaries=sorted({lo,hi,*[s['z_s'] for s in schedule],*[s['z_t'] for s in schedule],
-            *[s[key] for r in recoveries for a in r['attempts'] if a['status']=='passed' for s in a['steps'] for key in ('z_s','z_t')]})
-        def clip_bands(face,footprint,*,outside=False):
-            if len({p[2] for p in face.points})==1:
-                return _clip_face(face,footprint,lo,hi,outside=outside)
-            return [f for start,end in zip(boundaries,boundaries[1:])
-                    for f in _clip_face(face,footprint,start,end,outside=outside)]
-        polygons={k:f.geometry for k,f in base.features.items() if f.geometry.geom_type=='Polygon'}
-        for owner,g in polygons.items():
-            if owner in selected:continue
-            for face in _prism(owner,g,lo,hi):
-                if face.part!='bottom':upper.extend(clip_bands(face,region,outside=True))
-        for plan in plans:
-            check_cancel()
-            owned=plan['owners']|{k for k in plan['state'].features if k not in base.features}
-            for face in plan['state'].faces:
-                if face.owner in selected and face.owner not in owned:continue
-                # A selected/aggregate cell belongs wholly to this component.
-                # Only passive neighbours need an XY cut; retain original facets
-                # on hull boundaries instead of re-intersecting coincident XYs.
-                upper.extend(clip_bands(face,None if face.owner in owned else plan['region']))
-        historical=[f for f in base.faces if not (f.owner in polygons and all(p[2]==lo for p in f.points))]
-        model,faces,core=realize([*historical,*upper],session.origin)
-        features={k:Feature(f.index,f.geometry,dict(f.attributes),f.lineage,f.label) for k,f in base.features.items()}
-        for plan in plans:
-            for k in plan['owners']:features.pop(k,None)
-            for k,f in plan['state'].features.items():
-                if k in plan['owners'] or k not in base.features:
-                    features[k]=Feature(f.index,f.geometry,dict(f.attributes),f.lineage,f.label)
-        for k,f in features.items():
-            if f.geometry.geom_type!='Polygon':continue
-            if k in selected or k not in base.features:continue
-            pieces=[polygons[k].difference(region)] if k in polygons else []
-            pieces.extend(p['state'].features[k].geometry.intersection(p['region']) for p in plans
-                          if k in p['state'].features and p['state'].features[k].geometry.geom_type=='Polygon')
-            g=unary_union([polygon for piece in pieces for polygon in _polygons(piece)])
-            if g.is_empty or g.geom_type!='Polygon' or g.interiors or not g.is_valid:
-                raise ValueError(f'Scheduled neighbour update makes feature {k} empty, split, holed, or invalid.')
-            f.geometry=g
-    old={k:f.geometry for k,f in base.features.items() if f.geometry.geom_type=='Polygon'}
-    new={k:f.geometry for k,f in features.items() if f.geometry.geom_type=='Polygon'}
-    actual=session._validate_sections(model,old,new,lo,hi)
-    check_cancel()
-    for k,f in features.items():
-        if f.geometry.geom_type=='Polygon':f.geometry=actual[str(k)].simplify(arithmetic_bound(actual[str(k)].exterior.coords),preserve_topology=True)
+    boundaries=sorted({lo,hi,*[s['z_s'] for s in schedule],*[s['z_t'] for s in schedule],
+        *[s[key] for r in recoveries for a in r['attempts'] if a['status']=='passed' for s in a['steps'] for key in ('z_s','z_t')]})
+    model,faces,core,features=_compose_plans(session,plans,selected,boundaries,lo,hi,check_cancel)
     name=actions[0]['operation'] if len(actions)==1 else 'batch'
     records.sort(key=lambda r:(r['z_s'],r['selected'],r['name']))
     schedule.sort(key=lambda r:(r['z_s'],r['component'],r['slot']))
@@ -296,3 +309,96 @@ def preview_scheduled(session,actions,components,dz,*,cancelled=lambda:False):
     if skipped and not feature_errors:
         notes.append('Deferred selected features this step: '+', '.join(map(str,sorted(skipped))))
     return Proposal(base,state,model,core,targets,tuple(sorted(affected)),list(dict.fromkeys(notes)))
+
+
+def preview_prioritized(session,actions,components,dz,*,cancelled=lambda:False):
+    """Full-interval, nonadjacent winners; shared winners precede area ranking."""
+    from generalization_recovery import preview_unit
+    base=session.state;lo=base.z;hi=lo+dz
+    def check_cancel():
+        if cancelled():raise ValueError('Generalization cancelled; original workspace preserved.')
+    if not isfinite(hi) or hi<=lo:raise ValueError('The target level is not representably above the source level.')
+    _reserve_aggregates(session,components)
+    plans=[];records=[];recoveries=[];errors=[];notes=[];affected=set();selected=set();result=None
+    priority=dict(consider_substeps=False,policy='shared_winners_then_greatest_changed_area',
+                  priority_metric='symmetric_difference_area_m2',selected=[],deferred=[],groups=[])
+    def fail(exc,unit,entry,group,phase):
+        if cancelled() or 'cancelled' in str(exc).lower():raise exc
+        report=dict(getattr(exc,'report',dict(classification='level_construction_failure',message=str(exc))))
+        report.update(failure_scope='feature',scheduled_action=dict(unit['original']),scheduled_unit=dict(unit['action']),
+                      component=group,selected=list(unit['action']['selected']),operation=unit['action']['operation'],
+                      z_s=lo,z_t=hi,phase=phase,message=str(exc))
+        entry.update(status='failed',failure=report);errors.append(report)
+        notes.append(f"Skipped {unit['action']['operation']} {','.join(map(str,unit['action']['selected']))}: {exc}")
+    for group_index,component in enumerate(components,1):
+        check_cancel();entries={};ranks={}
+        group=dict(component=group_index,candidates=[],selected=[],deferred=[]);priority['groups'].append(group)
+        for unit in component:
+            check_cancel();action=unit['action'];key=action['selected']
+            entry=dict(selected=list(key),operation=action['operation'],neighbours=[list(k) for k in unit['neighbours']],
+                       shared_winner=False,status='pending',z_s=lo,z_t=hi)
+            entries[key]=entry;group['candidates'].append(entry)
+            try:score,source_area,target_area=_priority(base,action)
+            except ValueError as exc:fail(exc,unit,entry,group_index,'priority');continue
+            entry.update(changed_area=score,source_area=source_area,target_area=target_area)
+            ranks[key]=(-score,key,action['operation'])
+        for unit in component:
+            key=unit['action']['selected']
+            if key in ranks:
+                entries[key]['shared_winner']=(len(unit['neighbours'])>=2 and
+                    any(k in ranks and ranks[key]<ranks[k] for k in unit['neighbours']))
+        ordered=sorted((u for u in component if u['action']['selected'] in ranks),
+                       key=lambda u:(not entries[u['action']['selected']]['shared_winner'],*ranks[u['action']['selected']]))
+        blocked={}
+        for rank,unit in enumerate(ordered,1):
+            check_cancel();action=unit['action'];key=action['selected'];entry=entries[key];entry['rank']=rank
+            if key in blocked:
+                entry.update(status='deferred',blocked_by=[list(k) for k in blocked[key]])
+                deferred=dict(selected=list(key),operation=action['operation'])
+                group['deferred'].append(deferred);priority['deferred'].append(deferred)
+                continue
+            fork=copy(session);fork.history=list(session.history[:session.cursor+1]);phase='construction'
+            try:
+                proposal=preview_unit(fork,action,dz,cancelled=cancelled,
+                                      **({'_aggregate_id':unit['aggregate_id']} if 'aggregate_id' in unit else {}))
+                _aggregate_attributes(base,unit,proposal)
+                recovery=proposal.state.operation.diagnostics.get('simplification_recovery',[])
+                times={lo,hi,*[s[k] for r in recovery for a in r['attempts'] if a['status']=='passed'
+                              for s in a['steps'] for k in ('z_s','z_t')]}
+                plan=dict(state=proposal.state,model=proposal.model,core=proposal.core,owners=set(key),
+                          region=_influence(base,proposal.state,set(key),lo),actions=[unit['original']],boundaries=times)
+                phase='composition';tentative=[*plans,plan]
+                boundaries=sorted(set().union(*(p['boundaries'] for p in tentative)))
+                composed=_compose_plans(session,tentative,selected|set(key),boundaries,lo,hi,check_cancel)
+                check_cancel()
+            except ValueError as exc:fail(exc,unit,entry,group_index,phase);continue
+            # A failed candidate never blocks its neighbours. Commit only to
+            # the private plan after both its own shell and composition pass.
+            plans.append(plan);result=composed;entry['status']='applied';selected.update(key)
+            group['selected'].extend(key);affected.update(proposal.affected);recoveries.extend(recovery);notes.extend(proposal.notes)
+            r=proposal.state.operation;record=_action_record(action,r.winner,r.affected,r.retired,lo,hi)
+            if r.z_m is not None:record['z_m']=r.z_m
+            records.append(record)
+            for neighbour in unit['neighbours']:blocked.setdefault(neighbour,[]).append(key)
+    priority['selected']=sorted(selected)
+    if not plans:
+        report=dict(classification='all_features_failed',message='Every selected feature failed during generalization.',
+                    failure_scope='level',feature_errors=errors,priority_selection=priority,level_actions=actions,source_z=lo)
+        exc=ValueError(report['message']);exc.report=report;raise exc
+    check_cancel();model,faces,core,features=result;records.sort(key=lambda r:(r['selected'],r['name']))
+    parameters={k:actions[0][k] for k in ('tolerance','iterations','ratio')} if len(actions)==1 else {}
+    diagnostics=dict(priority_selection=priority)
+    if errors:diagnostics['feature_errors']=errors
+    if recoveries:diagnostics['simplification_recovery']=recoveries
+    record=OperationRecord(actions[0]['operation'] if len(actions)==1 else 'batch',tuple(sorted(selected)),tuple(sorted(affected)),
+        session.history[session.cursor-1].z if session.cursor else min(p[2] for f in base.faces for p in f.points),lo,hi,
+        winner=records[0]['winner'] if len(records)==1 else None,retired=tuple(sorted(selected-set(features))),
+        parameters=dict(dz=dz,consider_substeps=False,**parameters),diagnostics=diagnostics,actions=tuple(records))
+    state=State(features,faces,hi,f"Level: priority winners {','.join(map(str,sorted(selected)))}; Z={lo:g}–{hi:g}",
+                tuple(sorted(affected)),record,parent_step_id=base.step_id)
+    notes.append('Substeps off: shared winners first, then greatest changed footprint area; applied '+', '.join(map(str,sorted(selected))))
+    if priority['deferred']:
+        notes.append('Deferred adjacent operations: '+', '.join(','.join(map(str,d['selected'])) for d in priority['deferred']))
+    session.last_diagnostic=None
+    return Proposal(base,state,model,core,{k:f.geometry for k,f in features.items() if k in selected or k not in base.features},
+                    tuple(sorted(affected)),list(dict.fromkeys(notes)))

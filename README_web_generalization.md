@@ -41,7 +41,8 @@ Network failures try the Private.coffee public Overpass instance after the defau
 
 The **Level operations · one ΔZ** table supports independent operations in one source–target interval. Add each selection with its parameters, edit/remove rows, then Preview/Apply the complete level. Duplicate source assignments are rejected by the client and server. Emptying the table restores the existing single-operation behavior.
 
-Adjacent selected operations are automatically staged inside that same level.
+With **Consider adjacent substeps** checked (the default), adjacent selected
+operations are staged inside that same level.
 Two adjacent features over Z=5–15 receive 5–10 and 10–15; three receive thirds.
 Adjacency requires a shared boundary segment longer than the existing modelling
 tolerance, so corner-only contact does not count. Each connected group divides
@@ -55,6 +56,28 @@ Group scores compare the union of inputs with the group target. Ties use feature
 IDs then operation name; unchanged results still occupy their assigned slot.
 The initial components stay fixed, and conflicts between parallel components
 remain validation errors.
+
+With that checkbox **off**, each connected adjacent group chooses non-adjacent
+winners over the full requested interval. Priorities are frozen from the original
+source footprints for this step. A **shared winner** touches at least two selected
+operation units and wins against at least one by changed footprint area; these
+candidates run first, greatest changed area first. Other candidates then follow
+in greatest-area order. Ties use feature IDs, then operation. A successful candidate
+defers its neighbours; isolated selections and unblocked candidates still run.
+For the chain A–B–C with changes 10, 5, 1, B runs alone because it beats C. If B
+loses to both endpoints, A and C can both run. Merge and aggregation groups remain
+indivisible units. Deferred polygons may receive passive neighbour updates.
+
+OFF mode validates each candidate and its composition with accepted operations
+privately. A failed candidate does not block neighbours; the next candidate is
+tried, while other groups continue. `priority_selection` diagnostics list each
+group's candidates, scores, neighbours, shared-winner status, rank, applied choices,
+and deferrals. `feature_errors` contains failures from scoring, construction, or
+composition, including existing simplification-recovery details. Preview notes,
+operation diagnostics and exports retain the results. All successes publish as one
+History entry; cancellation or failure of every candidate preserves the workspace.
+The checkbox controls adjacent scheduling; simplification's internal recovery
+remains available in either mode. Automatic runs retain their existing scheduling.
 
 This is one preview/apply transaction, one History entry and one automatic level,
 with cancellation checked between substeps. Preview notes and exported operation
