@@ -362,12 +362,13 @@ def _shell_signature(shell):
     return tuple(sorted(signature))
 
 
-def realize(faces, origin, *, required_vertices=(), collect_shell_errors=False, validated_shells=None):
+def realize(faces, origin, *, required_vertices=(), collect_shell_errors=False, validated_shells=None,progress=lambda text:None):
     """Realize checked shells with the existing Euler and sewing operators."""
     from main import ExtrudedCell, ExtrusionModel, validate_model
     from aggregation_layer import _check_vertex_links
     from transition_layer import _check_shell, _planned_volume
     from plane_slicing import _face_frame
+    progress('Noding shared three-dimensional boundaries')
     faces = _node_faces(faces)
     raw_groups=defaultdict(list)
     for face in faces:raw_groups[face.owner].append(face)
@@ -397,6 +398,7 @@ def realize(faces, origin, *, required_vertices=(), collect_shell_errors=False, 
                     raise TransitionShellError('An inclined transition facet has only one assigned level.',
                         'horizontal_transition_facet',stage='facet_levels',cell=owner,points=face.points)
                 _face_frame(face.points)
+            if len(shell)>1000:progress(f'Checking cell {owner}: {len(shell)} boundary faces')
             check_face_intersections(shell)
             if _planned_volume(shell) <= TOL*TOL:
                 raise ValueError("non-positive oriented volume")
@@ -408,6 +410,7 @@ def realize(faces, origin, *, required_vertices=(), collect_shell_errors=False, 
                 raise
             raise ValueError(f"Feature {owner}: {exc}") from exc
     try:
+        progress('Checking shared interfaces and intersections')
         check_interface_pairs(faces)
         check_face_intersections(faces,across_cells=True,collect_failures=collect_shell_errors)
     except TransitionShellError as exc:
@@ -417,6 +420,7 @@ def realize(faces, origin, *, required_vertices=(), collect_shell_errors=False, 
         raise
     saved = _core()
     try:
+        progress('Realizing validated DHE topology')
         dhe.reset_globals()
         exterior = dhe.make_vertex(0, 0, 0, ch="VINF", clr=(.55,.2,.75,1))
         exterior.logical_feature_id = "VINF"

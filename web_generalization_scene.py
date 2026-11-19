@@ -32,7 +32,14 @@ def display_triangles(points):
     """Tessellate a planar DHE face in its own plane, never changing its boundary."""
     a=np.asarray(points,dtype=float);origin=a[0]
     normal=np.sum(np.cross(a-origin,np.roll(a,-1,axis=0)-origin),axis=0)
-    normal/=np.linalg.norm(normal)
+    length=np.linalg.norm(normal)
+    if not np.all(np.isfinite(a)) or not np.isfinite(length) or length==0:
+        raise ValueError('Cannot render an invalid DHE face.')
+    if len(a)==3:
+        # A realized triangle is already tessellated. In particular, avoid
+        # passing dense, very slender medial facets through native CDT again.
+        return [[tuple(p) for p in a]]
+    normal/=length
     u=next(v/np.linalg.norm(v) for v in a[1:]-origin if np.linalg.norm(v)>1e-12)
     v=np.cross(normal,u);xy=np.column_stack(((a-origin)@u,(a-origin)@v))
     polygon=Polygon(xy);lookup={tuple(p):tuple(q) for p,q in zip(xy,a)}

@@ -615,21 +615,22 @@ class MappingApiTests(unittest.TestCase):
             self.command('build',{'preview':True});preview=m.preview
             self.assertIs(m.result,previous)
             report=self.client.get('/api/mapping/report',params={'preview_id':preview.preview_id}).json()
-            self.assertIn(BACKEND_FAILURE,report['retry_history'][0]['failures'][0]['message'])
+            self.assertIn(BACKEND_FAILURE,report['routing'][0]['construction']['attempts'][0]['message'])
+            self.assertEqual(report['routing'][0]['construction']['method'],'medial_axis')
             exported=self.client.get('/api/export/duality',params={'workspace_name':'mapping','snapshot_id':preview.payload['snapshot_id']})
             self.assertEqual(exported.status_code,200)
             self.assertEqual(exported.json()['metadata']['mapping_report']['retry_history'],report['retry_history'])
             state=self.client.get('/api/mapping/state').json()
-            self.assertEqual(state['groups'][0]['builder'],'classic');self.assertEqual(state['groups'][0]['initial_builder'],'smooth')
+            self.assertEqual(state['groups'][0]['builder'],'smooth');self.assertEqual(state['groups'][0]['initial_builder'],'smooth')
             self.command('build');published=m.result;self.assertIsNone(m.preview)
             stop=Event();revision=m.revision;inputs=m.layers;groups=m.groups
             with self.assertRaisesRegex(ValueError,'cancelled'):
-                m.execute('build',revision,progress=lambda message:stop.set() if message.startswith('Retrying ') else None,cancelled=stop.is_set)
+                m.execute('build',revision,progress=lambda message:stop.set() if message.startswith('Conforming common interfaces') else None,cancelled=stop.is_set)
             self.assertEqual(m.revision,revision);self.assertIs(m.result,published);self.assertIs(m.layers,inputs);self.assertIs(m.groups,groups)
             self.command('review',{'groups':gs,'settings':{'mode':'smooth'}});revision=m.revision
             self.command('build')
             self.assertEqual(m.revision,revision+1)
-            self.assertEqual(m.result.result.report['routing'][0]['construction']['method'],'continuous_boundary_distance')
+            self.assertEqual(m.result.result.report['routing'][0]['construction']['method'],'medial_axis')
             self.assertEqual(m.result.result.report['retry_history'],[])
 
     def test_continuous_smooth_hole_preview_export_publication_failure_and_cancel(self):
@@ -643,7 +644,8 @@ class MappingApiTests(unittest.TestCase):
         self.command('build',{'preview':True});self.assertIs(m.result,old);self.assertEqual(m.revision,revision)
         token=m.preview.preview_id;payload=self.client.get('/api/mapping/scene',params={'preview_id':token}).json()
         report=payload['mapping_report'];construction=report['routing'][0]['construction']
-        self.assertEqual(construction['method'],'continuous_boundary_distance');self.assertGreater(construction['upper_cells'],1)
+        self.assertIn(construction['method'],('straight_skeleton','medial_axis'))
+        self.assertGreater(construction['hull_to_target']['upper_cells'],1)
         self.assertEqual(report['logical_features'],dict(source=2,target=1));self.assertEqual(report['endpoint_validation'],'passed')
         export=self.client.get('/api/export/duality',params={'workspace_name':'mapping','snapshot_id':payload['snapshot_id']})
         self.assertEqual(export.status_code,200)

@@ -186,8 +186,10 @@ def check_face_intersections(plans, *, across_cells=False, collect_failures=Fals
     Polygon/plane line clipping avoids introducing triangulation into NATR or
     cap faces. This is a numerical check, not an exact-arithmetic certificate.
     """
-    from shapely.geometry import Polygon,LineString,Point,GeometryCollection
+    from shapely import STRtree
+    from shapely.geometry import Polygon,LineString,Point,GeometryCollection,MultiPoint,box
     from shapely.ops import unary_union
+    from math import atan2,hypot,pi
     failures=[];rejected=set()
     def reject(message,classification,**evidence):
         error=TransitionShellError(message,classification,**evidence)
@@ -243,15 +245,40 @@ def check_face_intersections(plans, *, across_cells=False, collect_failures=Fals
         return [piece for g in geometry.geoms for piece in segments(g,origin,direction,polygon,shared_points)]
 
     minima=np.array([f[4] for f in frames]);maxima=np.array([f[5] for f in frames])
+    index=STRtree([box(*low[:2],*high[:2]) for low,high in zip(minima,maxima)]) if len(plans)>1000 else None
+    projected=[]
+    for a in arrays:
+        polygon=Polygon(a[:,:2])
+        projected.append(polygon if polygon.is_valid and polygon.area>0 else MultiPoint(a[:,:2]).convex_hull)
+    vertices=[tuple(tuple(float(v) for v in p) for p in a) for a in arrays]
+    vertex_sets=[set(p) for p in vertices]
+    edge_sets=[{frozenset((a,b)) for a,b in zip(p,p[1:]+p[:1])} for p in vertices]
+    sectors=[]
+    for points in vertices:
+        fan={}
+        if len(points)==3:
+            for k,p in enumerate(points):
+                a,b=points[(k+1)%3],points[(k+2)%3]
+                ax,ay=a[0]-p[0],a[1]-p[1];bx,by=b[0]-p[0],b[1]-p[1]
+                la,lb=hypot(ax,ay),hypot(bx,by);cross=ax*by-ay*bx
+                if min(la,lb)<=bound or abs(cross)<=bound*8*max(la,lb):continue
+                first,second=(atan2(ay,ax),atan2(by,bx)) if cross>0 else (atan2(by,bx),atan2(ay,ax))
+                width=(second-first)%(2*pi)
+                if 0<width<pi:fan[p]=(first,width,bound*8/min(la,lb)+64*np.finfo(float).eps)
+        sectors.append(fan)
     for i,a in enumerate(arrays):
         if collect_failures and plans[i].owner in rejected:continue
         na,ua,va,pa,amin,amax=frames[i]
         def project(points):
             rel=np.asarray(points)-a[0]
             return np.column_stack((rel@ua,rel@va))
-        aset={tuple(p) for p in a}
-        aedges={frozenset((tuple(p),tuple(q))) for p,q in zip(a,np.roll(a,-1,axis=0))}
-        candidates=np.flatnonzero(np.all(minima[:i]<=amax+bound,axis=1)&np.all(maxima[:i]>=amin-bound,axis=1))
+        aset=vertex_sets[i];aedges=edge_sets[i]
+        if index is None:
+            candidates=np.flatnonzero(np.all(minima[:i]<=amax+bound,axis=1)&np.all(maxima[:i]>=amin-bound,axis=1))
+        else:
+            nearby=np.sort(index.query(box(*(amin[:2]-bound),*(amax[:2]+bound))))
+            nearby=nearby[nearby<i]
+            candidates=nearby[np.all(minima[nearby]<=amax+bound,axis=1)&np.all(maxima[nearby]>=amin-bound,axis=1)]
         for j in candidates:
             if collect_failures and (plans[i].owner in rejected or plans[j].owner in rejected):continue
             if across_cells:
@@ -259,11 +286,40 @@ def check_face_intersections(plans, *, across_cells=False, collect_failures=Fals
                 if frozenset(map(tuple,a))==frozenset(map(tuple,arrays[j])):continue
             b=arrays[j];nb,ub,vb,pb,bmin,bmax=frames[j]
             if np.any(amin>bmax+bound) or np.any(bmin>amax+bound):continue
+            shared=aset & vertex_sets[j]
+            if len(shared)==1:
+                point=next(iter(shared));sa=sectors[i].get(point);sb=sectors[j].get(point)
+                if sa is not None and sb is not None:
+                    offset=(sb[0]-sa[0])%(2*pi);margin=sa[2]+sb[2]
+                    if offset>sa[1]+margin and offset+sb[1]<2*pi-margin:
+                        # Disjoint convex XY sectors meet only at their common
+                        # vertex. Precomputed angles avoid quadratic clipping
+                        # work in dense medial fans; uncertain rays use the
+                        # original intersection predicates below.
+                        continue
+            common_edges=aedges & edge_sets[j]
+            # An empty XY intersection excludes a 3D intersection as well.
+            # Keep arithmetic-near contacts for the original predicates below.
+            if not projected[i].intersects(projected[j]) and projected[i].distance(projected[j])>bound*8:continue
             da=(b-a[0])@na;db=(a-b[0])@nb
             if da.min()>bound or da.max()<-bound or db.min()>bound or db.max()<-bound:continue
-            shared=aset & {tuple(p) for p in b}
-            bedges={frozenset((tuple(p),tuple(q))) for p,q in zip(b,np.roll(b,-1,axis=0))}
-            common_edges=aedges & bedges
+            if len(a)==len(b)==3 and shared and projected[i].area>0 and projected[j].area>0:
+                contact=projected[i].intersection(projected[j])
+                if contact.geom_type=='Point' and tuple(contact.coords[0]) in {(p[0],p[1]) for p in shared}:
+                    # A nonvertical triangle is a single-valued graph over XY.
+                    # A sole shared projected vertex therefore has exactly the
+                    # already-declared 3D contact, including high-degree fans.
+                    continue
+            if len(a)==len(b)==3 and common_edges:
+                # Two noncoplanar triangles sharing a whole edge can meet
+                # only on that edge. Coplanar triangles on opposite sides of
+                # it have the same guarantee. This is a geometric exclusion,
+                # not a relaxed contact tolerance.
+                if np.linalg.norm(np.cross(na,nb))>64*np.finfo(float).eps:continue
+                edge=next(iter(common_edges));first,second=map(np.asarray,edge)
+                other_a=next(p for p in a if tuple(p) not in edge)
+                other_b=next(p for p in b if tuple(p) not in edge)
+                if (np.cross(second-first,other_a-first)@na)*(np.cross(second-first,other_b-first)@na)<0:continue
             allowed=[Point(project([p])[0]) for p in shared]
             allowed.extend(LineString(project(list(edge))) for edge in common_edges)
             permitted=unary_union(allowed) if allowed else GeometryCollection()

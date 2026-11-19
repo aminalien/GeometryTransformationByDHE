@@ -63,20 +63,48 @@ def polygon_faces(owner,source,target,lo,hi,tolerance,anchor=None):
     return faces,None
 
 
-def smooth_faces(owner,sources,target,lo,hi,tolerance,anchor=None):
-    if any(g.interiors for g in sources) or getattr(target,'interiors',()):
-        raise ValueError('Smooth mapping requires simple hole-free polygon components.')
+def smooth_faces(owner,sources,target,lo,hi,tolerance,anchor=None,*,aggregation_backend=None,cancelled=lambda:False,progress=lambda text:None):
     if len(sources)>1:
         if target.geom_type!='Polygon':raise ValueError('Smooth aggregation requires one polygon target.')
         from aggregation_geometry import build_aggregation_preview
         from aggregation_layer import _plan_upper_shell
-        mid=(lo+hi)/2
-        preview=build_aggregation_preview({str(i):g for i,g in enumerate(sources)},tolerance=1e-7)
-        plans,_,_=_plan_upper_shell(preview,lo,lo+.8*(mid-lo),mid)
-        faces=[Face(owner,list(p.points),'mapping') for p in plans]
-        upper,pair=polygon_faces(owner,preview.hull,target,mid,hi,tolerance,anchor)
+        from medial_aggregation import medial_aggregation_faces
+        mid=(lo+hi)/2;prepared={str(i):g for i,g in enumerate(sources)};attempts=[]
+        if anchor is not None:raise ValueError('Vertex anchors apply to simple one-to-one mappings; clear the anchor for aggregation groups.')
+        if not all(p.is_valid and not p.is_empty and p.area>0 for p in sources):raise ValueError('Invalid Smooth aggregation source polygons.')
+        total=sum(p.area for p in sources);union_area=unary_union(sources).area
+        if total-union_area>arithmetic_bound([(total,union_area)]):raise ValueError('Smooth aggregation source polygons overlap.')
+        if aggregation_backend!='medial_axis':
+            try:
+                preview=build_aggregation_preview(prepared,tolerance=1e-7)
+                plans,_,_=_plan_upper_shell(preview,lo,lo+.8*(mid-lo),mid)
+                faces=[Face(owner,list(p.points),'mapping') for p in plans];hull=preview.hull
+                details=dict(method='straight_skeleton',timing=preview.timing_diagnostics)
+            except ValueError as exc:
+                attempts.append(dict(method='straight_skeleton',status='failed',exception_type=type(exc).__name__,
+                                     message=str(exc),diagnostic=deepcopy(getattr(exc,'report',{}))))
+                aggregation_backend='medial_axis'
+        if cancelled():raise ValueError('Mapping cancelled; previous models preserved.')
+        if aggregation_backend=='medial_axis':
+            try:
+                faces,hull,details=medial_aggregation_faces(owner,prepared,lo,lo+.8*(mid-lo),mid,tolerance,cancelled=cancelled,progress=progress)
+            except ValueError as exc:
+                if cancelled():raise ValueError('Mapping cancelled; previous models preserved.') from exc
+                attempts.append(dict(method='medial_axis',status='failed',exception_type=type(exc).__name__,
+                                     message=str(exc),diagnostic=deepcopy(getattr(exc,'report',{}))))
+                raise MappingBuildError('Skeleton-family aggregation failed: '+str(exc),
+                    failures=[dict(classification='skeleton_family_aggregation_failure',message=str(exc),attempts=attempts)]) from exc
+        attempts.append(dict(method=details['method'],status='passed'))
+        stages=['medial_axis_to_hull' if details['method']=='medial_axis' else 'skeleton_to_hull','hull_to_supplied_target']
+        # Target holes use the existing one-to-one hull morph with conforming
+        # volume decomposition, allocated by the group planner below.
+        if target.interiors:return faces,dict(**details,stages=stages,stage_z=mid,
+                                             attempts=attempts,hull=hull,hole_target_pending=True)
+        upper,pair=polygon_faces(owner,hull,target,mid,hi,tolerance,anchor)
         # The same-owner hull cap and bottom cancel during coordinate noding.
-        return faces+upper,dict(stages=['skeleton_to_hull','hull_to_supplied_target'],stage_z=mid)
+        return faces+upper,dict(**details,stages=stages,stage_z=mid,attempts=attempts)
+    if any(g.interiors for g in sources) or getattr(target,'interiors',()):
+        raise ValueError('Smooth mapping requires simple hole-free polygon components.')
     source=sources[0]
     if target.geom_type=='Polygon':return polygon_faces(owner,source,target,lo,hi,tolerance,anchor)
     if target.geom_type=='Point':
@@ -191,6 +219,18 @@ def _partition_plane(faces,extra_lines=()):
         for p in line:registry.canonical(p)
     for f in faces:
         for p in f.points:registry.canonical(p)
+    # A projected input vertex already has an exact 3D provenance. Reversing
+    # an oblique plane basis can accumulate error in the smaller XY component
+    # beyond that component's arithmetic registry bound. Restore the input
+    # vertex directly instead of reconstructing and trying to snap it later.
+    projected_registry=CoordinateRegistry([p for polygon in ps for p in polygon.exterior.coords]+
+        [p for line in extra_lines for p in project(line)],dimension=2)
+    originals={}
+    for points in [*(f.points for f in faces),*extra_lines]:
+        for xy,point in zip(project(points),points):
+            key=projected_registry.canonical(xy);original=registry.canonical(point)
+            if key not in originals:originals[key]=original
+            elif originals[key]!=original:originals[key]=None
     result=[];tree=STRtree(ps)
     for region in polygonize(unary_union(network)):
         point=region.representative_point();owners=tree.query(point,predicate='covered_by')
@@ -199,7 +239,10 @@ def _partition_plane(faces,extra_lines=()):
         for piece in pieces:
             ring=np.array(piece.exterior.coords[:-1]);span=max(np.linalg.norm(p-ring[0]) for p in ring)
             if span==0 or 2*piece.area/span<=registry.bound:continue
-            points=[registry.canonical(origin+x*u+y*v) for x,y in orient(piece,1).exterior.coords[:-1]]
+            points=[]
+            for x,y in orient(piece,1).exterior.coords[:-1]:
+                original=originals.get(projected_registry.canonical((x,y)))
+                points.append(original if original is not None else registry.canonical(origin+x*u+y*v))
             for i in owners:
                 arr=np.asarray(faces[i].points)-origin
                 normal=np.sum(np.cross(arr,np.roll(arr,-1,axis=0)),axis=0)
@@ -356,7 +399,7 @@ def _mapping_failure(exc,metadata,routing,phase,*,group=None):
     return MappingBuildError(message,phase=phase,routing=routing,evidence=evidence,cause=cause,failures=failures)
 
 
-def _build_mapping_once(source,target,groups,settings,*,forced_classic,validated_shells,progress,cancelled):
+def _build_mapping_once(source,target,groups,settings,*,forced_classic,forced_medial,group_plans,validated_shells,progress,cancelled):
     validate_groups(groups,source,target)
     for layer in (source,target):
         if overlap_review(layer):raise MappingBuildError(f'Resolve {layer.side} layer overlaps before construction.',side=layer.side)
@@ -385,6 +428,13 @@ def _build_mapping_once(source,target,groups,settings,*,forced_classic,validated
     local_components=defaultdict(list)
     for key,p in conformed.items():local_components[parents[key]].append(p)
     metadata={};geometries={};owner=0;faces=[];specs=[];contacts=defaultdict(list);routing=[]
+    def plan_smooth(group,cell,sources,target):
+        backend='medial_axis' if group['id'] in forced_medial else None
+        key=(group['id'],cell,backend)
+        if key not in group_plans:
+            group_plans[key]=smooth_faces(cell,sources,target,lo,hi,tol,group.get('anchor'),
+                                         aggregation_backend=backend,cancelled=cancelled,progress=lambda text:progress(group['id']+': '+text))
+        return deepcopy(group_plans[key])
     def allocate(uid,g,group,layer,dimension=3):
         nonlocal owner
         owner+=1;f=(source if layer=='source' else target).features[uid]
@@ -488,9 +538,9 @@ def _build_mapping_once(source,target,groups,settings,*,forced_classic,validated
                 # their transition to the lower source cells afterwards.
                 supplied_sources=[p for k in group['sources'] for p in polygons(local[k])]
                 o=allocate(uid,target_geometry,group['id'],'target')
-                continuous=(mode=='smooth' and target_geometry.geom_type=='Polygon' and
-                            (len(supplied_sources)>1 or target_geometry.interiors or any(p.interiors for p in supplied_sources)))
-                if continuous:
+                continuous=(mode=='smooth' and target_geometry.geom_type=='Polygon' and len(supplied_sources)==1 and
+                            (target_geometry.interiors or any(p.interiors for p in supplied_sources)))
+                if continuous or (len(supplied_sources)>1 and target_geometry.geom_type=='Polygon' and target_geometry.interiors):
                     reserved=[o]
                     def allocate_upper(geometry,intermediate):
                         if reserved:
@@ -498,11 +548,23 @@ def _build_mapping_once(source,target,groups,settings,*,forced_classic,validated
                         else:cell=allocate(uid,geometry,group['id'],'target')
                         if intermediate:metadata[cell]['intermediate']=True
                         return cell
-                    planned,details=continuous_polygon_faces(supplied_sources,target_geometry,lo,hi,allocate_upper,group.get('anchor'))
+                    if continuous:
+                        planned,details=continuous_polygon_faces(supplied_sources,target_geometry,lo,hi,allocate_upper,group.get('anchor'))
+                    else:
+                        # The hull cell ends at mid; target columns keep their
+                        # own physical owners and the supplied logical target ID.
+                        reserved.clear();metadata[o]['intermediate']=True
+                        planned,details=plan_smooth(group,o,supplied_sources,target_geometry)
+                        hull=details.pop('hull');details.pop('hole_target_pending')
+                        upper,upper_details=continuous_polygon_faces([hull],target_geometry,mid,hi,allocate_upper)
+                        details['hull_to_target']=upper_details;planned.extend(upper);geometries[o]=hull
                 else:
-                    planned,details=smooth_faces(o,supplied_sources,target_geometry,lo,hi,tol,group.get('anchor'))
+                    planned,details=plan_smooth(group,o,supplied_sources,target_geometry)
                 faces.extend(planned)
                 if details is not None:
+                    if len(supplied_sources)>1:
+                        parts=[dict(feature_id=k,component=i) for k in group['sources'] for i,_ in enumerate(polygons(local[k]))]
+                        details['source_parts']={str(i):record for i,record in enumerate(parts)}
                     row['construction']=({k:v for k,v in details.items() if k not in ('source','target')} if isinstance(details,dict) else details)
         except ValueError as exc:
             failure=_mapping_failure(exc,metadata,routing,'group_planning',group=group)
@@ -512,7 +574,8 @@ def _build_mapping_once(source,target,groups,settings,*,forced_classic,validated
         progress('Conforming common interfaces and validating the complete mapping')
         faces=conform_interfaces(faces,contacts) if faces else []
         if cancelled():raise ValueError('Mapping cancelled; previous models preserved.')
-        if faces:model,faces,_=realize(faces,origin,required_vertices=[tuple(p) for _,points,_ in specs for p in points],collect_shell_errors=True,validated_shells=validated_shells)
+        if faces:model,faces,_=realize(faces,origin,required_vertices=[tuple(p) for _,points,_ in specs for p in points],
+                                     collect_shell_errors=True,validated_shells=validated_shells,progress=progress)
         else:
             from main import ExtrusionModel
             dhe.reset_globals();ext=dhe.make_vertex(0,0,0,ch='VINF');ext.logical_feature_id='VINF'
@@ -539,31 +602,46 @@ def _build_mapping_once(source,target,groups,settings,*,forced_classic,validated
 _RETRYABLE_CONSTRUCTION={'unmatched_edges','nonmanifold_edge_incidence','inconsistent_orientation',
                     'invalid_vertex_link','disconnected_shell','unsupported_genus','self_intersection',
                     'nonmanifold_interface','interface_orientation_or_ownership','degenerate_edge',
-                    'transition_column_incidence','straight_skeleton_aggregation_failure','skeleton_time_conflict'}
+                    'transition_column_incidence','straight_skeleton_aggregation_failure','skeleton_time_conflict',
+                    'skeleton_family_aggregation_failure'}
 
 
 def build_mapping(source,target,groups,settings,*,progress=lambda *a:None,cancelled=lambda:False):
     validate_groups(groups,source,target)
     if settings.get('match_by_id',False):validate_id_groups(groups,source,target)
     initial={g['id']:route_group(g,source,target,settings.get('mode','hybrid'))[0] for g in groups}
-    forced={};history=[];validated_shells=set()
+    forced={};medial={};history=[];validated_shells=set();group_plans={}
     while True:
         if cancelled():raise ValueError('Mapping cancelled; previous models preserved.')
         try:
-            result=_build_mapping_once(source,target,groups,settings,forced_classic=forced,validated_shells=validated_shells,progress=progress,cancelled=cancelled)
+            result=_build_mapping_once(source,target,groups,settings,forced_classic=forced,forced_medial=medial,group_plans=group_plans,
+                                       validated_shells=validated_shells,progress=progress,cancelled=cancelled)
             result.report.update(construction_attempts=len(history)+1,retry_history=deepcopy(history))
             return result
         except MappingBuildError as exc:
             if cancelled():raise ValueError('Mapping cancelled; previous models preserved.') from exc
             exc.report['retry_history']=deepcopy(history)
-            failures=exc.report.get('failures',[]);eligible=set()
-            if settings.get('mode','hybrid')!='hybrid' or not failures:raise
+            failures=exc.report.get('failures',[]);eligible=set();retry_medial=set()
+            rows={r['group']:r for r in exc.report.get('routing',[])}
+            if not failures:raise
             for failure in failures:
                 candidates={g for g in failure['groups'] if initial.get(g)=='smooth' and g not in forced}
                 if failure.get('classification') not in _RETRYABLE_CONSTRUCTION or not candidates:raise
-                eligible.update(candidates)
+                next_medial=set();next_classic=set()
+                for g in candidates:
+                    if g not in medial and rows.get(g,{}).get('construction',{}).get('method')=='straight_skeleton':next_medial.add(g)
+                    elif settings.get('mode','hybrid')=='hybrid':next_classic.add(g)
+                # A coupled failure can involve an already-medial group and a
+                # still-retryable skeleton group. Exhausting one participant
+                # must not prevent the other from attempting its next method.
+                if not (next_medial or next_classic):raise
+                retry_medial.update(next_medial);eligible.update(next_classic)
             attempt=len(history)+1
-            history.append(dict(attempt=attempt,groups=sorted(eligible),failures=deepcopy(failures)))
+            history.append(dict(attempt=attempt,groups=sorted(eligible|retry_medial),failures=deepcopy(failures),
+                                methods={g:'medial_axis' if g in retry_medial else 'classic' for g in sorted(eligible|retry_medial)}))
+            for group in sorted(retry_medial):
+                medial[group]=dict(attempt=attempt,failures=deepcopy([f for f in failures if group in f['groups']]))
+                progress(f'Retrying {group} through medial axis after skeleton shell validation failed.')
             for group in sorted(eligible):
                 evidence=[f for f in failures if group in f['groups']]
                 forced[group]=dict(attempt=attempt,failures=deepcopy(evidence))

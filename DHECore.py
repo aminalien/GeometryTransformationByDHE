@@ -741,61 +741,33 @@ def MZEV(e1, e2, Vn=None):
     return eN
 
 
+def _walk_cell(e):
+    """Keep the historical NF/S discovery order with linear candidate work.
+
+    Once an edge's symmetric use has been visited, that candidate can never
+    become unvisited during this read-only walk. A stack therefore replaces
+    repeated reverse scans and copies of the full insertion-ordered dict.
+    No traversal cache survives a topology mutation.
+    """
+    edges=[e];faces=[e];visited={e};pending=[e];start=e
+    while True:
+        e=e.NF
+        if e is start:
+            while pending and pending[-1].S in visited:pending.pop()
+            if not pending:break
+            e=pending.pop().S;start=e;faces.append(e)
+        if e not in visited:
+            visited.add(e);edges.append(e);pending.append(e)
+    return edges,faces
+
+
 def Cell(e):
-    FaceCounter=1
-    starte = e
-    DictEdges = {e: ""}
-    finish = True
-    while finish:
-        e = e.NF
-        if (starte == e):
-            i = -1
-            while finish:
-                e = list(DictEdges.keys())[i].S
-                if (e in DictEdges):
-                    i -= 1
-                    if (abs(i) > len(DictEdges)):
-                        finish = False
-                        break
-                else:
-                    break
-            starte = e
-            DictEdges[e] = ""
-        else:
-            FaceCounter+=1
-            DictEdges[e] = ""
-    return list(DictEdges.keys())
+    return _walk_cell(e)[0]
 
 
 def get_UniqueFace_in_cell(e):
-        """Return all unique edges for each face in cell"""
-        FaceCounter=1
-        UniqueEdgeList=list()
-        UniqueEdgeList.append(e)
-        starte = e
-        DictEdges = {e: ""}
-        finish = True
-        while finish:
-            e = e.NF
-            if (starte == e):
-                i = -1
-                while finish:
-                    e = list(DictEdges.keys())[i].S
-
-                    if (e in DictEdges):
-                        i -= 1
-                        if (abs(i) > len(DictEdges)):
-                            finish = False
-                            break
-                    else:
-                        FaceCounter += 1
-                        UniqueEdgeList.append(e)
-                        break
-                starte = e
-                DictEdges[e] = ""
-            else:
-                DictEdges[e] = ""
-        return UniqueEdgeList
+    """Return the first edge of every face in historical discovery order."""
+    return _walk_cell(e)[1]
 
 
 def is_Face_planar(e, tol=1e-8):

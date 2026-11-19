@@ -22,6 +22,12 @@ REPORTED_ROOT=Path('C:/University/PhD/Data/Kleczkow Updated')
 
 
 class SkeletonFailureTests(unittest.TestCase):
+    def setUp(self):
+        # These legacy tests exercise Hybrid's final Classic recovery, after
+        # the new medial backend has also failed. Medial success has its own suite.
+        recovery=patch('medial_aggregation.medial_aggregation_faces',side_effect=ValueError('Medial recovery failed'))
+        recovery.start();self.addCleanup(recovery.stop)
+
     def test_exhaustion_is_a_structured_value_error_with_backend_cause(self):
         failure=ValueError(BACKEND_FAILURE)
         with patch('aggregation_geometry._skeleton_at_margin',side_effect=failure) as skeleton:
@@ -54,7 +60,7 @@ class SkeletonFailureTests(unittest.TestCase):
         self.assertEqual([row['builder'] for row in r.report['routing']],['classic','smooth'])
         self.assertNotIn('fallback',r.report['routing'][1]);self.assertEqual(r.report['retry_history'][0]['groups'],['broken'])
         failure=r.report['retry_history'][0]['failures'][0]
-        self.assertIn(BACKEND_FAILURE,failure['message']);self.assertEqual(failure['exception_type'],'AggregationConstructionError')
+        self.assertIn(BACKEND_FAILURE,failure['attempts'][0]['message']);self.assertEqual(failure['attempts'][0]['exception_type'],'AggregationConstructionError')
         self.assertEqual({f['feature_id'] for f in failure['features']},{'s1','s2','t1'})
         self.assertEqual(r.report['endpoint_validation'],'passed');json.dumps(r.report,allow_nan=False,default=str)
 
@@ -65,14 +71,16 @@ class SkeletonFailureTests(unittest.TestCase):
             r,_=build([box(0,0,2,2),box(4,0,6,2)],[box(0,0,6,2)])
         self.assertEqual(plan.call_count,1);self.assertEqual(_core(),before)
         report=r.report['retry_history'][0]['failures'][0]
-        self.assertEqual(report['classification'],'skeleton_time_conflict');self.assertEqual(report['owners'],['0','1'])
+        self.assertEqual(report['classification'],'skeleton_family_aggregation_failure')
+        self.assertEqual(report['attempts'][0]['diagnostic']['classification'],'skeleton_time_conflict')
+        self.assertEqual(report['attempts'][0]['diagnostic']['owners'],['0','1'])
         self.assertEqual({f['feature_id'] for f in report['features']},{'s1','s2','t1'})
         self.assertEqual(r.report['routing'][0]['builder'],'classic')
 
     def test_continuous_failure_has_short_headline_and_complete_feature_diagnostics(self):
         sources=[box(i*3,0,i*3+2,2) for i in range(8)];s,t=layers(sources,[box(0,0,23,2)])
         gs=[group(list(s.features),list(t.features))];before=_core()
-        with patch('mapping_builders.continuous_polygon_faces',side_effect=ValueError('Continuous surface failure')) as surface:
+        with patch('mapping_builders.smooth_faces',side_effect=ValueError('Continuous surface failure')) as surface:
             with self.assertRaises(MappingBuildError) as caught:build_mapping(s,t,gs,dict(mode='smooth'))
         exc=caught.exception;self.assertEqual(surface.call_count,1);self.assertEqual(_core(),before)
         self.assertIn('g1 (8 sources, 1 target)',str(exc));self.assertIn('Continuous surface failure',str(exc))
@@ -98,7 +106,7 @@ class SkeletonFailureTests(unittest.TestCase):
             with self.assertRaises(MappingBuildError) as caught:build_mapping(s,t,gs,{})
         self.assertEqual(skeleton.call_count,6);self.assertEqual(realize.call_count,1);self.assertEqual(_core(),before)
         self.assertIn('Classic shell failed',str(caught.exception))
-        self.assertIn(BACKEND_FAILURE,caught.exception.report['retry_history'][0]['failures'][0]['message'])
+        self.assertIn(BACKEND_FAILURE,caught.exception.report['retry_history'][0]['failures'][0]['attempts'][0]['message'])
 
     def test_cancel_before_classic_retry_preserves_core(self):
         s,t=layers([box(0,0,2,2),box(4,0,6,2)],[box(0,0,6,2)]);gs=[group(['s1','s2'],['t1'])]
@@ -126,7 +134,7 @@ class SkeletonFailureTests(unittest.TestCase):
         self.assertEqual(_core(),before);self.assertEqual(len(r.model.cells),71)
         self.assertEqual(r.report['construction_attempts'],2);self.assertEqual(r.report['routing'][0]['builder'],'classic')
         failure=r.report['retry_history'][0]['failures'][0]
-        self.assertEqual(failure['classification'],'straight_skeleton_aggregation_failure')
+        self.assertEqual(failure['classification'],'skeleton_family_aggregation_failure')
         self.assertEqual(len(failure['features']),71);self.assertEqual(r.report['endpoint_validation'],'passed')
 
 

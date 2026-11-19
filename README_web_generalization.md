@@ -176,25 +176,34 @@ Mapping uses the existing map, plane controls, current-top map and Inspect DHE.
 | Path | Construction |
 | --- | --- |
 | Classic | Source cells extend from Z=0 to the midpoint of source/target Z; supplied target cells extend from that interface to target Z. Coplanar cap overlays are partitioned into common faces and joined using actual DHE `JoinByFace` topology. No deep merge erases the two layer identities. |
-| Smooth | One-to-one rigid displacement/orientation connects cyclically corresponding vertices, with automatic rigid-fit alignment. Other simple one-to-one changes use the existing polygon transition. Many-to-one and holed polygon mappings use a continuous boundary-distance surface directly from the source union to the supplied target. Point and line collapses retain their supplied-target visibility/ridge conditions. Unmatched features use generated centroid transitions as described below. |
-| Hybrid | Groups containing polygon holes, adjacent-source merging (including displacement plus merging), splits and many-to-many groups use Classic. Other supported one-to-one changes/collapses, unmatched centroid transitions and separated-source aggregation first use Smooth; groups implicated in diagnosed topology failures retry through Classic. The review/report records the initial and final builders and each retry reason. |
+| Smooth | One-to-one rigid displacement/orientation connects cyclically corresponding vertices, with automatic rigid-fit alignment. Other simple one-to-one changes use the existing polygon transition. Many-to-one mappings first aggregate to a convex hull using a straight skeleton, recovering through a segment-Voronoi medial axis if necessary, then morph the hull into the supplied target. Point and line collapses retain their supplied-target visibility/ridge conditions. Unmatched features use generated centroid transitions as described below. |
+| Hybrid | Groups containing polygon holes, adjacent-source merging (including displacement plus merging), splits and many-to-many groups use Classic. Other supported one-to-one changes/collapses, unmatched centroid transitions and separated-source aggregation first use Smooth. Aggregation exhausts straight-skeleton and medial-axis construction before diagnosed failures retry through Classic. The review/report records the initial and final builders and each retry reason. |
 
-Smooth polygon groups can contain disjoint or touching source components and holes.
-The continuous method uses the original source union at source Z and the supplied
-target polygon at target Z. It does not introduce a hull stage or require a
-straight skeleton. Shared-boundary midpoint refinement resolves source/target
-corner roles while the normal arithmetic, shell, intersection and endpoint checks
-remain required. Holed caps are triangulated without filling holes. Holed targets
-use conforming triangular volume cells from the same height field, all retaining
-the logical target ID and provenance; volume parts that end before target Z are
-marked intermediate. Physical cell counts may exceed logical feature counts.
-Reports and exports identify `construction.method=continuous_boundary_distance`,
-the actual Z interval, source parts, surface facets, and hole/upper-cell counts.
-Vertex anchors apply to simple one-to-one mappings; clear them for continuous
-polygon groups. A supplied target must be one Polygon, including any holes.
-Splits and many-to-many mappings retain their existing Smooth restriction.
-Hybrid retains its existing routing and skeleton-to-hull aggregation path with
-Classic retries; selecting Smooth explicitly uses the continuous method above.
+Smooth many-to-one groups can contain disjoint or touching polygon components
+and source holes. Aggregation occupies the first half of the source/target Z
+interval; the existing hull-to-supplied-target morph occupies the second half.
+The aggregation stage never uses a continuous source/target boundary-distance
+ratio. Straight-skeleton construction and timing are attempted first. If they
+fail, the medial backend (`pyvoronoi==1.2.8`) uses generating boundary segments,
+endpoint sites and medial radii, with bounded curve and surface approximations.
+Its timing is independent of straight-skeleton event timing.
+
+Reports and exports record `construction.method=straight_skeleton` or
+`medial_axis`, attempted methods and original failure causes, source-part IDs,
+and the stage boundary. Medial reports also contain generating-site/ridge
+provenance and numerical error bounds. A combined shell failure can retry only
+the implicated straight-skeleton groups through the medial backend. Smooth
+never silently switches to Classic or the continuous aggregation method.
+
+Existing one-to-one hole-preserving transitions and the hull-to-target stage
+remain supported. Holed caps are triangulated without filling their endpoint
+holes; holed targets use conforming volume parts retaining the logical target
+ID. Parts ending before target Z are marked intermediate. Physical cell counts
+may exceed logical feature counts. All shell, intersection and endpoint checks
+remain required, and failed or cancelled builds preserve the previous model.
+Vertex anchors apply to simple one-to-one mappings; clear them for aggregation
+groups. A supplied target must be one Polygon, including any holes. Splits and
+many-to-many mappings retain their existing Smooth restriction.
 
 **Map only by ID** is off by default. Enable it in the Mapping tab to match every
 polygon by its displayed original ID in one batch, regardless of location or

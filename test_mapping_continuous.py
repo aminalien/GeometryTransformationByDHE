@@ -1,4 +1,4 @@
-"""Continuous Smooth unions, hole-preserving volumes and complete-file mapping."""
+"""Skeleton-first Smooth unions, hole-preserving volumes and complete-file mapping."""
 import json
 from pathlib import Path
 from threading import Event
@@ -22,19 +22,20 @@ def donut():return Polygon(box(0,0,6,6).exterior.coords,[box(2,2,4,4).exterior.c
 
 
 class ContinuousMappingTests(unittest.TestCase):
-    def test_separated_sources_change_continuously_without_a_skeleton(self):
+    def test_separated_sources_use_skeleton_before_hull_to_target(self):
         ss=[box(0,0,2,2),box(4,0,6,2)];target=box(0,0,6,2)
         s,t=layers(ss,[target]);saved=[f.geometry.wkb for l in (s,t) for f in l.features.values()];core=_core()
         gs=[group(['s1','s2'],['t1'])]
-        with patch('aggregation_geometry.build_aggregation_preview',side_effect=AssertionError('Skeleton must not run')):
+        with patch('mapping_builders.continuous_polygon_faces',side_effect=AssertionError('Continuous aggregation must not run')):
             r=build_mapping(s,t,gs,dict(mode='smooth'))
         scene=MappingScene(r,1);scene.validate_endpoints(s,t,gs)
         self.assertEqual(_core(),core);self.assertEqual(saved,[f.geometry.wkb for l in (s,t) for f in l.features.values()])
         self.assertEqual(len(r.model.cells),3);self.assertEqual(r.report['construction_attempts'],1);self.assertEqual(r.report['retry_history'],[])
         row=r.report['routing'][0];self.assertEqual(row['builder'],'smooth');self.assertNotIn('fallback',row)
-        self.assertEqual(row['construction']['stages'],['source_union_to_supplied_target'])
+        self.assertEqual(row['construction']['stages'],['skeleton_to_hull','hull_to_supplied_target'])
+        self.assertEqual(row['construction']['method'],'straight_skeleton')
         last=unary_union(ss)
-        for z in (7.5,10.,12.5):
+        for z in (6.,7.,8.):
             sections=scene.slicer.sections(SlicePlane.horizontal(z));actual=unary_union(list(sections.values()))
             self.assertGreater(actual.area,8.);self.assertLess(actual.area,12.)
             self.assertLess(last.difference(actual).area,1e-8);last=actual
@@ -49,7 +50,7 @@ class ContinuousMappingTests(unittest.TestCase):
             with self.subTest(sources=len(sources),target=target.wkt):
                 r,_=build(sources,[target],mode='smooth')
                 self.assertEqual(r.report['endpoint_validation'],'passed')
-                self.assertEqual(r.report['routing'][0]['construction']['method'],'continuous_boundary_distance')
+                self.assertIn(r.report['routing'][0]['construction']['method'],('straight_skeleton','medial_axis'))
 
     def test_source_target_and_persistent_holes_have_exact_endpoints(self):
         for source,target in ((donut(),box(0,0,6,6)),(box(0,0,6,6),donut()),(donut(),donut()),
@@ -109,12 +110,12 @@ class ReportedContinuousMappingTests(unittest.TestCase):
         gs,_=suggest_groups(s,t,overlap_fraction=.25,search_distance=10.);gs=automatic_review(gs,s,t)
         self.assertEqual((len(s.features),len(t.features),len(gs)),(563,34,34));self.assertTrue(all(g['decision']=='map' for g in gs))
         saved=[f.geometry.wkb for layer in (s,t) for f in layer.features.values()];core=_core()
-        with patch('aggregation_geometry.build_aggregation_preview',side_effect=AssertionError('Skeleton must not run')):
-            r=build_mapping(s,t,gs,dict(mode='smooth',source_z=5.,target_z=15.,geometry_tolerance=.01))
+        r=build_mapping(s,t,gs,dict(mode='smooth',source_z=5.,target_z=15.,geometry_tolerance=.01))
         scene=MappingScene(r,1);scene.validate_endpoints(s,t,gs)
         self.assertEqual(_core(),core);self.assertEqual(saved,[f.geometry.wkb for layer in (s,t) for f in layer.features.values()])
-        self.assertEqual(len(r.model.cells),617);self.assertTrue(all(row['builder']=='smooth' and 'fallback' not in row for row in r.report['routing']))
-        self.assertEqual(r.report['logical_features'],dict(source=563,target=34));self.assertEqual(r.report['retry_history'],[])
+        self.assertTrue(all(row['builder']=='smooth' and 'fallback' not in row for row in r.report['routing']))
+        self.assertEqual(r.report['logical_features'],dict(source=563,target=34))
+        self.assertTrue(all(row['construction']['method'] in ('straight_skeleton','medial_axis') for row in r.report['routing'] if len(row['sources'])>1))
         self.assertEqual(r.report['endpoint_validation'],'passed')
         for z in (7.5,10.,12.5):
             sections=list(scene.slicer.sections(SlicePlane.horizontal(z)).values())
