@@ -1,5 +1,6 @@
 """Original OBJ boundaries, full live DHE references, and snapshot-pinned API."""
 from io import BytesIO
+from dataclasses import replace
 import json
 from pathlib import Path
 import tempfile
@@ -35,7 +36,84 @@ def obj_files(frozen,coordinates='local',revision=3):
         return archive.read('primal.obj').decode(),json.loads(archive.read('metadata.json')),archive.read('primal.mtl').decode()
 
 
+def edge_obj(frozen,kind='primal-edges',coordinates='local',revision=3):
+    with frozen.edge_obj(kind,coordinates,revision) as file:return file.read().decode()
+
+
+def wire_rows(text):
+    lines=text.splitlines();metadata=json.loads(next(l[2:] for l in lines if l.startswith('# {')))
+    vertices=[tuple(map(float,l.split()[1:])) for l in lines if l.startswith('v ')]
+    edges=[tuple(map(int,l.split()[1:])) for l in lines if l.startswith('l ')]
+    if any(not l.startswith(('#','v ','l ')) for l in lines):raise AssertionError('Unexpected non-wireframe OBJ element')
+    for edge in edges:
+        if len(edge)!=2 or any(not 1<=i<=len(vertices) for i in edge):raise AssertionError('Invalid OBJ line indices')
+    segments=[tuple(sorted((vertices[a-1],vertices[b-1]))) for a,b in edges]
+    if len(set(segments))!=len(segments) or any(a==b for a,b in segments):raise AssertionError('Duplicate or zero-length segment')
+    if len(set(vertices))!=len(vertices):raise AssertionError('Duplicate OBJ vertex')
+    if (metadata['vertices'],metadata['edges'])!=(len(vertices),len(edges)):raise AssertionError('Incorrect wireframe counts')
+    return vertices,segments,metadata
+
+
 class SpaceExportTests(unittest.TestCase):
+    def test_unique_cube_and_shared_interface_edges(self):
+        for geometries,primal_count,dual_count in (([box(100,200,102,202)],12,0),
+                                                  ([box(100,200,102,202),box(102,200,104,202)],20,1)):
+            _,s=scene(geometries);before=_core()
+            for kind,count in (('primal-edges',primal_count),('dual-edges',dual_count)):
+                vertices,segments,meta=wire_rows(edge_obj(s.export,kind))
+                self.assertEqual(len(segments),count);self.assertEqual(meta['snapshot_id'],s.export.snapshot_id)
+                if kind=='dual-edges':self.assertEqual(len(vertices),2 if count else 0)
+            self.assertEqual(_core(),before)
+
+    def test_primal_coincident_topology_and_zero_length_uses_are_removed(self):
+        _,s=scene();f=s.export
+        record=next(r for r in f.records if r.kind=='primal');other=f.records[record.S]
+        start=len(f.records);v=len(f.vertices)
+        extra_vertices=(f.vertices[record.V],f.vertices[other.V])
+        extra_records=(replace(record,V=v,S=start+1),replace(other,V=v+1,S=start),
+                       replace(record,V=v,S=start+3),replace(other,V=v,S=start+2))
+        duplicate=replace(f,vertices=f.vertices+extra_vertices,records=f.records+extra_records)
+        self.assertEqual(edge_obj(duplicate),edge_obj(f))
+
+    def test_dual_geometric_duplicates_contacts_exterior_and_self_links(self):
+        _,s=scene();f=s.export;nodes=[json.loads(row) for row in f.nodes_json if not json.loads(row)['exterior']]
+        first,second=nodes;vertex=f.vertices[second['vertex']]
+        additions=(dict(id='coincident',vertex=second['vertex'],exterior=False),
+                   dict(id='contact-only',vertex=len(f.vertices),exterior=False))
+        links=[dict(id='reverse',kind='face',relation='DHE_adjacency',source=second['id'],target=first['id'],exterior=False),
+               dict(id='coincident',kind='face',relation='DHE_adjacency',source=first['id'],target='coincident',exterior=False),
+               dict(id='self',kind='face',relation='DHE_adjacency',source=first['id'],target=first['id'],exterior=False),
+               dict(id='contact',kind='edge',relation='mapping_contact',source=first['id'],target='contact-only',exterior=False)]
+        altered=replace(f,vertices=f.vertices+(replace(vertex,position=(50.,60.,70.)),),
+                        nodes_json=f.nodes_json+tuple(json.dumps(n) for n in additions),
+                        links_json=f.links_json+tuple(json.dumps(link) for link in links))
+        self.assertEqual(edge_obj(altered,'dual-edges'),edge_obj(f,'dual-edges'))
+
+    def test_wireframe_coordinate_modes_precision_and_snapshot_immutability(self):
+        session,s=scene();f=s.export
+        for kind in ('primal-edges','dual-edges'):
+            local,_,meta=wire_rows(edge_obj(f,kind));projected,_,absolute=wire_rows(edge_obj(f,kind,'projected'))
+            self.assertEqual(set(projected),{(p[0]+session.origin[0],p[1]+session.origin[1],p[2]) for p in local})
+            self.assertEqual(absolute['coordinates'],'projected');self.assertEqual(meta['crs'],'EPSG:2180')
+            before=edge_obj(f,kind);vertex=session.model.cells[0].seed.V;old=vertex.x
+            try:
+                vertex.x=999.;s.payload['dataset']='mutated';self.assertEqual(edge_obj(f,kind),before)
+            finally:vertex.x=old
+        record=next(r for r in f.records if r.kind=='primal');vid=record.V
+        precise=replace(f,vertices=tuple(replace(v,position=(v.position[0],v.position[1],1.2345678901234567)) if i==vid else v
+                                       for i,v in enumerate(f.vertices)))
+        self.assertIn(format(1.2345678901234567,'.17g'),edge_obj(precise))
+
+    def test_edge_and_sheet_primitives_are_in_primal_but_contacts_are_not_dual_edges(self):
+        for target in (Point(2,1),LineString([(1,1),(3,1)])):
+            r,s=build([box(0,0,4,3)],[target],mode='classic')
+            _,segments,_=wire_rows(edge_obj(s.export,revision=1));_,dual,_=wire_rows(edge_obj(s.export,'dual-edges',revision=1))
+            self.assertTrue(r.model.mapping_contacts);self.assertEqual(dual,[])
+            if target.geom_type=='Point':self.assertIn(((2.,1.,10.),(2.,1.,15.)),segments)
+            else:
+                ring=[(1.,1.,10.),(3.,1.,10.),(3.,1.,15.),(1.,1.,15.)]
+                for a,b in zip(ring,ring[1:]+ring[:1]):self.assertIn(tuple(sorted((a,b))),segments)
+
     def check_pointers(self,data):
         rs=data['dhe_records'];vs=data['vertices'];self.assertEqual([r['id'] for r in rs],list(range(len(rs))))
         for r in rs:
@@ -161,6 +239,11 @@ class SpaceExportApiTests(unittest.TestCase):
         before=_core();revision=self.w.revision
         with patch('web_generalization_app.GeneralizationSession',side_effect=AssertionError('Export rebuilt model')):
             data=self.request();archive=self.request('primal',coordinates='projected')
+            for kind in ('primal-edges','dual-edges'):
+                obj=self.request(kind,coordinates='projected');self.assertEqual(obj.status_code,200)
+                self.assertTrue(obj.headers['content-type'].startswith('model/obj'))
+                self.assertTrue(obj.headers['content-disposition'].endswith('.obj"'))
+                self.assertEqual(wire_rows(obj.text)[2]['coordinates'],'projected')
         self.assertEqual(data.status_code,200);self.assertEqual(archive.status_code,200)
         self.assertTrue(data.headers['content-type'].startswith('application/json'));self.assertIn('attachment',archive.headers['content-disposition'])
         with ZipFile(BytesIO(archive.content)) as z:self.assertEqual(set(z.namelist()),{'primal.obj','primal.mtl','metadata.json'})
@@ -168,17 +251,24 @@ class SpaceExportApiTests(unittest.TestCase):
         self.assertEqual(self.request(coordinates='degrees').status_code,422)
         self.assertEqual(self.request(snapshot='expired').status_code,409)
         self.assertEqual(self.request(workspace='unknown').status_code,422)
+        for kind in ('primal-edges','dual-edges'):
+            self.assertEqual(self.request(kind,snapshot='expired').status_code,409)
+            self.assertEqual(self.request(kind,coordinates='degrees').status_code,422)
+        self.assertEqual(self.request('unsupported').status_code,422)
 
     def test_preview_identity_and_apply_metadata(self):
         original=self.w.scene.export.snapshot_id
         result=self.w.execute('preview',self.w.revision,operation='point',selected=[1])
         preview=self.w.preview_scene.export.snapshot_id
         data=self.request(snapshot=preview).json();self.assertEqual(data['metadata']['preview_id'],result['preview_id'])
+        for kind in ('primal-edges','dual-edges'):
+            self.assertEqual(wire_rows(self.request(kind,snapshot=preview).text)[2]['snapshot_id'],preview)
         self.assertEqual(self.request(snapshot=original).status_code,200)
         self.w.execute('apply',self.w.revision,operation='point',selected=[1])
         applied=self.request().json()['metadata']
         self.assertIsNone(applied['preview_id']);self.assertEqual(applied['cursor'],1);self.assertEqual(len(applied['history']),2)
         self.assertEqual(self.request(snapshot=preview).status_code,409);self.assertEqual(self.request(snapshot=original).status_code,409)
+        for kind in ('primal-edges','dual-edges'):self.assertEqual(self.request(kind,snapshot=preview).status_code,409)
 
     def test_download_remains_pinned_if_model_changes_after_lookup(self):
         old=self.w.scene.export.snapshot_id;original=ExportSnapshot.duality_chunks
@@ -199,6 +289,18 @@ class SpaceExportApiTests(unittest.TestCase):
         stale=self.request(workspace='mapping',snapshot=snapshot).json()['metadata']
         self.assertTrue(stale['stale']);self.assertEqual(stale['mapping_report']['settings']['source_label'],'')
         self.assertEqual(self.request(snapshot=snapshot).status_code,409)
+        for kind in ('primal-edges','dual-edges'):
+            response=self.request(kind,workspace='mapping',snapshot=snapshot);self.assertEqual(response.status_code,200)
+            self.assertTrue(wire_rows(response.text)[2]['stale'])
+
+    def test_edge_obj_remains_pinned_after_lookup_and_closes_download_file(self):
+        old=self.w.scene.export.snapshot_id;original=ExportSnapshot.edge_obj;files=[]
+        def changed(frozen,*args):
+            self.w.execute('default',self.w.revision)
+            file=original(frozen,*args);files.append(file);return file
+        with patch.object(ExportSnapshot,'edge_obj',changed):answer=self.request('primal-edges',snapshot=old)
+        self.assertEqual(answer.status_code,200);self.assertEqual(wire_rows(answer.text)[2]['snapshot_id'],old)
+        self.assertTrue(files[0].closed);self.assertEqual(self.request('primal-edges',snapshot=old).status_code,409)
 
 
 if __name__=='__main__':unittest.main()

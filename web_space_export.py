@@ -1,6 +1,7 @@
 """Immutable, local-coordinate exports of validated live DHE snapshots."""
 from dataclasses import dataclass,replace
 import json
+from math import isfinite
 from tempfile import SpooledTemporaryFile
 from uuid import uuid4
 from zipfile import ZipFile,ZIP_DEFLATED
@@ -183,6 +184,37 @@ class ExportSnapshot:
             output.seek(0);return output
         except BaseException:output.close();raise
 
+    def edge_obj(self,kind,coordinates,workspace_revision):
+        """Exact geometric segments from the frozen primal or finite dual graph."""
+        if kind not in ('primal-edges','dual-edges'):raise ValueError('Choose primal-edges or dual-edges.')
+        meta=self.metadata(coordinates,workspace_revision);positions=tuple(self.positions(coordinates));segments=set()
+        def add(a,b):
+            a,b=positions[a],positions[b]
+            if not all(isfinite(x) for p in (a,b) for x in p):raise ValueError('OBJ edges require finite XYZ coordinates.')
+            if a!=b:segments.add(tuple(sorted((a,b))))
+        if kind=='primal-edges':
+            for record in self.records:
+                if record.kind!='primal':continue
+                a,b=record.V,self.records[record.S].V
+                if self.vertices[a].kind==self.vertices[b].kind=='primal':add(a,b)
+        else:
+            nodes={node['id']:node['vertex'] for node in map(json.loads,self.nodes_json) if not node['exterior']}
+            for link in map(json.loads,self.links_json):
+                if link['kind']!='face' or link['relation']!='DHE_adjacency' or link['exterior']:continue
+                add(nodes[link['source']],nodes[link['target']])
+        vertices=sorted({p for segment in segments for p in segment});index={p:i+1 for i,p in enumerate(vertices)}
+        summary={k:meta[k] for k in ('snapshot_id','workspace','revision','workspace_revision_at_export','stale','coordinates','crs','origin','z_semantics')}
+        summary.update(edge_scope='bounded_primal' if kind=='primal-edges' else 'finite_face_adjacency',
+                       uniqueness='Exact unordered endpoint XYZ pairs; zero-length segments omitted',
+                       vertices=len(vertices),edges=len(segments))
+        output=SpooledTemporaryFile(max_size=8*1024**2,mode='w+b')
+        try:
+            output.write((f'# Unique {kind}; raw transition Z; Z-up\n# '+encoded(summary)+'\n').encode('utf8'))
+            for p in vertices:output.write(('v '+' '.join(format(x,'.17g') for x in p)+'\n').encode('ascii'))
+            for a,b in sorted(segments):output.write(f'l {index[a]} {index[b]}\n'.encode('ascii'))
+            output.seek(0);return output
+        except BaseException:output.close();raise
+
 
 def attach_export_routes(app,workspace):
     from typing import Literal
@@ -191,7 +223,7 @@ def attach_export_routes(app,workspace):
     from starlette.background import BackgroundTask
 
     @app.get('/api/export/{kind}')
-    def download(kind:Literal['primal','duality'],workspace_name:Literal['generalize','mapping'],snapshot_id:str,
+    def download(kind:Literal['primal','duality','primal-edges','dual-edges'],workspace_name:Literal['generalize','mapping'],snapshot_id:str,
                  coordinates:Literal['local','projected']='local'):
         with workspace.lock:
             if workspace_name=='generalize':
@@ -204,6 +236,7 @@ def attach_export_routes(app,workspace):
         prefix=f'dhe_{workspace_name}_{kind}_{snapshot_id[:8]}'
         headers={'Cache-Control':'no-store','Content-Disposition':f'attachment; filename="{prefix}.json"'}
         if kind=='duality':return StreamingResponse(frozen.duality_chunks(coordinates,revision),media_type='application/json',headers=headers)
-        data=frozen.primal_zip(coordinates,revision)
-        headers.update({'Content-Disposition':f'attachment; filename="{prefix}.zip"','Content-Encoding':'identity'})
-        return StreamingResponse(iter(lambda:data.read(65536),b''),media_type='application/zip',headers=headers,background=BackgroundTask(data.close))
+        if kind=='primal':data=frozen.primal_zip(coordinates,revision);extension='zip';media_type='application/zip'
+        else:data=frozen.edge_obj(kind,coordinates,revision);extension='obj';media_type='model/obj'
+        headers.update({'Content-Disposition':f'attachment; filename="{prefix}.{extension}"','Content-Encoding':'identity'})
+        return StreamingResponse(iter(lambda:data.read(65536),b''),media_type=media_type,headers=headers,background=BackgroundTask(data.close))

@@ -347,6 +347,18 @@ vertex ID in the full DHE export. `obj_element` numbers the `f`/`l`/`p` elements
 together, starting at 1. Polygon support and Z-up import settings depend on the
 receiving OBJ application.
 
+**Primal edges OBJ** and **Dual edges OBJ** download plain wireframe `.obj`
+files containing only `v` vertices and `l` line segments. Primal includes unique
+edges from all bounded cells, Mapping sheets and edge primitives. Dual includes
+finite cell-to-cell face-adjacency links; unbounded `VINF` links and Mapping
+edge/vertex contact links are omitted. Exact unordered endpoint XYZ pairs in the
+chosen output coordinates are exported once, including coincident/reversed
+duplicates. Zero-length segments are omitted; no snapping tolerance or collinear
+merging is applied. An empty finite dual graph produces a valid OBJ with no
+vertices or lines. Header comments identify the snapshot, coordinates, CRS,
+raw transition Z, and vertex/edge counts. These geometric wireframes do not
+replace the full topology-preserving OBJ ZIP and JSON exports.
+
 **Duality JSON** contains schema-version-1 tables:
 
 | Table | Contents |

@@ -86,8 +86,8 @@
     <div class="section-title"><span>EXPORT SPACE</span></div>
     <p id="export-details" class="hint">Load a validated model to export.</p>
     <label>Coordinates<select id="export-coordinates"><option value="local">Local XY (metres)</option><option value="projected">Absolute projected CRS</option></select></label>
-    <div class="operation-actions"><button id="export-primal" disabled>Primal OBJ</button><button id="export-duality" disabled>Duality JSON</button></div>
-    <p class="hint">All bounded cells. Original polygons, internal interfaces and raw Z. OBJ ZIP includes materials and metadata; JSON includes the graph and full live DHE pointers.</p>
+    <div class="operation-actions"><button id="export-primal" disabled>Primal OBJ</button><button id="export-duality" disabled>Duality JSON</button><button id="export-primal-edges" disabled>Primal edges OBJ</button><button id="export-dual-edges" disabled>Dual edges OBJ</button></div>
+    <p class="hint">All bounded cells and raw Z. Primal OBJ ZIP includes faces, materials and metadata; JSON includes the graph and DHE pointers. Edge OBJ files contain each exact geometric segment once. Dual edges include finite face adjacency only, omitting VINF and Mapping contact links.</p>
     <p id="export-message" class="hint" role="status"></p>
   </section>
   <details class="load-notes"><summary id="notes-title">Import & construction notes</summary><div id="notes"></div></details>

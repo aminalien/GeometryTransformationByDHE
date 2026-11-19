@@ -443,7 +443,7 @@ function fitData(){
 }
 function exportControls(){
   const scene=displayScene(),available=Boolean(scene?.snapshot_id)&&!state.inputPreview;
-  for(const id of ['export-primal','export-duality','export-coordinates'])$(id).disabled=!available||state.busy||state.exporting;
+  for(const id of ['export-primal','export-duality','export-primal-edges','export-dual-edges','export-coordinates'])$(id).disabled=!available||state.busy||state.exporting;
   $('export-details').textContent=available?`${scene.workspace==='mapping'?'Mapping':'Generalize'} · ${scene.preview?'validated preview':'validated model'} · ${scene.cells} cells/primitives · ${scene.crs}${scene.stale?' · built from an earlier review':''}`:'Load or build a validated model to export.';
   topology();const edge=state.edgeMap.get(state.edge);
   $('focus-cell').disabled=!edge||!state.mapReady||Boolean(state.inputPreview);
@@ -457,13 +457,14 @@ async function downloadSpace(kind){
     const response=await fetch('/api/export/'+kind+'?'+q);
     if(!response.ok){const error=await response.json();throw new Error(error.detail||'Export failed.');}
     const blob=await response.blob(),url=URL.createObjectURL(blob),a=document.createElement('a');
-    a.href=url;a.download=response.headers.get('Content-Disposition')?.match(/filename="([^"]+)"/)?.[1]||('dhe_'+kind+(kind==='primal'?'.zip':'.json'));
+    a.href=url;a.download=response.headers.get('Content-Disposition')?.match(/filename="([^"]+)"/)?.[1]||('dhe_'+kind+(kind==='primal'?'.zip':kind==='duality'?'.json':'.obj'));
     a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
     $('export-message').textContent=`Downloaded ${kind} from snapshot ${scene.snapshot_id.slice(0,8)}.`;
   }catch(error){$('export-message').textContent=error.message;status(error.message,true);}
   finally{state.exporting=false;exportControls();}
 }
 $('export-primal').onclick=()=>downloadSpace('primal');$('export-duality').onclick=()=>downloadSpace('duality');
+$('export-primal-edges').onclick=()=>downloadSpace('primal-edges');$('export-dual-edges').onclick=()=>downloadSpace('dual-edges');
 $('focus-cell').onclick=guard(()=>{
   topology();const edge=state.edgeMap.get(state.edge);if(!edge)throw new Error('Select a half-edge first.');
   const unique=new Map();for(const e of state.edgesByCell.get(edge.owner)||[])for(const p of [e.source,e.target])unique.set(p.join(','),zpoint(p,!$('show-3d').checked));

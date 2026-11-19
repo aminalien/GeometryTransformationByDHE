@@ -119,6 +119,17 @@ assert.equal(new Uint8Array(await downloads.at(-1).blob.arrayBuffer())[0],80);
 el('export-coordinates').value='projected';await el('export-duality').emit('click');
 const exported=JSON.parse(await downloads.at(-1).blob.text());assert.equal(exported.metadata.coordinates,'projected');
 assert.equal(exported.metadata.revision,revision);assert.ok(exported.dhe_records.length);assert.equal(el('export-duality').disabled,false);
+for(const kind of ['primal-edges','dual-edges']){
+  assert.equal(el('export-'+kind).disabled,false);const pending=el('export-'+kind).emit('click');
+  assert.equal(el('export-primal-edges').disabled,true);assert.equal(el('export-dual-edges').disabled,true);await pending;
+  const download=downloads.at(-1);assert.ok(download.filename.endsWith('.obj'));
+  const text=await download.blob.text(),rows=text.trim().split('\n');
+  const meta=JSON.parse(rows.find(line=>line.startsWith('# {')).slice(2));
+  assert.equal(meta.coordinates,'projected');assert.equal(meta.revision,revision);
+  assert.equal(meta.edge_scope,kind==='primal-edges'?'bounded_primal':'finite_face_adjacency');
+  assert.ok(rows.every(line=>line.startsWith('#')||line.startsWith('v ')||line.startsWith('l ')));
+  assert.equal(rows.filter(line=>line.startsWith('l ')).length,meta.edges);
+}
 el('show-3d').checked=false;await el('show-3d').emit('change');
 await waitFor(()=>!layer('dhe-faces')&&layer('slice-fills')?.data.length,'Flat mode');
 assert.equal(maps[0].maxPitch,0);assert.ok(layer('slice-fills').data.every(d=>d.rings.every(r=>r.every(p=>p[2]===.04))));
@@ -226,6 +237,11 @@ if(process.env.DHE_WEB_TEST_MAPPING==='1'){
   assert.ok(report.routing.every(g=>g.builder==='classic'));
   await el('export-duality').emit('click');const mappingExport=JSON.parse(await downloads.at(-1).blob.text());
   assert.equal(mappingExport.metadata.workspace,'mapping');assert.equal(mappingExport.metadata.mapping_report.endpoint_validation,'passed');
+  for(const kind of ['primal-edges','dual-edges']){
+    await el('export-'+kind).emit('click');assert.ok(downloads.at(-1).filename.endsWith('.obj'));
+    const text=await downloads.at(-1).blob.text(),meta=JSON.parse(text.split('\n').find(line=>line.startsWith('# {')).slice(2));
+    assert.equal(meta.workspace,'mapping');assert.equal(meta.snapshot_id,mappingExport.metadata.snapshot_id);
+  }
   // Force a pair of moving cells to cross and verify the approved Hybrid retry
   // appears as actual final routing in the UI, with valid Smooth cells retained.
   el('mapping-mode').value='hybrid';
