@@ -269,6 +269,8 @@ def route_group(group,source,target,mode):
     holed=[k for k in ss if any(p.interiors for p in polygons(source.features[k].geometry))]
     holed.extend(k for k in ts if any(p.interiors for p in polygons(target.features[k].geometry)))
     if holed:
+        if mode=='smooth' and decision=='map' and len(ts)==1 and target.features[ts[0]].geometry.geom_type=='Polygon':
+            return 'smooth','Continuous hole-preserving polygon mapping'
         return ('unsupported','Smooth-only cannot preserve polygon holes; choose Classic or Hybrid for '+', '.join(holed)) if mode=='smooth' else ('classic','Hole-preserving automatic decomposition: '+', '.join(holed))
     if decision in ('appearance','disappearance'):
         return 'smooth','Centroid-based '+decision
@@ -281,5 +283,6 @@ def route_group(group,source,target,mode):
             return 'unsupported','Many-to-one smooth aggregation requires a polygon target'
         adjacent=unary_union([source.features[k].geometry for k in ss]).geom_type=='Polygon'
         if adjacent and mode=='hybrid':return 'classic','Adjacent-source merging, including displacement plus merging'
+        if mode=='smooth':return 'smooth','Continuous source-union to supplied target'
         return 'smooth','Two-stage aggregation to the supplied target'
     return 'unsupported','Unsupported correspondence'

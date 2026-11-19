@@ -69,18 +69,18 @@ class SkeletonFailureTests(unittest.TestCase):
         self.assertEqual({f['feature_id'] for f in report['features']},{'s1','s2','t1'})
         self.assertEqual(r.report['routing'][0]['builder'],'classic')
 
-    def test_strict_smooth_has_short_headline_and_complete_feature_diagnostics(self):
+    def test_continuous_failure_has_short_headline_and_complete_feature_diagnostics(self):
         sources=[box(i*3,0,i*3+2,2) for i in range(8)];s,t=layers(sources,[box(0,0,23,2)])
         gs=[group(list(s.features),list(t.features))];before=_core()
-        with patch('aggregation_geometry._skeleton_at_margin',side_effect=ValueError(BACKEND_FAILURE)) as skeleton:
+        with patch('mapping_builders.continuous_polygon_faces',side_effect=ValueError('Continuous surface failure')) as surface:
             with self.assertRaises(MappingBuildError) as caught:build_mapping(s,t,gs,dict(mode='smooth'))
-        exc=caught.exception;self.assertEqual(skeleton.call_count,6);self.assertEqual(_core(),before)
-        self.assertIn('g1 (8 sources, 1 target)',str(exc));self.assertIn(BACKEND_FAILURE,str(exc))
+        exc=caught.exception;self.assertEqual(surface.call_count,1);self.assertEqual(_core(),before)
+        self.assertIn('g1 (8 sources, 1 target)',str(exc));self.assertIn('Continuous surface failure',str(exc))
         self.assertNotIn('source s8 (original',str(exc));self.assertLess(len(str(exc)),400)
-        self.assertEqual(exc.report['cause']['exception_type'],'AggregationConstructionError')
+        self.assertEqual(exc.report['cause']['exception_type'],'ValueError')
         self.assertEqual(exc.report['retry_history'],[])
         failure=exc.report['failures'][0]
-        self.assertEqual(len(failure['features']),9);self.assertEqual(len(failure['attempts']),6)
+        self.assertEqual(len(failure['features']),9)
         self.assertTrue(all('original_id' in f for f in failure['features']));json.dumps(exc.report,allow_nan=False)
 
     def test_plain_planning_errors_keep_the_cause_and_do_not_retry(self):

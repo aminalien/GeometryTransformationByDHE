@@ -176,8 +176,25 @@ Mapping uses the existing map, plane controls, current-top map and Inspect DHE.
 | Path | Construction |
 | --- | --- |
 | Classic | Source cells extend from Z=0 to the midpoint of source/target Z; supplied target cells extend from that interface to target Z. Coplanar cap overlays are partitioned into common faces and joined using actual DHE `JoinByFace` topology. No deep merge erases the two layer identities. |
-| Smooth | One-to-one rigid displacement/orientation connects cyclically corresponding vertices, with automatic rigid-fit alignment. Other polygon changes use the existing polygon transition. Point and line collapses use the supplied target, subject to the existing visibility/ridge conditions. Unmatched features use generated centroid transitions as described below. Separated-source aggregation first reaches the convex hull, then transitions to the supplied target in the same upper cell; the target is not replaced by that hull. |
+| Smooth | One-to-one rigid displacement/orientation connects cyclically corresponding vertices, with automatic rigid-fit alignment. Other simple one-to-one changes use the existing polygon transition. Many-to-one and holed polygon mappings use a continuous boundary-distance surface directly from the source union to the supplied target. Point and line collapses retain their supplied-target visibility/ridge conditions. Unmatched features use generated centroid transitions as described below. |
 | Hybrid | Groups containing polygon holes, adjacent-source merging (including displacement plus merging), splits and many-to-many groups use Classic. Other supported one-to-one changes/collapses, unmatched centroid transitions and separated-source aggregation first use Smooth; groups implicated in diagnosed topology failures retry through Classic. The review/report records the initial and final builders and each retry reason. |
+
+Smooth polygon groups can contain disjoint or touching source components and holes.
+The continuous method uses the original source union at source Z and the supplied
+target polygon at target Z. It does not introduce a hull stage or require a
+straight skeleton. Shared-boundary midpoint refinement resolves source/target
+corner roles while the normal arithmetic, shell, intersection and endpoint checks
+remain required. Holed caps are triangulated without filling holes. Holed targets
+use conforming triangular volume cells from the same height field, all retaining
+the logical target ID and provenance; volume parts that end before target Z are
+marked intermediate. Physical cell counts may exceed logical feature counts.
+Reports and exports identify `construction.method=continuous_boundary_distance`,
+the actual Z interval, source parts, surface facets, and hole/upper-cell counts.
+Vertex anchors apply to simple one-to-one mappings; clear them for continuous
+polygon groups. A supplied target must be one Polygon, including any holes.
+Splits and many-to-many mappings retain their existing Smooth restriction.
+Hybrid retains its existing routing and skeleton-to-hull aggregation path with
+Classic retries; selecting Smooth explicitly uses the continuous method above.
 
 **Map only by ID** is off by default. Enable it in the Mapping tab to match every
 polygon by its displayed original ID in one batch, regardless of location or
@@ -213,8 +230,9 @@ An unmatched target line expands from its length-weighted centroid through real
 triangular DHE sheets; an unmatched point uses a vertical edge trajectory.
 Reports record transition direction, projected centroid coordinates and CRS, and
 the midpoint stage level when used. Both input layers are still required;
-polygons with holes keep their existing Classic/Hybrid handling and Smooth
-limitation.
+unmatched polygons with holes keep their existing Classic/Hybrid handling and
+Smooth limitation. Mapped polygon groups support holes through the continuous
+Smooth construction above.
 
 Hybrid collects independent shell failures before allocating DHE records and
 rebuilds the implicated Smooth groups through Classic, then reconforms and validates
@@ -238,8 +256,9 @@ backend reasons and frame-attempt details remain in `retry_history` and failed-j
 diagnostics. Invalid inputs retain their ordinary validation errors. Large-group
 error headlines show the group, source/target counts, stage and original cause;
 the complete feature/original-ID list remains in diagnostics. Diagnostic `cause`
-records the exception type and message. Smooth-only reports these failures without
-changing builders.
+records the exception type and message. Smooth's continuous polygon-group path
+bypasses the skeleton backend; failures in its own surface construction remain
+explicit and do not switch to Classic.
 Only attributed topology and classified skeleton failures qualify. Classic-only failures, unidentifiable
 errors, invalid parameters, unexpected allocation errors and cancellation are not
 hidden by retries. Preview/build remains atomic, and supplied endpoints are retained.

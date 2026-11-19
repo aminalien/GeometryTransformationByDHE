@@ -14,7 +14,7 @@ from shapely.ops import unary_union,polygonize,nearest_points
 
 import DHECore as dhe
 from generalization_model import (Face,_prism,_polygon_patches,_collapse_patches,_layer_faces,
-                                 _conform_footprints,realize,_core,_restore)
+                                 _conform_footprints,_transition_columns,realize,_core,_restore)
 from mapping_data import polygons,validate_groups,route_group,overlap_review,member_records,review_summary,validate_id_groups
 from shell_conformity import CoordinateRegistry,arithmetic_bound
 
@@ -90,6 +90,47 @@ def smooth_faces(owner,sources,target,lo,hi,tolerance,anchor=None):
     faces=_layer_faces({owner:source},{},patches,lo,hi)
     faces.append(Face(owner,[(*p,lo) for p in orient(source,-1).exterior.coords[:-1]],'bottom'))
     return faces,None
+
+
+def continuous_polygon_faces(sources,target,lo,hi,allocate,anchor=None):
+    """A continuous union-to-target surface, with volume parts for target holes."""
+    if anchor is not None:
+        raise ValueError('Vertex anchors apply to simple one-to-one mappings; clear the anchor for continuous polygon groups.')
+    source=unary_union(sources)
+    patches,extensions=_polygon_patches(0,source,target,lo,hi,refine_shared_boundary=True)
+    details=dict(method='continuous_boundary_distance',stages=['source_union_to_supplied_target'],
+                 source_z=lo,target_z=hi,source_parts=len(sources),surface_facets=len(patches),
+                 boundary_distance_regions=extensions,source_holes=sum(len(p.interiors) for p in polygons(source)),
+                 target_holes=len(target.interiors))
+    if not target.interiors:
+        owner=allocate(target,False)
+        # Patch ownership is logical; each normal group has one upper cell.
+        for patch in patches:patch.source=owner
+        faces=_layer_faces({owner:source},{owner:target},patches,lo,hi)
+        for polygon in polygons(source):
+            caps=constrained_delaunay_triangles(polygon).geoms if polygon.interiors else [polygon]
+            faces.extend(Face(owner,[(*p,lo) for p in orient(cap,-1).exterior.coords[:-1]],'bottom') for cap in caps)
+        details['upper_cells']=1
+        return faces,details
+    # A through-hole cannot be represented by one genus-zero DHE cell.
+    # Use the same continuous height field in conforming triangular columns.
+    columns,_,_=_transition_columns({0:source},{0:target},patches,lo,hi,triangulate_constant=True)
+    faces=[];count=0
+    for column in columns:
+        lower=[lo]*len(column.points) if column.old is not None else column.heights
+        upper=[hi]*len(column.points) if column.new is not None else column.heights
+        if all(a==b for a,b in zip(lower,upper)):continue
+        footprint=Polygon(column.points);owner=allocate(footprint,column.new is None);count+=1
+        bottom=[(*p,z) for p,z in zip(column.points,lower)];top=[(*p,z) for p,z in zip(column.points,upper)]
+        rings=[(list(reversed(bottom)),'bottom' if all(z==lo for z in lower) else 'transition'),
+               (top,'top' if all(z==hi for z in upper) else 'transition')]
+        rings.extend(([bottom[i],bottom[j],top[j],top[i]],'wall')
+                     for i in range(len(bottom)) for j in [(i+1)%len(bottom)])
+        for points,part in rings:
+            points=[p for i,p in enumerate(points) if p!=points[i-1]]
+            if len(points)>=3:faces.append(Face(owner,points,part))
+    details.update(upper_cells=count,hole_decomposition='conforming_triangular_transition_columns')
+    return faces,details
 
 
 def centroid_faces(owner,polygon,lo,hi,*,appearance=False):
@@ -442,12 +483,24 @@ def _build_mapping_once(source,target,groups,settings,*,forced_classic,validated
             else:
                 uid=group['targets'][0];target_geometry=local[uid]
                 if target_geometry.geom_type=='MultiPolygon':raise ValueError('Smooth mapping requires a single target polygon component.')
-                o=allocate(uid,target_geometry,group['id'],'target')
                 # Overlay nodes may split corresponding straight edges at different
                 # offsets. Pair the supplied rings first; final noding conforms
                 # their transition to the lower source cells afterwards.
                 supplied_sources=[p for k in group['sources'] for p in polygons(local[k])]
-                planned,details=smooth_faces(o,supplied_sources,target_geometry,lo,hi,tol,group.get('anchor'))
+                o=allocate(uid,target_geometry,group['id'],'target')
+                continuous=(mode=='smooth' and target_geometry.geom_type=='Polygon' and
+                            (len(supplied_sources)>1 or target_geometry.interiors or any(p.interiors for p in supplied_sources)))
+                if continuous:
+                    reserved=[o]
+                    def allocate_upper(geometry,intermediate):
+                        if reserved:
+                            cell=reserved.pop();geometries[cell]=geometry
+                        else:cell=allocate(uid,geometry,group['id'],'target')
+                        if intermediate:metadata[cell]['intermediate']=True
+                        return cell
+                    planned,details=continuous_polygon_faces(supplied_sources,target_geometry,lo,hi,allocate_upper,group.get('anchor'))
+                else:
+                    planned,details=smooth_faces(o,supplied_sources,target_geometry,lo,hi,tol,group.get('anchor'))
                 faces.extend(planned)
                 if details is not None:
                     row['construction']=({k:v for k,v in details.items() if k not in ('source','target')} if isinstance(details,dict) else details)

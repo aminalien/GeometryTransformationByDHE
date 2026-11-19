@@ -346,8 +346,8 @@ class MappingBuilderTests(unittest.TestCase):
                     measured=unary_union([actual[str(k)] for k,m in r.metadata.items() if m['layer']==side and str(k) in actual])
                     self.assertLess(measured.symmetric_difference(expected).area,1e-8)
                     if expected.interiors:self.assertEqual(measured.intersection(box(1,1,3,3)).area,0)
-        with self.assertRaisesRegex(MappingBuildError,'Smooth-only cannot preserve polygon holes'):
-            build([box(0,0,4,4)],[donut],mode='smooth')
+        r,_=build([box(0,0,4,4)],[donut],mode='smooth')
+        self.assertEqual(r.report['routing'][0]['construction']['method'],'continuous_boundary_distance')
 
     def test_indexed_noding_preserves_exhaustive_three_dimensional_incidence(self):
         fs=[Face(1,[(0,0,0),(8,0,8),(0,4,0)]),
@@ -627,11 +627,40 @@ class MappingApiTests(unittest.TestCase):
                 m.execute('build',revision,progress=lambda message:stop.set() if message.startswith('Retrying ') else None,cancelled=stop.is_set)
             self.assertEqual(m.revision,revision);self.assertIs(m.result,published);self.assertIs(m.layers,inputs);self.assertIs(m.groups,groups)
             self.command('review',{'groups':gs,'settings':{'mode':'smooth'}});revision=m.revision
+            self.command('build')
+            self.assertEqual(m.revision,revision+1)
+            self.assertEqual(m.result.result.report['routing'][0]['construction']['method'],'continuous_boundary_distance')
+            self.assertEqual(m.result.result.report['retry_history'],[])
+
+    def test_continuous_smooth_hole_preview_export_publication_failure_and_cancel(self):
+        from mapping_builders import continuous_polygon_faces
+        root=Path(self.temp.name);target=Polygon(box(0,0,6,6).exterior.coords,[box(2,2,4,4).exterior.coords])
+        for side,geometries in (('source',[box(0,0,2,2),box(4,0,6,2)]),('target',[target])):
+            gpd.GeoDataFrame({'id':list(range(len(geometries)))},geometry=geometries,crs=2180).to_file(root/(side+'.geojson'),driver='GeoJSON')
+        self.w.execute('default',0);generalize=self.w.scene;core=_core()
+        self.ready();self.command('build');m=self.w.mapping;old=m.result
+        self.command('review',{'groups':m.groups,'settings':{'mode':'smooth'}});revision=m.revision
+        self.command('build',{'preview':True});self.assertIs(m.result,old);self.assertEqual(m.revision,revision)
+        token=m.preview.preview_id;payload=self.client.get('/api/mapping/scene',params={'preview_id':token}).json()
+        report=payload['mapping_report'];construction=report['routing'][0]['construction']
+        self.assertEqual(construction['method'],'continuous_boundary_distance');self.assertGreater(construction['upper_cells'],1)
+        self.assertEqual(report['logical_features'],dict(source=2,target=1));self.assertEqual(report['endpoint_validation'],'passed')
+        export=self.client.get('/api/export/duality',params={'workspace_name':'mapping','snapshot_id':payload['snapshot_id']})
+        self.assertEqual(export.status_code,200)
+        self.assertEqual(export.json()['metadata']['mapping_report']['routing'][0]['construction'],construction)
+        self.assertIs(self.w.scene,generalize);self.assertEqual(_core(),core)
+        self.command('build');published=m.result;self.assertIsNone(m.preview);self.assertEqual(m.revision,revision+1)
+        revision=m.revision;inputs=m.layers;groups=m.groups
+        with patch('mapping_builders.continuous_polygon_faces',side_effect=ValueError('Test continuous failure')):
             failed=self.command('build',success=False)
-            self.assertIn(BACKEND_FAILURE,failed['error'])
-            self.assertEqual(failed['diagnostic']['cause']['exception_type'],'AggregationConstructionError')
-            self.assertEqual(failed['diagnostic']['retry_history'],[])
-            self.assertEqual(m.revision,revision);self.assertIs(m.result,published)
+        self.assertIn('Test continuous failure',failed['error']);self.assertEqual(failed['diagnostic']['retry_history'],[])
+        stop=Event()
+        def cancel_after_surface(*args,**kwargs):
+            result=continuous_polygon_faces(*args,**kwargs);stop.set();return result
+        with patch('mapping_builders.continuous_polygon_faces',side_effect=cancel_after_surface):
+            with self.assertRaisesRegex(ValueError,'cancelled'):m.execute('build',revision,cancelled=stop.is_set)
+        self.assertEqual(m.revision,revision);self.assertIs(m.result,published);self.assertIs(m.layers,inputs);self.assertIs(m.groups,groups)
+        self.assertIs(self.w.scene,generalize);self.assertEqual(_core(),core)
 
     def test_id_setting_before_import_batch_build_and_switch_back(self):
         root=Path(self.temp.name)

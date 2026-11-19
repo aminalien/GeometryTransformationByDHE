@@ -517,12 +517,14 @@ def _refine_terminal_internal_edges(triangles, source, target, region, lo, hi):
     return result
 
 
-def _polygon_patches(owner, source, target, lo, hi):
+def _polygon_patches(owner, source, target, lo, hi, *, refine_shared_boundary=False):
     """Use the paper strip whenever possible; otherwise a boundary-distance lift."""
     from active_region_triangulation import VertexRole
     from top_face_overlay import RegionKind
     from transition_layer import _strip
     patches, extensions = [], 0
+    bound=arithmetic_bound([p for g in (source,target) for polygon in parts(g)
+                            for ring in (polygon.exterior,*polygon.interiors) for p in ring.coords])
     for geometry, kind in ((source.difference(target), RegionKind.ACTIVE_SOURCE_ONLY), (target.difference(source), RegionKind.ACTIVE_TARGET_ONLY)):
         for region in parts(geometry):
             if region.area <= TOL*TOL:
@@ -537,7 +539,6 @@ def _polygon_patches(owner, source, target, lo, hi):
                 roles = {}
                 for v in vertices:
                     p = Point(v.x,v.y)
-                    bound=arithmetic_bound([*source.exterior.coords,*target.exterior.coords])
                     s, t = source.boundary.distance(p)<=bound, target.boundary.distance(p)<=bound
                     roles[v] = VertexRole.BOTH if s and t else VertexRole.SOURCE if s else VertexRole.TARGET if t else VertexRole.NEITHER
                 context = SimpleNamespace(source_geometry=source, target_geometry=target, tolerance=TOL,
@@ -550,12 +551,21 @@ def _polygon_patches(owner, source, target, lo, hi):
             if triangles is None:
                 extensions += 1
                 triangles = []
-                for triangle in constrained_delaunay_triangles(region).geoms:
+                triangulation_region=region
+                if refine_shared_boundary:
+                    def refined_ring(ring):
+                        result=[]
+                        for a,b in zip(ring.coords,list(ring.coords)[1:]):
+                            result.append(a)
+                            if all(source.boundary.distance(Point(p))<=bound and target.boundary.distance(Point(p))<=bound for p in (a,b)):
+                                result.append(((a[0]+b[0])/2,(a[1]+b[1])/2))
+                        return result
+                    triangulation_region=Polygon(refined_ring(region.exterior),[refined_ring(r) for r in region.interiors])
+                for triangle in constrained_delaunay_triangles(triangulation_region).geoms:
                     points = []
                     for p in list(triangle.exterior.coords)[:-1]:
                         ds, dt = source.boundary.distance(Point(p)), target.boundary.distance(Point(p))
-                        bound=arithmetic_bound([*source.exterior.coords,*target.exterior.coords])
-                        fraction = ds/(ds+dt) if ds+dt > bound else .5
+                        fraction = ds/(ds+dt) if ds+dt > bound else 0. if refine_shared_boundary else .5
                         points.append((*p, lo+(hi-lo)*fraction))
                     if max(p[2] for p in points)-min(p[2] for p in points) <= TOL:
                         center = triangle.centroid
@@ -662,7 +672,7 @@ class Column:
     heights: list[float]
 
 
-def _layer_faces(old, new, patches, lo, hi, *, diagnostics=None):
+def _transition_columns(old, new, patches, lo, hi, *, diagnostics=None,triangulate_constant=False):
     boundaries = [p.boundary for p in [*old.values(), *new.values()]] + [p.geometry.boundary for p in patches]
     network = union_all(boundaries)
     xy_nodes=CoordinateRegistry([p[:2] for patch in patches for p in patch.points]+
@@ -686,7 +696,7 @@ def _layer_faces(old, new, patches, lo, hi, *, diagnostics=None):
         patch = next((p for p in matching if p.source == before), next((p for p in matching if p.source == after), matching[0] if matching else None))
         if before != after and patch is None:
             raise ValueError(f"No transition surface for ownership change {before} → {after}.")
-        if before==after:
+        if before==after and not triangulate_constant:
             for ring in [orient(region,1).exterior,*orient(region,1).interiors]:
                 xy=[xy_nodes.canonical(p) for p in list(ring.coords)[:-1]]
                 xy=[p for i,p in enumerate(xy) if p!=xy[i-1]]
@@ -728,6 +738,11 @@ def _layer_faces(old, new, patches, lo, hi, *, diagnostics=None):
                     faces.append(Face(before, points, "transition"))
                 if after is not None:
                     faces.append(Face(after, list(reversed(points)), "transition"))
+    return columns,faces,xy_nodes
+
+
+def _layer_faces(old, new, patches, lo, hi, *, diagnostics=None):
+    columns,faces,xy_nodes=_transition_columns(old,new,patches,lo,hi,diagnostics=diagnostics)
     # Vertical curtains between neighbouring interval columns. Heights may differ
     # across a cut; split their crossings before subtracting same-owner intervals.
     edges = defaultdict(list)
