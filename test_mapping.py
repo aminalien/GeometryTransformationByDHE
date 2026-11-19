@@ -603,6 +603,36 @@ class MappingApiTests(unittest.TestCase):
         self.assertIn('original failing, group g452',job['error'])
         self.assertEqual(m.revision,revision);self.assertIs(m.result,published)
 
+    def test_skeleton_fallback_preview_report_export_strict_failure_and_cancel_are_atomic(self):
+        from test_mapping_skeleton_recovery import BACKEND_FAILURE
+        root=Path(self.temp.name)
+        for side,geometries in (('source',[box(0,0,2,2),box(4,0,6,2)]),('target',[box(0,0,6,2)])):
+            gpd.GeoDataFrame({'id':list(range(len(geometries)))},geometry=geometries,crs=2180).to_file(root/(side+'.geojson'),driver='GeoJSON')
+        self.ready();self.command('build');m=self.w.mapping;previous=m.result
+        gs=[group(['s1','s2'],['t1'])]
+        self.command('review',{'groups':gs,'settings':{'mode':'hybrid'}})
+        with patch('aggregation_geometry._skeleton_at_margin',side_effect=ValueError(BACKEND_FAILURE)):
+            self.command('build',{'preview':True});preview=m.preview
+            self.assertIs(m.result,previous)
+            report=self.client.get('/api/mapping/report',params={'preview_id':preview.preview_id}).json()
+            self.assertIn(BACKEND_FAILURE,report['retry_history'][0]['failures'][0]['message'])
+            exported=self.client.get('/api/export/duality',params={'workspace_name':'mapping','snapshot_id':preview.payload['snapshot_id']})
+            self.assertEqual(exported.status_code,200)
+            self.assertEqual(exported.json()['metadata']['mapping_report']['retry_history'],report['retry_history'])
+            state=self.client.get('/api/mapping/state').json()
+            self.assertEqual(state['groups'][0]['builder'],'classic');self.assertEqual(state['groups'][0]['initial_builder'],'smooth')
+            self.command('build');published=m.result;self.assertIsNone(m.preview)
+            stop=Event();revision=m.revision;inputs=m.layers;groups=m.groups
+            with self.assertRaisesRegex(ValueError,'cancelled'):
+                m.execute('build',revision,progress=lambda message:stop.set() if message.startswith('Retrying ') else None,cancelled=stop.is_set)
+            self.assertEqual(m.revision,revision);self.assertIs(m.result,published);self.assertIs(m.layers,inputs);self.assertIs(m.groups,groups)
+            self.command('review',{'groups':gs,'settings':{'mode':'smooth'}});revision=m.revision
+            failed=self.command('build',success=False)
+            self.assertIn(BACKEND_FAILURE,failed['error'])
+            self.assertEqual(failed['diagnostic']['cause']['exception_type'],'AggregationConstructionError')
+            self.assertEqual(failed['diagnostic']['retry_history'],[])
+            self.assertEqual(m.revision,revision);self.assertIs(m.result,published)
+
     def test_id_setting_before_import_batch_build_and_switch_back(self):
         root=Path(self.temp.name)
         for side,ids in (('source',['A','B']),('target',['B','A'])):

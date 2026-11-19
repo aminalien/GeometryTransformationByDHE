@@ -289,6 +289,7 @@ class MappingResult:
 def _mapping_failure(exc,metadata,routing,phase,*,group=None):
     """Attach semantic identities without guessing from a transient cell number."""
     evidence=getattr(exc,'report',{})
+    cause=dict(exception_type=type(exc).__name__,message=str(exc) or type(exc).__name__)
     failures=[]
     for item in evidence.get('failures',[evidence]):
         owners=set(item.get('owners',[]))
@@ -296,15 +297,22 @@ def _mapping_failure(exc,metadata,routing,phase,*,group=None):
         owners.update(c[key] for c in item.get('columns',[]) for key in ('old','new') if c.get(key) is not None)
         if group is not None:owners.update(k for k,m in metadata.items() if m['group']==group['id'])
         features=[dict(cell=int(k),feature_id=metadata[k]['feature_id'],original_id=metadata[k]['original_id'],
-                       layer=metadata[k]['layer'],group=metadata[k]['group']) for k in sorted(owners) if k in metadata]
+                       layer=metadata[k]['layer'],group=metadata[k]['group']) for k in sorted(k for k in owners if k in metadata)]
         groups={f['group'] for f in features}
         if group is not None:groups.add(group['id'])
-        failures.append({**item,'features':features,'groups':sorted(groups)})
+        failures.append({**item,'classification':item.get('classification','construction_error'),
+                         'message':item.get('message') or cause['message'],'exception_type':cause['exception_type'],
+                         'features':features,'groups':sorted(groups)})
     identified=[f for failure in failures for f in failure['features']]
     names=', '.join(dict.fromkeys(f"{f['layer']} {f['feature_id']} (original {f['original_id']}, group {f['group']}, cell {f['cell']})" for f in identified))
     classifications=', '.join(dict.fromkeys(f.get('classification','construction_error') for f in failures))
-    message=f'{names}: {classifications} during {phase}.' if names else str(exc)
-    return MappingBuildError(message,phase=phase,routing=routing,evidence=evidence,failures=failures)
+    if len({f['cell'] for f in identified})>6:
+        groups=sorted({g for failure in failures for g in failure['groups']})
+        counts={side:len({f['feature_id'] for f in identified if f['layer']==side}) for side in ('source','target')}
+        summary=', '.join(f"{count} {side}{'s' if count!=1 else ''}" for side,count in counts.items())
+        names=f"Mapping {'group' if len(groups)==1 else 'groups'} {', '.join(groups)} ({summary})"
+    message=f"{names}: {classifications} during {phase}: {cause['message']}" if names else cause['message']
+    return MappingBuildError(message,phase=phase,routing=routing,evidence=evidence,cause=cause,failures=failures)
 
 
 def _build_mapping_once(source,target,groups,settings,*,forced_classic,validated_shells,progress,cancelled):
@@ -475,10 +483,10 @@ def _build_mapping_once(source,target,groups,settings,*,forced_classic,validated
 
 # Only diagnosed construction failures qualify. Parameter, cancellation, I/O and
 # unexpected allocation errors retain their original failure behavior.
-_RETRYABLE_TOPOLOGY={'unmatched_edges','nonmanifold_edge_incidence','inconsistent_orientation',
+_RETRYABLE_CONSTRUCTION={'unmatched_edges','nonmanifold_edge_incidence','inconsistent_orientation',
                     'invalid_vertex_link','disconnected_shell','unsupported_genus','self_intersection',
                     'nonmanifold_interface','interface_orientation_or_ownership','degenerate_edge',
-                    'transition_column_incidence'}
+                    'transition_column_incidence','straight_skeleton_aggregation_failure','skeleton_time_conflict'}
 
 
 def build_mapping(source,target,groups,settings,*,progress=lambda *a:None,cancelled=lambda:False):
@@ -499,7 +507,7 @@ def build_mapping(source,target,groups,settings,*,progress=lambda *a:None,cancel
             if settings.get('mode','hybrid')!='hybrid' or not failures:raise
             for failure in failures:
                 candidates={g for g in failure['groups'] if initial.get(g)=='smooth' and g not in forced}
-                if failure.get('classification') not in _RETRYABLE_TOPOLOGY or not candidates:raise
+                if failure.get('classification') not in _RETRYABLE_CONSTRUCTION or not candidates:raise
                 eligible.update(candidates)
             attempt=len(history)+1
             history.append(dict(attempt=attempt,groups=sorted(eligible),failures=deepcopy(failures)))

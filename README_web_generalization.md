@@ -230,7 +230,17 @@ projected edge. Only the affected group changes to Classic; its supplied source
 and target endpoints still undergo the normal validation. Planning diagnostics
 include the group and original source/target feature IDs. Smooth-only continues
 to report the construction failure.
-Only attributed topology failures qualify. Classic-only failures, unidentifiable
+Hybrid also retries `straight_skeleton_aggregation_failure` after the existing
+six frame attempts are exhausted, and diagnosed `skeleton_time_conflict` failures.
+For example, antiparallel segments can prevent a Smooth many-to-one skeleton;
+the affected group then uses Classic with the same supplied endpoints. Original
+backend reasons and frame-attempt details remain in `retry_history` and failed-job
+diagnostics. Invalid inputs retain their ordinary validation errors. Large-group
+error headlines show the group, source/target counts, stage and original cause;
+the complete feature/original-ID list remains in diagnostics. Diagnostic `cause`
+records the exception type and message. Smooth-only reports these failures without
+changing builders.
+Only attributed topology and classified skeleton failures qualify. Classic-only failures, unidentifiable
 errors, invalid parameters, unexpected allocation errors and cancellation are not
 hidden by retries. Preview/build remains atomic, and supplied endpoints are retained.
 Progress names groups being retried; after success the review table shows actual

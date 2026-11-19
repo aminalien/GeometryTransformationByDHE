@@ -21,6 +21,14 @@ from skeleton_timing import TimingNode,TimingFace,TimingArc,TimingGraph
 SOURCE_COLORS = ("#277db4", "#ed8a23", "#26996b", "#b85769", "#20a8b5", "#c2a514")
 
 
+class AggregationConstructionError(ValueError):
+    """Exhausted skeleton construction, distinct from invalid input parameters."""
+    def __init__(self,message,attempts):
+        self.report=dict(classification='straight_skeleton_aggregation_failure',stage='aggregation_preview',
+                         message=message,attempts=attempts)
+        super().__init__(message)
+
+
 @dataclass(frozen=True)
 class GrowthFace:
     source_id: str
@@ -249,6 +257,7 @@ def build_aggregation_preview(
     span = max(hull.bounds[2] - hull.bounds[0], hull.bounds[3] - hull.bounds[1], 1.0)
     previous = None
     failure = "No stable skeleton partition found."
+    attempts=[];last_error=None
     for attempt in range(6):
         margin = span * 2 ** (attempt + 1)
         try:
@@ -265,7 +274,14 @@ def build_aggregation_preview(
                     _targets(preview)
                     return preview
             previous = partitions
+            failure="No stable skeleton partition found."
+            last_error=None
+            attempts.append(dict(attempt=attempt+1,frame_margin=margin,status='unstable',message=failure))
         except (ValueError, RuntimeError, ArithmeticError, AssertionError, IndexError, KeyError) as exc:
             previous = None
             failure = str(exc) or type(exc).__name__
-    raise ValueError(f"Cannot construct a frame-independent straight-skeleton aggregation: {failure}")
+            last_error=exc
+            attempts.append(dict(attempt=attempt+1,frame_margin=margin,status='failed',
+                                 exception_type=type(exc).__name__,message=failure))
+    raise AggregationConstructionError(
+        f"Cannot construct a frame-independent straight-skeleton aggregation: {failure}",attempts) from last_error
