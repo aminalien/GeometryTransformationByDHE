@@ -13,8 +13,26 @@ from shapely.ops import unary_union
 from shell_conformity import arithmetic_bound
 from web_generalization_data import json_value
 
-DEFAULT_MAPPING_SOURCE='C:/University/PhD/Data/Kleczkow Updated/osm_data.shp'
-DEFAULT_MAPPING_TARGET='C:/University/PhD/Data/Kleczkow Updated/citygml_data.shp'
+DEFAULT_MAPPING_SOURCE='C:/University/PhD/Data/Kleczkow Updated/osm_data1.shp'
+DEFAULT_MAPPING_TARGET='C:/University/PhD/Data/Kleczkow Updated/citygml_data1.shp'
+
+
+def change_layer_side(layer,side):
+    """Retag identities and provenance without changing input attributes or geometry."""
+    prefix='s' if side=='source' else 't'
+    def uid(value):return prefix+value[1:]
+    features={}
+    for feature in layer.features.values():
+        records=member_records(feature)
+        for record in records:record['uid']=uid(record['uid'])
+        key=uid(feature.uid)
+        features[key]=replace(feature,uid=key,members=tuple(map(uid,feature.members)),member_records=tuple(records))
+    notes=deepcopy(list(layer.notes))
+    for note in notes:
+        if 'feature' in note:note['feature']=uid(note['feature'])
+        if 'feature_ids' in note:note['feature_ids']=list(map(uid,note['feature_ids']))
+        if note.get('keeper'):note['keeper']=uid(note['keeper'])
+    return replace(layer,side=side,features=features,notes=tuple(notes))
 
 
 def polygons(g):

@@ -1,0 +1,25 @@
+name: Web cloud checks
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-web.txt
+      - run: python -m pip install -r requirements-web.txt
+      - run: python scripts/fetch_demo_data.py
+      - run: python -m unittest test_web_cloud test_web_generalization test_web_launch test_mapping test_space_export
+        env:
+          MPLBACKEND: Agg

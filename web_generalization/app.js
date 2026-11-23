@@ -12,7 +12,7 @@ const state={scene:null,preview:null,section:null,revision:0,selected:new Set(),
   camera:null,modeCamera:null,config:null,upload:null,markers:[],custom:null,background:'osm',fitOnNext:true,
   sliceInFlight:false,sliceQueued:false,inputPreview:null,inputPreviewJob:null,miniFitPending:false,
   topologyScene:null,edgeMap:new Map(),faceMap:new Map(),edgesByCell:new Map(),fallback:new Set(),mapWarnings:new Map(),
-  levelActions:[],levelStep:null,jobId:null,automaticReport:null,autoInputs:{},exporting:false};
+  levelActions:[],levelStep:null,jobId:null,automaticReport:null,autoInputs:{},exporting:false,osmDestination:'generalize'};
 let mapping=null;
 // Shared unit sphere: only the instance centres/colours/scales vary between cells.
 function unitSphere(){
@@ -81,7 +81,10 @@ map.on('move',()=>{if($('dual').checked&&$('dual-style').value==='spheres')rende
 
 async function api(path,body){
   const response=await fetch(path,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-  let data;try{data=await response.json();}catch{throw new Error('The local server returned an unreadable response.');}
+  const identity=response.headers.get('X-DHE-Workspace');
+  if(identity&&state.workspaceId&&identity!==state.workspaceId){location.reload();throw new Error('Your temporary workspace expired. Loading the defaults again.');}
+  if(identity)state.workspaceId=identity;
+  let data;try{data=await response.json();}catch{throw new Error('The server returned an unreadable response.');}
   if(!response.ok){
     if(response.status===409)await refreshScene(false);
     const detail=Array.isArray(data.detail)?data.detail.map(x=>x.msg).join('; '):data.detail;
@@ -516,7 +519,7 @@ function bindDraw(m,mode){
       $('mode-banner').replaceChildren(document.createTextNode('Area selected. '));
       const download=document.createElement('button');download.textContent='Download footprints';download.onclick=guard(async()=>{
         const bounds=state.drawBounds;endMode();
-        await runJob('/api/osm',{bounds,initial_height:number('initial-height')},'Downloading complete OSM footprints…');
+        await loadOSM(bounds);
       });
       const cancel=document.createElement('button');cancel.textContent='Cancel';cancel.onclick=endMode;
       $('mode-banner').append(download,cancel);
@@ -545,14 +548,16 @@ async function googleAttribution(){
 map.on('moveend',googleAttribution);
 mini.on('moveend',googleAttribution);
 
-for(const button of document.querySelectorAll('[data-tab]'))button.onclick=guard(async()=>{
+async function selectTab(name){
+  const button=document.querySelector(`[data-tab="${name}"]`);
   for(const b of document.querySelectorAll('[data-tab]'))b.classList.toggle('active',b===button);
   $('generalize-tab').hidden=button.dataset.tab!=='generalize';$('inspect-tab').hidden=button.dataset.tab!=='inspect';
   $('mapping-tab').hidden=button.dataset.tab!=='mapping';
   if(button.dataset.tab==='mapping')await mapping?.activate();
   if(button.dataset.tab==='generalize'&&mapping?.active){mapping.deactivate();state.section=null;state.edge=null;await refreshScene(false);}
   $('open-import').hidden=Boolean(mapping?.active);$('draw-bbox').hidden=Boolean(mapping?.active);
-});
+}
+for(const button of document.querySelectorAll('[data-tab]'))button.onclick=guard(()=>selectTab(button.dataset.tab));
 $('operation').onchange=()=>{discardPreview();operationFields();};
 for(const id of ['dz','tolerance','iterations','ratio','winner'])$(id).addEventListener('input',discardPreview);
 $('preview').onclick=guard(()=>levelJob(true));
@@ -589,7 +594,30 @@ $('select-indices').onclick=guard(()=>{
   discardPreview();state.selected=selection;updateFeatureList();updateMini();render();
 });
 $('select-box').onclick=()=>state.scene&&beginMode('box');
-$('draw-bbox').onclick=()=>beginMode('osm');
+function openOSM(destination=mapping?.active?'source':'generalize'){
+  if(state.busy)return;
+  $('osm-destination').value=destination;
+  const b=map.getBounds(),values=[b.getWest(),b.getSouth(),b.getEast(),b.getNorth()];
+  ['west','south','east','north'].forEach((key,i)=>$('osm-'+key).value=Number(values[i].toFixed(7)));
+  $('osm-message').textContent='';$('osm-dialog').showModal();
+}
+async function loadOSM(bounds){
+  if(state.osmDestination==='generalize'){
+    await runJob('/api/osm',{bounds,initial_height:number('initial-height')},'Downloading complete OSM footprints…');
+    await selectTab('generalize');
+  }else{
+    await mapping.loadOSM(state.osmDestination,bounds);
+    await selectTab('mapping');
+  }
+}
+$('draw-bbox').onclick=()=>openOSM();
+$('osm-draw').onclick=()=>{state.osmDestination=$('osm-destination').value;$('osm-dialog').close();beginMode('osm');};
+$('osm-download').onclick=guard(async()=>{
+  const bounds=['west','south','east','north'].map(key=>number('osm-'+key));
+  const [w,s,e,n]=bounds;
+  if(!(-180<=w&&w<e&&e<=180&&-90<=s&&s<n&&n<=90)){$('osm-message').textContent='Use west < east and south < north within longitude/latitude limits.';return;}
+  state.osmDestination=$('osm-destination').value;$('osm-dialog').close();endMode();await loadOSM(bounds);
+});
 $('undo').onclick=guard(()=>state.scene?.cursor>0&&runJob('/api/history',{index:state.scene.cursor-1},'Restoring previous DHE level…'));
 $('history').onchange=guard(()=>runJob('/api/history',{index:Number($('history').value)},'Restoring history…'));
 $('fit').onclick=fitData;
@@ -677,6 +705,10 @@ $('load-upload').onclick=guard(async()=>{
 operationFields();
 async function boot(){
   state.config=await api('/api/config');$('default-path').textContent=state.config.default_dataset;$('initial-height').value=state.config.initial_height;
+  if(state.config.isolated_sessions){
+    $('session-notice').hidden=false;
+    $('session-notice').textContent=`Your temporary workspace is separate from other visitors. Work resets after ${state.config.session_idle_minutes} minutes idle or a server restart. Download results to keep them.`;
+  }
   automaticFields();
   for(const value of ['google-roadmap','google-satellite']){
     const option=$('basemap').querySelector(`option[value="${value}"]`);option.disabled=!state.config.google_available;
@@ -715,5 +747,5 @@ function mappingChanged(reset){
   $('data-details').textContent=scene?`${scene.crs} · two independent layers; Z is a transition coordinate.`:'Load source and target layers in Mapping.';
   if(reset&&scene){resetSlice(true);fitData();}render();
 }
-mapping=window.createMapping?.({api,status,setBusy,changed:mappingChanged,fitInputs:fitMappingInputs})||null;
+mapping=window.createMapping?.({api,status,setBusy,changed:mappingChanged,fitInputs:fitMappingInputs,openOSM})||null;
 $('mapping-contact-hop').onclick=()=>{const e=state.edgeMap.get(state.edge);if(e?.contacts?.length)inspectEdge(e.contacts[0]);};

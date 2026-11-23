@@ -18,7 +18,7 @@ from shapely.ops import unary_union
 
 from generalization_geometry import LoadedData,TOL,overlap_pairs,overlap_groups,download_osm
 
-DEFAULT_WEB_DATA='C:/University/PhD/Data/Kleczkow/osm_data4.shp'
+DEFAULT_WEB_DATA='C:/University/PhD/Data/Kleczkow Updated/osm_data1.shp'
 MAX_UPLOAD_BYTES=100*1024**2
 OVERPASS_ENDPOINTS=('https://overpass-api.de/api/interpreter','https://overpass.private.coffee/api/interpreter')
 
@@ -122,6 +122,18 @@ def fetch_web_osm(bounds):
         if i:notes.append('Downloaded using the fallback Overpass instance: '+endpoint)
         return prepare_web_frame(data.frame,data.source,notes=notes)
     raise ValueError('Both Overpass download services are unavailable. Retry later or upload a polygon dataset. '+str(failure))
+
+
+def fetch_mapping_osm(bounds):
+    """Download original OSM identities, including holes and multipart footprints."""
+    from generalization_geometry import fetch_osm_frame
+    failure=None
+    for endpoint in OVERPASS_ENDPOINTS:
+        try:return fetch_osm_frame(*bounds,endpoint=endpoint)
+        except ValueError as exc:
+            if not str(exc).startswith('OSM download failed:'):raise
+            failure=exc
+    raise ValueError('Both Overpass download services are unavailable. Retry later or upload a dataset. '+str(failure))
 
 
 class UploadStore:

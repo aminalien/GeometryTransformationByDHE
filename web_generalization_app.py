@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 import json
@@ -16,7 +17,7 @@ from urllib.error import URLError,HTTPError
 from uuid import uuid4
 
 try:
-    from fastapi import FastAPI,HTTPException,UploadFile,File
+    from fastapi import FastAPI,HTTPException,UploadFile,File,Depends
     from fastapi.middleware.gzip import GZipMiddleware
     from fastapi.responses import FileResponse,Response
     from fastapi.staticfiles import StaticFiles
@@ -29,6 +30,7 @@ from generalization_model import GeneralizationSession,_core,_restore
 from web_generalization_data import DEFAULT_WEB_DATA,MAX_UPLOAD_BYTES,UploadStore,read_web_dataset,fetch_web_osm,prepared_preview
 from web_generalization_scene import WebScene
 from mapping_workspace import MappingWorkspace
+from web_sessions import WorkspaceRegistry,request_workspace
 
 
 class RevisionConflict(ValueError):pass
@@ -36,10 +38,12 @@ class RevisionConflict(ValueError):pass
 
 class Workspace:
     """One application workspace; all DHE mutations occur on one executor thread."""
-    def __init__(self,default_path=DEFAULT_WEB_DATA,initial_height=5.,mapping_paths=None):
+    def __init__(self,default_path=DEFAULT_WEB_DATA,initial_height=5.,mapping_paths=None,*,executor=None):
         self.default_path=str(default_path);self.initial_height=initial_height
+        self.identity=uuid4().hex
         self.session=None;self.scene=None;self.revision=0;self.preview=None;self.preview_scene=None;self.preview_key=None
-        self.pool=ThreadPoolExecutor(max_workers=1,thread_name_prefix='DHE web worker')
+        self.owns_pool=executor is None
+        self.pool=executor or ThreadPoolExecutor(max_workers=1,thread_name_prefix='DHE web worker')
         self.lock=threading.RLock();self.jobs={};self.running=None;self.uploads=UploadStore();self.cancellations={}
         self.mapping=MappingWorkspace(mapping_paths)
 
@@ -77,6 +81,11 @@ class Workspace:
         cancelled=p.pop('_cancelled',lambda:False)
         saved=_core()
         try:
+            if action=='initialize':
+                self.execute('default',revision,_progress=progress,_cancelled=cancelled)
+                for side in ('source','target'):
+                    self.mapping.execute('load',self.mapping.revision,side=side,progress=progress,cancelled=cancelled)
+                return dict(revision=self.revision)
             if action.startswith('mapping:'):
                 return self.mapping.execute(action.split(':',1)[1],revision,progress=progress,cancelled=cancelled,**p)
             if self.session:_restore(self.session.core)
@@ -142,7 +151,8 @@ class Workspace:
             _restore(self.session.core if self.session else saved)
             raise
         finally:
-            if self.session:_restore(self.session.core)
+            if not self.owns_pool:_restore(saved)
+            elif self.session:_restore(self.session.core)
             else:_restore(saved)
 
     def clear_preview(self):self.preview=None;self.preview_scene=None;self.preview_key=None
@@ -155,7 +165,8 @@ class Workspace:
             return self.scene
 
     def close(self):
-        self.pool.shutdown(wait=True,cancel_futures=True);self.uploads.close();self.mapping.close()
+        if self.owns_pool:self.pool.shutdown(wait=True,cancel_futures=True)
+        self.uploads.close();self.mapping.close()
 
 
 class GoogleTiles:
@@ -260,17 +271,55 @@ class SliceInput(Payload):
 class BoxInput(Payload):bounds:tuple[float,float,float,float]
 
 
-def create_app(*,default_path=DEFAULT_WEB_DATA,initial_height=5.,autoload=True,workspace=None,mapping_paths=None):
-    w=workspace or Workspace(default_path,initial_height,mapping_paths)
+def create_app(*,default_path=DEFAULT_WEB_DATA,initial_height=5.,autoload=True,workspace=None,mapping_paths=None,
+               isolated=False,max_sessions=3,idle_seconds=1800,secure_cookie=False):
+    if isolated and workspace is not None:raise ValueError('An isolated app creates its own visitor workspaces.')
+    w=None if isolated else workspace or Workspace(default_path,initial_height,mapping_paths)
+    registry=WorkspaceRegistry(lambda executor:Workspace(default_path,initial_height,mapping_paths,executor=executor),
+                               max_sessions=max_sessions,idle_seconds=idle_seconds) if isolated else None
     google=GoogleTiles(os.environ.get('GOOGLE_MAPS_API_KEY',''))
+    async def reap_sessions():
+        while True:
+            await asyncio.sleep(60)
+            await run_in_threadpool(registry.prune)
     @asynccontextmanager
     async def lifespan(app):
-        if autoload:w.submit('default',0,initial_height=initial_height)
-        yield
-        w.close()
+        cleanup=asyncio.create_task(reap_sessions()) if registry else None
+        try:
+            if autoload and w is not None:
+                action='initialize' if all(Path(p).is_file() for p in w.mapping.paths.values()) else 'default'
+                w.submit(action,0,initial_height=initial_height)
+            yield
+        finally:
+            if cleanup:
+                cleanup.cancel()
+                try:await cleanup
+                except asyncio.CancelledError:pass
+            await run_in_threadpool(registry.close if registry else w.close)
     app=FastAPI(title='DHE Transition Atlas',lifespan=lifespan)
-    app.state.workspace=w;app.state.google=google
+    app.state.workspace=w;app.state.registry=registry;app.state.google=google
     app.add_middleware(GZipMiddleware,minimum_size=1000)
+    @app.middleware('http')
+    async def visitor_workspace(request,call_next):
+        if not request.url.path.startswith('/api/'):
+            return await call_next(request)
+        token=None
+        if registry:
+            try:token,current=await run_in_threadpool(registry.acquire,request.cookies.get('dhe_visitor'))
+            except HTTPException as exc:
+                from fastapi.responses import JSONResponse
+                return JSONResponse(status_code=exc.status_code,content=dict(detail=exc.detail),headers=exc.headers)
+        else:current=w
+        request.state.workspace=current
+        try:
+            response=await call_next(request)
+            response.headers['Cache-Control']='no-store'
+            response.headers['X-DHE-Workspace']=current.identity
+            if token:
+                response.set_cookie('dhe_visitor',token,httponly=True,secure=secure_cookie,samesite='lax')
+            return response
+        finally:
+            if token:registry.release(token)
     assets=Path(__file__).with_name('web_generalization')
     app.mount('/assets',StaticFiles(directory=assets),name='assets')
 
@@ -287,37 +336,41 @@ def create_app(*,default_path=DEFAULT_WEB_DATA,initial_height=5.,autoload=True,w
     @app.get('/')
     def index():return FileResponse(assets/'index.html')
 
+    @app.get('/healthz')
+    def health():return dict(status='ok')
+
     @app.get('/api/config')
     def config():
         from dataclasses import asdict
         from automatic_generalization import AutomaticSettings
-        return dict(default_dataset=Path(default_path).name,initial_height=initial_height,google_available=bool(google.key),automatic_defaults=asdict(AutomaticSettings()))
+        return dict(default_dataset=Path(default_path).name,initial_height=initial_height,google_available=bool(google.key),
+                    automatic_defaults=asdict(AutomaticSettings()),isolated_sessions=isolated,session_idle_minutes=idle_seconds/60)
 
     from web_mapping_api import attach_mapping_routes
-    attach_mapping_routes(app,w)
+    attach_mapping_routes(app,w,workspace_dependency=request_workspace)
     from web_space_export import attach_export_routes
-    attach_export_routes(app,w)
+    attach_export_routes(app,w,workspace_dependency=request_workspace)
 
     @app.get('/api/state')
-    def state():
+    def state(w=Depends(request_workspace)):
         with w.lock:
             return dict(revision=w.revision,job_id=w.running,loaded=w.scene is not None,
                         recent_jobs=[{k:v for k,v in j.items() if k!='input_preview'} for j in list(w.jobs.values())[-1:]])
 
     @app.get('/api/scene')
-    def scene(preview_id:str|None=None):
+    def scene(preview_id:str|None=None,w=Depends(request_workspace)):
         snapshot=w.get_scene(preview_id)
         if snapshot is None:raise HTTPException(404,'No dataset is loaded yet.')
         return snapshot.payload
 
     @app.get('/api/jobs/{token}')
-    def job(token:str):
+    def job(token:str,w=Depends(request_workspace)):
         with w.lock:
             if token not in w.jobs:raise HTTPException(404,'Job is missing or expired.')
             return {**{k:v for k,v in w.jobs[token].items() if k!='input_preview'},'has_input_preview':'input_preview' in w.jobs[token]}
 
     @app.post('/api/jobs/{token}/cancel')
-    def cancel_job(token:str):
+    def cancel_job(token:str,w=Depends(request_workspace)):
         with w.lock:
             if token not in w.jobs:raise HTTPException(404,'Job is missing or expired.')
             action=w.jobs[token]['action']
@@ -328,49 +381,49 @@ def create_app(*,default_path=DEFAULT_WEB_DATA,initial_height=5.,autoload=True,w
             return dict(status=w.jobs[token]['status'])
 
     @app.get('/api/jobs/{token}/input-preview')
-    def input_preview(token:str):
+    def input_preview(token:str,w=Depends(request_workspace)):
         with w.lock:
             if token not in w.jobs or 'input_preview' not in w.jobs[token]:raise HTTPException(404,'Prepared input preview not available.')
             return w.jobs[token]['input_preview']
 
-    def submit(action,p):
+    def submit(w,action,p):
         values=p.model_dump();revision=values.pop('revision');return w.submit(action,revision,**values)
 
     @app.post('/api/load-default')
-    def load_default(p:LoadPayload):return submit('default',p)
+    def load_default(p:LoadPayload,w=Depends(request_workspace)):return submit(w,'default',p)
 
     @app.post('/api/load-upload')
-    def load_upload(p:ImportPayload):return submit('upload',p)
+    def load_upload(p:ImportPayload,w=Depends(request_workspace)):return submit(w,'upload',p)
 
     @app.post('/api/osm')
-    def osm(p:OSMInput):return submit('osm',p)
+    def osm(p:OSMInput,w=Depends(request_workspace)):return submit(w,'osm',p)
 
     @app.post('/api/preview')
-    def preview(p:OperationInput):return submit('preview',p)
+    def preview(p:OperationInput,w=Depends(request_workspace)):return submit(w,'preview',p)
 
     @app.post('/api/apply')
-    def apply(p:OperationInput):return submit('apply',p)
+    def apply(p:OperationInput,w=Depends(request_workspace)):return submit(w,'apply',p)
 
     @app.post('/api/preview-level')
-    def preview_level(p:LevelInput):return submit('preview-level',p)
+    def preview_level(p:LevelInput,w=Depends(request_workspace)):return submit(w,'preview-level',p)
 
     @app.post('/api/apply-level')
-    def apply_level(p:LevelInput):return submit('apply-level',p)
+    def apply_level(p:LevelInput,w=Depends(request_workspace)):return submit(w,'apply-level',p)
 
     @app.post('/api/automatic')
-    def automatic(p:AutomaticInput):return submit('automatic',p)
+    def automatic(p:AutomaticInput,w=Depends(request_workspace)):return submit(w,'automatic',p)
 
     @app.post('/api/history')
-    def history(p:HistoryInput):return submit('history',p)
+    def history(p:HistoryInput,w=Depends(request_workspace)):return submit(w,'history',p)
 
     @app.post('/api/slice')
-    def section(p:SliceInput):
+    def section(p:SliceInput,w=Depends(request_workspace)):
         w.check(p.revision);snapshot=w.get_scene(p.preview_id)
         if snapshot is None:raise ValueError('Load a dataset first.')
         return snapshot.section(p.orientation,p.value,p.tilt,p.azimuth,include_sections=p.include_sections,clamp_position=p.clamp_position)
 
     @app.post('/api/select-box')
-    def select_box(p:BoxInput):
+    def select_box(p:BoxInput,w=Depends(request_workspace)):
         from shapely.geometry import box,shape
         w.check(p.revision);snapshot=w.get_scene()
         if snapshot is None:raise ValueError('Load a dataset first.')
@@ -381,7 +434,7 @@ def create_app(*,default_path=DEFAULT_WEB_DATA,initial_height=5.,autoload=True,w
                              if f['properties']['kind']=='Polygon' and shape(f['geometry']).intersects(region)])
 
     @app.post('/api/uploads')
-    async def upload(file:list[UploadFile]=File(...)):
+    async def upload(file:list[UploadFile]=File(...),w=Depends(request_workspace)):
         files=[];total=0
         try:
             for item in file:
@@ -404,6 +457,18 @@ def create_app(*,default_path=DEFAULT_WEB_DATA,initial_height=5.,autoload=True,w
         return google.attribution(kind,zoom,north,south,east,west)
 
     return app
+
+
+def create_cloud_app():
+    folder=Path(os.environ.get('DHE_DEMO_DATA_DIR',Path(__file__).parent/'artifacts'/'demo-data'))
+    source=folder/'osm_data1.shp';target=folder/'citygml_data1.shp'
+    for shape in (source,target):
+        for suffix in ('.shp','.shx','.dbf','.prj','.cpg'):
+            if not shape.with_suffix(suffix).is_file():
+                raise RuntimeError('Default demo data is incomplete. Run scripts/fetch_demo_data.py during the build.')
+    return create_app(default_path=source,mapping_paths=dict(source=source,target=target),isolated=True,
+                      max_sessions=int(os.environ.get('DHE_MAX_SESSIONS','3')),
+                      idle_seconds=float(os.environ.get('DHE_SESSION_IDLE_SECONDS','1800')),secure_cookie=True)
 
 
 def main():

@@ -1,0 +1,17 @@
+{
+  "version": "demo-data-v1",
+  "url": "https://github.com/aminalien/GeometryTransformationByDHE/releases/download/demo-data-v1/dhe-demo-data-v1.zip",
+  "sha256": "ddd90f7524eb67c6fd08b567427f6953e1216a105d5c07a78f3c7986ba428313",
+  "files": {
+    "citygml_data1.cpg": "3ad3031f5503a4404af825262ee8232cc04d4ea6683d42c5dd0a2f2a27ac9824",
+    "citygml_data1.dbf": "b46c65f888784c39dcfbd9d663ff91a4fa5384870176bfe2158949b2f5df88bc",
+    "citygml_data1.prj": "d52bbe0f87ee62f524b1a1ba62db34631d559c47f7be1990e603e35746524f02",
+    "citygml_data1.shp": "4a36b8b2835f9ea01ebfe60982db03465edbb919d90e93006ddd1c954fd73725",
+    "citygml_data1.shx": "033ff562ff7d621653dd9234fcf87c036103bf88afb7f539e9fd8e6b259a0e14",
+    "osm_data1.cpg": "3ad3031f5503a4404af825262ee8232cc04d4ea6683d42c5dd0a2f2a27ac9824",
+    "osm_data1.dbf": "01ce385d6d4ef29aa6cb378fcb58b76500589edc4ecbab09435807f6ad84f8ba",
+    "osm_data1.prj": "d52bbe0f87ee62f524b1a1ba62db34631d559c47f7be1990e603e35746524f02",
+    "osm_data1.shp": "ce68bd176feaf1b4e5b00f4afd78399a3d0a1ce1792cef58d4e98211aeefda96",
+    "osm_data1.shx": "e0be7ffc9ee91d695d8c3bfd2ba1ece0dc8d42381555cff5064d16509721f09e"
+  }
+}

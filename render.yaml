@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: dhe-transition-atlas
+    runtime: python
+    plan: free
+    region: frankfurt
+    branch: main
+    buildCommand: pip install -r requirements-web.txt && python scripts/fetch_demo_data.py
+    startCommand: uvicorn web_generalization_app:create_cloud_app --factory --host 0.0.0.0 --port $PORT --workers 1
+    healthCheckPath: /healthz
+    autoDeployTrigger: commit
+    envVars:
+      - key: MPLBACKEND
+        value: Agg
+      - key: DHE_MAX_SESSIONS
+        value: "3"
+      - key: DHE_SESSION_IDLE_SECONDS
+        value: "1800"

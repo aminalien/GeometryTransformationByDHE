@@ -1,15 +1,17 @@
 /* Mapping controls are independent of Generalize; all construction stays on the server. */
-window.createMapping=function({api,status,setBusy,changed,fitInputs}){
+window.createMapping=function({api,status,setBusy,changed,fitInputs,openOSM}){
   const $=id=>document.getElementById(id);
   const controller={active:false,scene:null,revision:0,data:null,groups:[],jobId:null,busy:false,selected:new Set()};
   let upload=null,uploadSide='source',sequence=0;
   const fields={mode:'mode',match_by_id:'match-by-id',source_z:'source-z',target_z:'target-z',geometry_tolerance:'geometry-tolerance',overlap_fraction:'overlap-fraction',search_distance:'search-distance',source_label:'source-label',target_label:'target-label',source_scale:'source-scale',target_scale:'target-scale',source_time:'source-time',target_time:'target-time'};
   const numeric=new Set(['source_z','target_z','geometry_tolerance','overlap_fraction','search_distance','source_scale','target_scale']);
-  const controlIds=['default-source','default-target','upload-source','upload-target','analyze','save-review','confirm-matches','unmatched','regroup','split-group','preview','build','upload-load','match-by-id'];
+  const controlIds=['default-source','default-target','upload-source','upload-target','osm-source','osm-target','swap','analyze','save-review','confirm-matches','unmatched','regroup','split-group','preview','build','upload-load','match-by-id'];
   const manualIds=['confirm-matches','unmatched','regroup','split-group','edit-sources','edit-targets','edit-decision','edit-anchor'];
   const idOnly=()=>$('mapping-match-by-id').checked;
   function controls(){
     for(const id of controlIds)$('mapping-'+id).disabled=controller.busy;
+    $('mapping-swap').disabled=controller.busy||!controller.data?.can_swap;
+    $('mapping-swap').title=controller.data?.can_swap?'Reverse the polygon layers and recalculate matches':'Swap requires polygon layers on both sides; line and point targets cannot become sources.';
     for(const id of manualIds)$('mapping-'+id).disabled=controller.busy||idOnly();
     for(const id of ['overlap-fraction','search-distance'])$('mapping-'+id).disabled=controller.busy||idOnly();
   }
@@ -87,7 +89,7 @@ window.createMapping=function({api,status,setBusy,changed,fitInputs}){
       else $('mapping-'+id).value=data.settings[key]??'';
     }
     controls();
-    for(const side of ['source','target']){const l=data.layers[side];$('mapping-'+side+'-name').textContent=l?`${l.name} · ${l.count} features · ${l.crs} · ${l.notes.length} repair/review note(s)`:(data.default_paths[side]||'Upload a layer');}
+    for(const side of ['source','target']){const l=data.layers[side];$('mapping-'+side+'-name').textContent=l?`${l.name} · ${l.count} features · ${l.crs_label||l.crs} · ${l.notes.length} repair/review note(s)`:(data.default_paths[side]||'Upload a layer');}
     const suffix=data.preview_id?'?preview_id='+encodeURIComponent(data.preview_id):'';
     controller.scene=(data.has_result||data.has_preview)?await api('/api/mapping/scene'+suffix):null;
     $('mapping-discard').hidden=!data.has_preview;rows();overlapControls();
@@ -109,6 +111,7 @@ window.createMapping=function({api,status,setBusy,changed,fitInputs}){
         await new Promise(resolve=>setTimeout(resolve,250));
       }
       await controller.refresh();
+      if(['load','osm','swap'].includes(action))controller.selected.clear();
       note(action==='build'?(parameters.preview?'Mapping preview validated; published model preserved.':'Mapping built and validated. Use slicing and Inspect DHE.'):'Mapping '+action+' complete.');
       return controller.data;
     }finally{
@@ -121,8 +124,11 @@ window.createMapping=function({api,status,setBusy,changed,fitInputs}){
   for(const side of ['source','target']){
     $('mapping-default-'+side).onclick=safe(async()=>{await job('load',{side});fitInputs(controller.inputFeatures());});
     $('mapping-upload-'+side).onclick=()=>{uploadSide=side;$('mapping-upload-title').textContent='Upload '+side+' mapping layer';$('mapping-upload-dialog').showModal();};
+    $('mapping-osm-'+side).onclick=()=>openOSM(side);
     $('mapping-show-'+side).onchange=()=>changed(false);
   }
+  controller.loadOSM=async(side,bounds)=>{await job('osm',{side,bounds});fitInputs(controller.inputFeatures());};
+  $('mapping-swap').onclick=safe(async()=>{await job('swap');fitInputs(controller.inputFeatures());});
   $('mapping-analyze').onclick=safe(()=>job('analyze',{settings:settings()}));
   $('mapping-match-by-id').onchange=safe(async()=>{
     try{await job('analyze',{settings:settings()});controller.selected.clear();changed(false);}

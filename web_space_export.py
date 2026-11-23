@@ -216,15 +216,16 @@ class ExportSnapshot:
         except BaseException:output.close();raise
 
 
-def attach_export_routes(app,workspace):
+def attach_export_routes(app,workspace,*,workspace_dependency=None):
     from typing import Literal
-    from fastapi import HTTPException
+    from fastapi import HTTPException,Depends
     from fastapi.responses import StreamingResponse
     from starlette.background import BackgroundTask
+    dependency=workspace_dependency or (lambda:workspace)
 
     @app.get('/api/export/{kind}')
     def download(kind:Literal['primal','duality','primal-edges','dual-edges'],workspace_name:Literal['generalize','mapping'],snapshot_id:str,
-                 coordinates:Literal['local','projected']='local'):
+                 coordinates:Literal['local','projected']='local',workspace=Depends(dependency)):
         with workspace.lock:
             if workspace_name=='generalize':
                 candidates=[workspace.preview_scene,workspace.scene];revision=workspace.revision

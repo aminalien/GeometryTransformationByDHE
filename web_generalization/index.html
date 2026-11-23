@@ -10,12 +10,13 @@
 <body>
 <header class="topbar">
   <div class="brand"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="m16 3 13 7-13 7L3 10Z M3 16l13 7 13-7M3 22l13 7 13-7"/></svg><div><strong>Transition Atlas</strong><span>DHE generalization workspace</span></div></div>
-  <div class="dataset-pill"><i></i><span id="dataset-name">Connecting to local workspace…</span></div>
+  <div class="dataset-pill"><i></i><span id="dataset-name">Connecting to workspace…</span></div>
   <div class="top-actions"><button id="draw-bbox">⌖ Draw OSM area</button><button id="open-import" class="primary">＋ Load data</button></div>
 </header>
 <main class="app-layout">
 <aside class="sidebar">
   <div class="side-tabs"><button class="active" data-tab="generalize">Generalize</button><button data-tab="mapping">Mapping</button><button data-tab="inspect">Inspect DHE</button></div>
+  <p id="session-notice" class="hint" hidden></p>
   <section id="generalize-tab">
     <div class="section-title"><span>01 / SELECTION</span><button id="clear-selection" class="text-button">Clear</button></div>
     <p class="hint">Click features on the current map. Shift-click to add; use the box tool for a group.</p>
@@ -45,8 +46,9 @@
   <section id="mapping-tab" hidden>
     <div class="section-title"><span>01 / TWO INDEPENDENT LAYERS</span></div>
     <p class="hint">Source → target across scale, time or data sources. Inputs stay separate from Generalize.</p>
-    <div class="mapping-layer-card"><strong class="source-color">Source · polygons</strong><p id="mapping-source-name" class="hint">osm_data.shp</p><div class="operation-actions"><button id="mapping-default-source">Open default</button><button id="mapping-upload-source">Upload…</button></div></div>
-    <div class="mapping-layer-card"><strong class="target-color">Target · polygons / lines / points</strong><p id="mapping-target-name" class="hint">citygml_data.shp</p><div class="operation-actions"><button id="mapping-default-target">Open default</button><button id="mapping-upload-target">Upload…</button></div></div>
+    <div class="mapping-layer-card"><strong class="source-color">Source · polygons</strong><p id="mapping-source-name" class="hint">osm_data1.shp</p><div class="operation-actions"><button id="mapping-default-source">Open default</button><button id="mapping-upload-source">Upload…</button><button id="mapping-osm-source">OSM BBOX…</button></div></div>
+    <div class="mapping-layer-card"><strong class="target-color">Target · polygons / lines / points</strong><p id="mapping-target-name" class="hint">citygml_data1.shp</p><div class="operation-actions"><button id="mapping-default-target">Open default</button><button id="mapping-upload-target">Upload…</button><button id="mapping-osm-target">OSM BBOX…</button></div></div>
+    <button id="mapping-swap" title="Load polygon layers on both sides to swap">Swap source and target</button>
     <div class="view-row"><label class="check"><input id="mapping-show-source" type="checkbox" checked>Source overlay</label><label class="check"><input id="mapping-show-target" type="checkbox" checked>Target overlay</label></div>
     <div id="mapping-overlaps" class="mapping-overlaps"></div>
     <div class="section-title"><span>02 / DIMENSION & METHOD</span></div>
@@ -121,11 +123,18 @@
   </div>
 </section>
 </main>
-<footer><span id="status" role="status" aria-live="polite">Starting local workspace…</span><span id="model-count">DHE · 2D + 1D transition space</span></footer>
+<footer><span id="status" role="status" aria-live="polite">Starting workspace…</span><span id="model-count">DHE · 2D + 1D transition space</span></footer>
+<dialog id="osm-dialog"><form method="dialog"><div class="dialog-heading"><h2>Download OSM buildings</h2><button class="icon-button" aria-label="Close">×</button></div></form>
+  <p class="hint">Use longitude/latitude degrees or draw a rectangle. Complete building footprints are retrieved, without clipping to the BBOX.</p>
+  <label>Load into<select id="osm-destination"><option value="generalize">Generalize</option><option value="source">Mapping source</option><option value="target">Mapping target</option></select></label>
+  <div class="form-grid"><label>West<input id="osm-west" type="number" min="-180" max="180" step="any"></label><label>South<input id="osm-south" type="number" min="-90" max="90" step="any"></label><label>East<input id="osm-east" type="number" min="-180" max="180" step="any"></label><label>North<input id="osm-north" type="number" min="-90" max="90" step="any"></label></div>
+  <div class="operation-actions"><button id="osm-draw">Draw on map</button><button id="osm-download" class="primary">Download BBOX</button></div>
+  <p id="osm-message" class="hint" role="status"></p><p class="hint">© OpenStreetMap contributors · ODbL</p>
+</dialog>
 <dialog id="import-dialog"><form method="dialog"><div class="dialog-heading"><div><span class="eyebrow">DATA SOURCE</span><h2>Bring your polygons</h2></div><button class="icon-button" aria-label="Close">×</button></div></form>
   <p class="hint">Overlapping groups are unioned automatically. Touching neighbours stay separate.</p>
   <label>Initial extrusion ΔZ<input id="initial-height" type="number" min="0.000001" value="5"></label>
-  <button id="load-default" class="source-card"><strong>↗ Open default dataset</strong><span id="default-path">osm_data4.shp</span></button>
+  <button id="load-default" class="source-card"><strong>↗ Open default dataset</strong><span id="default-path">osm_data1.shp</span></button>
   <label class="upload-card">＋ Choose a polygon dataset<input id="upload-file" type="file" multiple accept=".zip,.gpkg,.geojson,.json,.shp,.shx,.dbf,.prj,.cpg,.qix,.sbn,.sbx"><span>GeoJSON · GeoPackage · ZIP or .shp + .shx + .dbf (+ .prj/.cpg), 100 MiB combined</span></label>
   <div id="upload-fields" hidden><label>Layer<select id="upload-layer"></select></label><p id="upload-metadata" class="hint"></p><label>CRS, if missing<input id="upload-crs" placeholder="e.g. EPSG:2180"></label><label>Coordinate interpretation<select id="crs-choice"><option value="">Choose interpretation…</option><option value="declared">Use declared CRS</option><option value="override">Override declared CRS</option></select></label><label id="override-field" hidden>Interpret existing coordinates as<input id="override-crs" placeholder="e.g. EPSG:4326"></label><button id="load-upload" class="primary">Load uploaded layer</button></div>
   <p id="import-message" class="hint"></p>

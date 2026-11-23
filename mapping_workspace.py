@@ -10,10 +10,10 @@ import geopandas as gpd
 
 from mapping_data import (DEFAULT_MAPPING_SOURCE,DEFAULT_MAPPING_TARGET,prepare_layer,reproject_layer,
                           overlap_review,resolve_overlap,suggest_groups,route_group,union_overlaps,
-                          automatic_review,review_summary,member_records,id_groups,validate_id_groups,matching_id)
+                          automatic_review,review_summary,member_records,id_groups,validate_id_groups,matching_id,change_layer_side)
 from mapping_builders import build_mapping
 from mapping_scene import MappingScene
-from web_generalization_data import UploadStore
+from web_generalization_data import UploadStore,fetch_mapping_osm
 
 
 class MappingWorkspace:
@@ -57,7 +57,7 @@ class MappingWorkspace:
                 features=[]
                 for f,g in zip(layer.features.values(),geographic):
                     features.append(dict(type='Feature',geometry=g.__geo_interface__,properties=dict(uid=f.uid,original_id=f.original_id,kind=f.geometry.geom_type,side=side,members=list(f.members),attributes=f.attributes,member_records=list(member_records(f)))))
-                layers[side]=dict(name=layer.source,crs=layer.crs.to_string(),count=len(features),notes=list(layer.notes),overlaps=overlap_review(layer),features=dict(type='FeatureCollection',features=features))
+                layers[side]=dict(name=layer.source,crs=layer.crs.to_string(),crs_label=layer.crs.name,count=len(features),notes=list(layer.notes),overlaps=overlap_review(layer),features=dict(type='FeatureCollection',features=features))
             groups=deepcopy(self.groups)
             if len(self.layers)==2:
                 for g in groups:g['builder'],g['reason']=route_group(g,self.layers['source'],self.layers['target'],self.settings['mode'])
@@ -73,15 +73,21 @@ class MappingWorkspace:
                         automatic_review=review_summary(self.layers,self.groups),
                         has_result=self.result is not None,has_preview=self.preview is not None,
                         preview_id=self.preview.preview_id if self.preview else None,
-                        default_paths={k:str(v) for k,v in self.paths.items()})
+                        can_swap=len(self.layers)==2 and all(f.geometry.geom_type in ('Polygon','MultiPolygon') for f in self.layers['target'].features.values()),
+                        default_paths={k:Path(v).name for k,v in self.paths.items()})
 
     def execute(self,action,revision,*,progress=lambda *a:None,cancelled=lambda:False,**p):
         self.check(revision)
-        if action=='load':
+        if action in ('load','osm'):
             side=p.pop('side')
             if side not in ('source','target'):raise ValueError('Choose source or target.')
             progress(f'Reading {side} layer and preserving feature identities')
-            if p.get('upload_id'):
+            if action=='osm':
+                progress('Downloading OSM building footprints')
+                frame,notes=fetch_mapping_osm(p['bounds'])
+                frame.attrs['web_import_notes']=[dict(action='OSM import',message=n) for n in notes]
+                name='OpenStreetMap buildings; © OpenStreetMap contributors, ODbL'
+            elif p.get('upload_id'):
                 frame,name=self.uploads.read_frame(p['upload_id'],p['layer'],p.get('crs'),p.get('override_crs'),p.get('accept_declared_crs',False))
             else:
                 path=self.paths[side]
@@ -94,6 +100,20 @@ class MappingWorkspace:
             layers,groups,suggestions=self._prepare(inputs,self.settings,regenerate=True,progress=progress,cancelled=cancelled)
             if cancelled():raise ValueError('Mapping load cancelled; previous inputs preserved.')
             with self.lock:self.input_layers=inputs;self.layers=layers;self.groups=groups;self.suggestions=suggestions;self.preview=None;self.revision+=1
+        elif action=='swap':
+            if len(self.layers)!=2:raise ValueError('Load both layers before swapping.')
+            if any(f.geometry.geom_type not in ('Polygon','MultiPolygon') for f in self.layers['target'].features.values()):
+                raise ValueError('Swap requires polygon targets; lines and points cannot become polygon sources.')
+            inputs={side:change_layer_side(self.input_layers.get(other,self.layers[other]),side)
+                    for side,other in (('source','target'),('target','source'))}
+            settings=self.settings.copy()
+            for suffix in ('label','scale','time'):
+                a,b='source_'+suffix,'target_'+suffix
+                settings[a],settings[b]=settings[b],settings[a]
+            layers,groups,suggestions=self._prepare(inputs,settings,regenerate=True,progress=progress,cancelled=cancelled)
+            with self.lock:
+                self.input_layers=inputs;self.layers=layers;self.groups=groups;self.suggestions=suggestions
+                self.settings=settings;self.result=None;self.preview=None;self.revision+=1
         elif action=='overlap':
             side=p['side']
             if side not in self.layers:raise ValueError('Load this layer first.')

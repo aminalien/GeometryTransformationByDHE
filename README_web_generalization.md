@@ -11,9 +11,32 @@ Install the optional web dependencies into the project environment once:
 .\.venv\Scripts\python.exe web_generalization_app.py
 ```
 
-The script prefers **http://127.0.0.1:8766**, reserves an available port if that address is occupied, and opens its actual printed URL only after this server starts successfully. Another project already running on port 8765 is unaffected. Keep its Python process running; Ctrl+C stops it. `--no-browser` suppresses browser launch, `--port NUMBER` requests a fixed port (an occupied one fails without launching the browser), and `--initial-height 5` sets the initial extrusion. `--input-shp PATH` overrides the default `C:/University/PhD/Data/Kleczkow/osm_data4.shp`.
+The script prefers **http://127.0.0.1:8766**, reserves an available port if that address is occupied, and opens its actual printed URL only after this server starts successfully. Another project already running on port 8765 is unaffected. Keep its Python process running; Ctrl+C stops it. `--no-browser` suppresses browser launch, `--port NUMBER` requests a fixed port (an occupied one fails without launching the browser), and `--initial-height 5` sets the initial extrusion. `--input-shp PATH` overrides the default `C:/University/PhD/Data/Kleczkow Updated/osm_data1.shp`.
 
-The requested default file contains 32 supported polygons and builds 32 initial DHE cells at Z=0–5. It is external data and is not included in Git. If it is unavailable on another computer, use Load data. The server binds only to loopback. It has one in-memory workspace: tabs share the same state, page refresh retains it, and stopping the server ends the session. This is not a public hosting configuration.
+Generalize starts with `osm_data1.shp`; Mapping starts with that same file as source and `citygml_data1.shp` as target, from `C:/University/PhD/Data/Kleczkow Updated`. When both Mapping defaults are available, their inputs and automatic correspondence review load at startup; Preview/Build remains an explicit action. The files are external data and are not included in Git. If unavailable on another computer, use Load data. The local launcher binds only to loopback and retains its single in-memory workspace shared by tabs. For public hosting, use the separate cloud factory below.
+
+## Public deployment on Render
+
+`render.yaml` defines a free Python 3.12 web service in Frankfurt, with one Uvicorn worker and `/healthz` health checks. Create a Render **Blueprint**, connect this GitHub repository through Render's GitHub integration, select `main`, and apply the Blueprint. Render supplies the HTTPS address. Connecting the GitHub integration is necessary for automatic deployments; a public Git URL by itself does not enable them.
+
+The cloud factory `web_generalization_app:create_cloud_app` gives each browser an anonymous session. Tabs in the same browser share that session; different browser sessions do not share jobs, uploads, Mapping inputs, history, previews, or exports. Cookies use HttpOnly, Secure, and SameSite=Lax. This factory requires HTTPS. No account or permanent storage is provided.
+
+Each new session initializes the approved defaults, and page refresh preserves its current data. After 30 minutes without API activity, an idle session expires; expiry never removes a queued/running job or an active request. The initial maximum is three visitor sessions. Additional visitors receive a retry message until capacity becomes available. Configure `DHE_MAX_SESSIONS` and `DHE_SESSION_IDLE_SECONDS` to change these bounds. Construction across all sessions is serialized on one shared worker to protect the DHE engine's process-wide state. `/healthz` and static assets do not allocate sessions.
+
+Default shapefiles are distributed separately as `dhe-demo-data-v1.zip` on the `demo-data-v1` GitHub Release. `demo-data.json` records the immutable URL and SHA-256 checksums. The Render build installs dependencies and runs `scripts/fetch_demo_data.py`, which verifies the package and all ten components before installing them under ignored `artifacts/demo-data/`. Override this directory with `DHE_DEMO_DATA_DIR`. Missing or corrupted defaults fail the build/startup explicitly.
+
+To prepare the approved package locally:
+
+```powershell
+.\.venv\Scripts\python.exe scripts/prepare_demo_data.py
+.\.venv\Scripts\python.exe scripts/fetch_demo_data.py --archive artifacts/dhe-demo-data-v1.zip
+```
+
+Publish the ZIP as a Release attachment, not as a Git commit. For future dataset changes, use a new package version/tag and update the manifest; do not silently replace an existing version. Keep `.venv`, uploads, external shapefiles, API credentials, and generated artifacts out of commits.
+
+Updates follow **edit locally → run tests → commit and push to `origin/main` → Render automatically rebuilds and deploys**. Runtime uploads and in-memory sessions reset on deployments, restarts, or Render free-tier sleep. New sessions then receive the defaults again. Visitors should download exports before leaving. Start with small datasets; the free service is a capacity trial rather than a promise of support for large jobs. Google Maps remains optional via `GOOGLE_MAPS_API_KEY` in Render's environment settings; never place the key in Git.
+
+Validate the deployment with `/healthz`, first-load defaults in both sections, two separate browser sessions, uploads, a small operation, Mapping preview/build, and exports. A subsequent commit should appear in Render's deploy history. Browser map rendering still requires access to the configured external JavaScript and basemap providers.
 
 MapLibre GL JS **6.16.0** and deck.gl **9.4.1** are loaded as pinned browser ES modules from esm.sh; the map stylesheet is loaded from unpkg. A browser with WebGL2 and Internet access is required. Background service errors preserve the DHE scene; choose another background or White / no background. A browser-module loading failure is reported in the bottom status bar.
 
@@ -33,7 +56,9 @@ Loading reports real stages: reading/CRS/overlap preparation (or OSM download), 
 
 Invalid/non-polygonal records and unions that remain holed are reported and excluded. Holes are not filled artificially, and no supported inputs produces an explicit load error. A failed replacement leaves the previous dataset and history in place.
 
-**Draw OSM area** switches the main map temporarily to top-down rectangle drawing. Draw the area, then click **Download footprints** in the banner. Esc cancels. The existing Overpass adapter retrieves complete building footprints, including boundary nodes outside the rectangle. OSM parsing limitations and service failures are reported. Footprints are prepared with the same web union policy; they are not clipped to the rectangle. Background imagery is not used to extract geometry.
+**Draw OSM area** opens a destination/BBOX dialog. Choose Generalize, Mapping source, or Mapping target; enter west/south/east/north coordinates or draw a rectangle on the main map and choose **Download footprints**. Mapping also has an **OSM BBOX…** button on each layer. Esc cancels drawing. Overpass retrieves complete building footprints, including boundary nodes outside the rectangle. Generalize applies its web union policy; Mapping retains original OSM identities and runs its existing overlap/correspondence preparation. Footprints are not clipped to the rectangle. Failed downloads preserve the previous dataset. Background imagery is not used to extract geometry.
+
+**Swap source and target** reverses polygon Mapping inputs, including their descriptive labels, scale and time metadata, then recalculates automatic correspondences. Source/target Z levels remain increasing. Previous results/previews are cleared. A line or point target cannot become a polygon source, so swapping is disabled for those inputs. Each layer retains an independent **Open default** and **Upload…** control.
 
 Network failures try the Private.coffee public Overpass instance after the default overpass-api.de endpoint. Geometry/parameter errors are not retried as network errors. If both services fail, the current workspace remains available. Public instance addresses are listed in the [OSM Overpass documentation](https://wiki.openstreetmap.org/wiki/Overpass_API).
 

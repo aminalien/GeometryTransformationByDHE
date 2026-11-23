@@ -309,7 +309,7 @@ def parse_osm(payload):
     return gpd.GeoDataFrame(records, geometry="geometry", crs="EPSG:4326"), errors
 
 
-def download_osm(west, south, east, north, endpoint="https://overpass-api.de/api/interpreter", max_bytes=50*1024**2, *, overlap_policy='keep_largest'):
+def fetch_osm_frame(west, south, east, north, endpoint="https://overpass-api.de/api/interpreter", max_bytes=50*1024**2):
     bounds = list(map(float, (west, south, east, north)))
     west, south, east, north = bounds
     if not all(map(isfinite, bounds)) or not -180 <= west < east <= 180 or not -90 <= south < north <= 90:
@@ -330,6 +330,12 @@ def download_osm(west, south, east, north, endpoint="https://overpass-api.de/api
     if payload.get("remark"):
         raise ValueError("Overpass reported: " + payload["remark"])
     frame, errors = parse_osm(payload)
+    return frame, errors
+
+
+def download_osm(west, south, east, north, endpoint="https://overpass-api.de/api/interpreter", max_bytes=50*1024**2, *, overlap_policy='keep_largest'):
+    bounds=list(map(float,(west,south,east,north)))
+    frame,errors=fetch_osm_frame(*bounds,endpoint=endpoint,max_bytes=max_bytes)
     data = prepare_frame(frame, f"OpenStreetMap buildings {bounds}; © OpenStreetMap contributors, ODbL",overlap_policy=overlap_policy)
     data.rejected[:0] = errors
     return data
