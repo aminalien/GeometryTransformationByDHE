@@ -276,7 +276,11 @@ def mount_paper_view(stage, figure):
         viewer.face_color_resolver = resolve
         viewer._refresh_scene_colors()
         viewer.checkbox.ax.set_position([0.005, 0.72, 0.13, 0.13])
-        viewer.text_box.ax.set_position([0.05, 0.66, 0.085, 0.035])
+        viewer.dual_style_button.ax.set_position([0.005, 0.61, 0.13, 0.035])
+        viewer.text_box.set_active(False)
+        viewer.text_box.ax.set_visible(False)
+        for artist in viewer.feature_legend_artists:
+            artist.set_visible(False)
     else:
         figure.clear()
         viewer = SimpleNamespace(fig=figure, ax=figure.add_axes([0.155, 0.35, 0.29, 0.52], projection="3d"),

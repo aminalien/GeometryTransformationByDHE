@@ -1925,10 +1925,13 @@ def interactive_plot_from_lists(dhe_List, Kill_List=None, pick='first', SlicingA
     logical_duals = {}
     for vertex in unique_duals.values():
         logical_duals.setdefault(viewer._feature(vertex), vertex)
+    viewer.feature_legend_artists = []
     for index, (feature_id, vertex) in enumerate(logical_duals.items()):
-        viewer.fig.text(0.02, 0.58 - index * 0.035, f"Feature {feature_id}",
-                        color=vertex.color, fontsize=9)
-    viewer.fig.text(0.02, 0.38, "Exterior VINF", color=(0.55, 0.2, 0.75), fontsize=9)
+        viewer.feature_legend_artists.append(
+            viewer.fig.text(0.02, 0.58 - index * 0.035, f"Feature {feature_id}",
+                            color=vertex.color, fontsize=9))
+    viewer.feature_legend_artists.append(
+        viewer.fig.text(0.02, 0.38, "Exterior VINF", color=(0.55, 0.2, 0.75), fontsize=9))
     viewer.navigation_hint = viewer.fig.text(0.25, 0.035, "Drag: rotate   f: face   s: twin   a: adjacent   c: shade cell   x: clear   q: close", fontsize=8)
     if overlay is not None:
         viewer.overlay_panel = _RoofOverlayPanel(viewer, overlay, transition)
