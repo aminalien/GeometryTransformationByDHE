@@ -4,16 +4,20 @@ import {SolidPolygonLayer,PathLayer,LineLayer,ScatterplotLayer,TextLayer} from '
 import {SimpleMeshLayer} from 'https://esm.sh/@deck.gl/mesh-layers@9.4.1?external=@deck.gl/core';
 import {AmbientLight,DirectionalLight,LightingEffect,WebMercatorViewport} from '@deck.gl/core';
 import {fitCellCamera} from './cell_focus.js';
+import {createAtlasUI,createSlicePlayback} from './atlas_ui.js';
 
 const $=id=>document.getElementById(id);
 const empty={type:'FeatureCollection',features:[]};
 const state={scene:null,preview:null,section:null,revision:0,selected:new Set(),edge:null,busy:false,
   sliceSerial:0,sliceTimer:null,mapReady:false,miniReady:false,mode:null,drag:null,drawBounds:null,
-  camera:null,modeCamera:null,config:null,upload:null,markers:[],custom:null,background:'osm',fitOnNext:true,
+  camera:null,modeCamera:null,config:null,upload:null,markers:[],custom:null,background:'light',backgroundExplicit:false,fitOnNext:true,
   sliceInFlight:false,sliceQueued:false,inputPreview:null,inputPreviewJob:null,miniFitPending:false,
   topologyScene:null,edgeMap:new Map(),faceMap:new Map(),edgesByCell:new Map(),fallback:new Set(),mapWarnings:new Map(),
   levelActions:[],levelStep:null,jobId:null,automaticReport:null,autoInputs:{},exporting:false,osmDestination:'generalize'};
 let mapping=null;
+let atlas=null,playback=null,resultKey='';
+const media=globalThis.matchMedia?.bind(globalThis);
+const motionDuration=duration=>media?.('(prefers-reduced-motion: reduce)').matches?0:duration;
 // Shared unit sphere: only the instance centres/colours/scales vary between cells.
 function unitSphere(){
   const positions=[],normals=[],indices=[],rows=16,cols=24;
@@ -31,7 +35,7 @@ const sphereMesh=unitSphere();
 const lighting=new LightingEffect({ambient:new AmbientLight({color:[255,255,255],intensity:.65}),
   sun:new DirectionalLight({color:[255,255,255],intensity:1,direction:[-1,-2,-3]})});
 const help={simplification:'Reduce boundary detail with a tolerance in metres.',smoothing:'Round corners using the existing Chaikin construction.',point:'Collapse to a point visible from every source boundary vertex.',polyline:'Collapse to a verified interior skeleton ridge or the existing fallback.',merging:'Grow the winner smoothly to the union of touching features.',aggregation:'Grow separate sources to one convex-hull target, retaining their lower DHE cells.'};
-function status(message,error=false){$('status').textContent=message;$('status').style.color=error?'#ffd4b2':'';}
+function status(message,error=false){$('status').textContent=message;$('status').style.color=error?'#ffd4b2':'';atlas?.error(error?message:null);if(error)playback?.pause();}
 function number(id){const value=Number($(id).value);if(!Number.isFinite(value))throw new Error('Enter a finite value for '+id.replaceAll('-',' '));return value;}
 function color(a){return `rgb(${a[0]},${a[1]},${a[2]})`;}
 function displayScene(){return mapping?.active?mapping.scene:state.preview||state.scene;}
@@ -45,13 +49,38 @@ function baseStyle(kind){
   return {version:8,sources:tiles.length?{background:{type:'raster',tiles,tileSize,attribution,maxzoom:kind==='osm'?19:22}}:{},
     layers:[{id:'paper',type:'background',paint:{'background-color':kind==='dark'?'#152b32':kind==='blank'?'#ffffff':'#f5f7f4'}},...(tiles.length?[{id:'background',type:'raster',source:'background',paint:{'raster-opacity':.95}}]:[])]};
 }
-const map=new maplibregl.Map({container:'map',style:baseStyle('osm'),center:[17.0123,51.1307],zoom:17.5,pitch:55,bearing:-20,antialias:true,maxPitch:80});
-const mini=new maplibregl.Map({container:'mini-map',style:baseStyle('osm'),center:[17.0123,51.1307],zoom:17,pitch:0,bearing:0,attributionControl:false});
+// esm.sh relocates import.meta.url; point the module worker at the pinned distribution.
+maplibregl.setWorkerUrl?.('https://unpkg.com/maplibre-gl@6.16.0/dist/maplibre-gl-worker.mjs');
+const map=new maplibregl.Map({container:'map',style:baseStyle('light'),center:[17.0123,51.1307],zoom:17.5,pitch:55,bearing:-20,antialias:true,maxPitch:80});
+const mini=new maplibregl.Map({container:'mini-map',style:baseStyle('light'),center:[17.0123,51.1307],zoom:17,pitch:0,bearing:0,attributionControl:false});
 map.addControl(new maplibregl.NavigationControl({visualizePitch:true}),'top-right');
 map.addControl(new maplibregl.ScaleControl({unit:'metric'}),'bottom-left');
 function rendererError(error,layer){status(`3D renderer${layer?.id?' / '+layer.id:''}: ${error.message}`,true);console.error(error);}
 const overlay=new MapLibreOverlay({interleaved:true,layers:[],effects:[lighting],onError:rendererError});
 map.addControl(overlay);
+let themeStorage;try{themeStorage=globalThis.localStorage;}catch{}
+atlas=createAtlasUI({document,storage:themeStorage,matchMedia:media,
+  onTheme:theme=>{if(!state.backgroundExplicit&&['light','dark'].includes(state.background)){$('basemap').value=theme;changeBackground(theme,true).catch(e=>status(e.message,true));}render();},
+  onLayout:()=>{map.resize();mini.resize();}});
+if(atlas.theme==='dark'){$('basemap').value='dark';state.background='dark';map.setStyle(baseStyle('dark'));mini.setStyle(baseStyle('dark'));}
+if(media?.('(max-width: 899px)').matches){
+  document.querySelector('.view-controls').open=false;$('mini-panel').hidden=true;$('show-mini').hidden=false;
+}
+if(globalThis.ResizeObserver)new ResizeObserver(()=>{map.resize();mini.resize();}).observe($('map'));
+playback=createSlicePlayback({step:()=>number('slice-step'),position:()=>number('slice-value'),
+  bounds:()=>[Number($('slice-slider').min),Number($('slice-slider').max)],
+  ready:()=>!state.busy&&!state.sliceInFlight&&!state.sliceTimer,
+  advance:async value=>{$('slice-value').value=value;$('slice-slider').value=value;++state.sliceSerial;if(!await sendSlice())throw new Error('Slice playback paused.');},
+  onPlaying:playing=>{$('slice-play').textContent=playing?'Ⅱ':'▶';$('slice-play').setAttribute('aria-pressed',String(playing));$('slice-play').setAttribute('aria-label',playing?'Pause horizontal slices':'Play horizontal slices');}});
+$('slice-play').onclick=guard(async()=>{if(!displayScene()||state.busy)return;if($('orientation').value!=='Horizontal'){$('orientation').value='Horizontal';resetSlice(false);}await playback.play();});
+document.addEventListener('visibilitychange',()=>{if(document.hidden)playback.pause();});
+function updateResults(){
+  const scene=displayScene(),data=mapping?.active?mapping.data:null;
+  const key=[scene?.workspace||'',scene?.snapshot_id||'',scene?.preview_id||'',scene?.stale||false,data?.revision??'',state.revision].join('|');
+  if(key!==resultKey){resultKey=key;atlas?.update(scene,data);atlas?.levels(scene);}
+  atlas?.selection(mapping?.active?mapping.selected.size:state.selected.size);
+  $('slice-play').disabled=!scene||state.busy;
+}
 map.on('style.load',()=>{state.mapReady=true;addDrawingSource(map);render();});
 mini.on('style.load',()=>{state.miniReady=true;addMiniLayers();addDrawingSource(mini);updateMini();fitMini();});
 function updateMapWarnings(){
@@ -93,10 +122,12 @@ async function api(path,body){
   return data;
 }
 function setBusy(busy,label='Constructing DHE…'){
+  if(busy){playback?.pause();atlas?.error(null);}
   state.busy=busy;$('busy-overlay').hidden=!busy;$('busy-label').textContent=label;
   for(const id of ['apply','preview','undo','load-default','load-upload','draw-bbox','open-import','history','level-add','level-update','level-remove','level-clear','level-actions','open-automatic','run-automatic'])$(id).disabled=busy;
   for(const id of ['operation','dz','tolerance','iterations','ratio','winner','initial-height','consider-substeps'])$(id).disabled=busy;
   exportControls();
+  updateResults();
 }
 async function waitJob(id){
   for(;;){
@@ -107,10 +138,11 @@ async function waitJob(id){
       $('scene-title').textContent='Input preview — constructing DHE';
       const coords=state.inputPreview.features.flatMap(f=>f.geometry.type==='Polygon'?f.geometry.coordinates.flat():f.geometry.coordinates.flat(2));
       const bounds=[Infinity,Infinity,-Infinity,-Infinity];for(const p of coords){bounds[0]=Math.min(bounds[0],p[0]);bounds[1]=Math.min(bounds[1],p[1]);bounds[2]=Math.max(bounds[2],p[0]);bounds[3]=Math.max(bounds[3],p[1]);}
-      if(coords.length)map.fitBounds([[bounds[0],bounds[1]],[bounds[2],bounds[3]]],{padding:65,duration:300});
+      if(coords.length)map.fitBounds([[bounds[0],bounds[1]],[bounds[2],bounds[3]]],{padding:65,duration:motionDuration(300)});
     }
     if(job.status==='failed'){
       if(job.diagnostic){$('notes').textContent=JSON.stringify(job.diagnostic,null,2);$('notes-title').textContent='Operation diagnostics';}
+      atlas?.error(job.error,job.diagnostic);
       throw new Error(job.error);
     }
     if(job.status==='complete')return job.result;
@@ -143,6 +175,7 @@ async function refreshScene(reset=false){
   const response=await fetch('/api/scene');if(response.status===404)return;
   if(!response.ok)throw new Error('Could not refresh the scene.');
   const scene=await response.json();const changed=!state.scene||state.scene.history[0]?.step_id!==scene.history[0]?.step_id||state.fitOnNext;
+  if(scene.revision!==state.revision||changed)playback?.pause();
   state.scene=scene;state.preview=null;state.revision=scene.revision;
   if(state.levelStep&&state.levelStep!==scene.history[scene.cursor].step_id){state.levelActions=[];state.levelStep=null;updateLevelTable();}
   if(changed)state.automaticReport=null;
@@ -179,7 +212,10 @@ function updateFeatureList(){
   $('feature-list').replaceChildren();
   for(const f of state.scene?.features.features||[]){
     const p=f.properties;const row=document.createElement('div');row.className='feature-row'+(state.selected.has(p.index)?' selected':'');
-    const checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.checked=state.selected.has(p.index);checkbox.disabled=p.kind!=='Polygon';checkbox.tabIndex=-1;
+    row.setAttribute('role','button');row.setAttribute('aria-pressed',String(state.selected.has(p.index)));row.tabIndex=p.kind==='Polygon'?0:-1;
+    row.setAttribute('aria-label',`Feature ${p.index}, ${p.original_id}, ${p.kind}`);
+    row.onkeydown=event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();selectFeature(p.index,true);}};
+    const checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.checked=state.selected.has(p.index);checkbox.disabled=p.kind!=='Polygon';checkbox.tabIndex=-1;checkbox.setAttribute('aria-hidden','true');
     const swatch=document.createElement('span');swatch.className='swatch';swatch.style.background=color(p.color);
     const name=document.createElement('span');name.className='feature-name';name.textContent=`${p.index} · ${p.original_id}`;name.title=p.name;
     const kind=document.createElement('span');kind.className='kind';kind.textContent=p.kind==='Polygon'?'':p.kind;
@@ -315,7 +351,7 @@ function hover(info,label){
   const tooltip=$('tooltip');tooltip.textContent=label(info.object);tooltip.style.left=`${info.x+12}px`;tooltip.style.top=`${info.y+12}px`;tooltip.hidden=false;
 }
 function render(){
-  const scene=displayScene();exportControls();if(!state.mapReady)return;
+  const scene=displayScene();exportControls();updateResults();if(!state.mapReady)return;
   if(state.inputPreview){
     const polygons=state.inputPreview.features.flatMap(f=>(f.geometry.type==='Polygon'?[f.geometry.coordinates]:f.geometry.coordinates).map(rings=>({rings})));
     overlay.setProps({layers:[new SolidPolygonLayer({id:'prepared-input',data:polygons,getPolygon:d=>d.rings,getFillColor:[35,139,118,115],material:false}),
@@ -367,7 +403,7 @@ function render(){
     layers.push(new LineLayer({id:'dual-edges',data:scene.dual_edges.filter(d=>$('exterior').checked||!d.exterior),getSourcePosition:d=>zpoint(d.source),getTargetPosition:d=>zpoint(d.target),
       getColor:d=>d.exterior?[145,67,194]:d.source[2]===d.target[2]?[38,156,116]:[229,131,57],getWidth:number('dual-width'),widthUnits:'pixels',pickable:true,
       onClick:info=>info.object&&inspectEdge(faceMap.get(info.object.face)?.edge||info.object.edge),onHover:info=>hover(info,d=>'Dual '+(d.kind||'face')+' interface · '+d.owners.join(' ↔ '))}));
-    if($('dual-labels').checked)layers.push(new TextLayer({id:'dual-labels',data:nodes,getPosition:d=>zpoint(d.position),getText:d=>'d'+d.id,getSize:12,getPixelOffset:[9,-9],getColor:[20,45,44],getTextAnchor:'start'}));
+    if($('dual-labels').checked)layers.push(new TextLayer({id:'dual-labels',data:nodes,getPosition:d=>zpoint(d.position),getText:d=>'d'+d.id,getSize:12,getPixelOffset:[9,-9],getColor:atlas?.theme==='dark'?[238,244,235]:[20,45,44],getTextAnchor:'start'}));
   }
   const section=state.section;
   if(section&&section.revision===(mapping?.active?mapping.revision:state.revision)&&section.preview_id===(scene.preview_id||null)){
@@ -402,6 +438,7 @@ function sliceHeading(){
   $('slice-label').textContent=`${orientation} · ${orientation==='Horizontal'?'Z':'offset'} = ${Number(value.toFixed(5))}`;
 }
 function resetSlice(toTop){
+  playback?.pause();++state.sliceSerial;
   const scene=displayScene();if(!scene)return;
   if(toTop){$('orientation').value='Horizontal';$('slice-value').value=scene.levels.z_t;}
   $('plane-angles').hidden=$('orientation').value==='Horizontal';$('tilt-field').hidden=$('orientation').value==='Vertical';
@@ -412,27 +449,29 @@ function resetSlice(toTop){
   $('slice-slider').value=$('slice-value').value;requestSlice();
 }
 function requestSlice(){
+  playback?.pause();
   clearTimeout(state.sliceTimer);++state.sliceSerial;sliceHeading();
-  state.sliceTimer=setTimeout(sendSlice,75);
+  state.sliceTimer=setTimeout(()=>{state.sliceTimer=null;sendSlice();},75);
 }
 async function sendSlice(){
-    if(!displayScene())return;
+    if(!displayScene())return false;
     if(state.sliceInFlight){state.sliceQueued=true;return;}
     state.sliceInFlight=true;state.sliceQueued=false;const serial=state.sliceSerial;
     try{
       sliceHeading();const section=await api(mapping?.active?'/api/mapping/slice':'/api/slice',{revision:mapping?.active?mapping.revision:state.revision,preview_id:displayScene()?.preview_id||null,
         orientation:$('orientation').value,value:number('slice-value'),tilt:number('tilt'),azimuth:number('azimuth'),include_sections:$('show-sections').checked,clamp_position:true});
-      if(serial!==state.sliceSerial)return;
+      if(serial!==state.sliceSerial)return false;
       state.section=section;$('slice-slider').min=section.bounds[0];$('slice-slider').max=section.bounds[1];$('slice-slider').value=section.value;
       $('slice-value').value=section.value;sliceHeading();
       $('slice-value').min=section.bounds[0];$('slice-value').max=section.bounds[1];
       const count=section.features.features.length;
       $('slice-summary').textContent=section.sections_computed===false?'Slice features hidden; plane position retained.':`${count} actual section part${count===1?'':'s'}${section.missing.length?' · Missing terminal features: '+section.missing.join(', '):''}${!$('show-3d').checked?' · Projected onto XY':''}`;
-      render();
-    }catch(error){if(serial===state.sliceSerial)status(error.message,true);}
-    finally{state.sliceInFlight=false;if(state.sliceQueued){state.sliceQueued=false;clearTimeout(state.sliceTimer);sendSlice();}}
+      render();return true;
+    }catch(error){if(serial===state.sliceSerial)status(error.message,true);return false;}
+    finally{state.sliceInFlight=false;if(state.sliceQueued){state.sliceQueued=false;clearTimeout(state.sliceTimer);state.sliceTimer=null;sendSlice();}}
 }
 function moveSlice(direction){
+  playback?.pause();
   const step=number('slice-step');if(step<=0)throw new Error('Step size must be positive.');
   const lower=Number($('slice-slider').min),upper=Number($('slice-slider').max);
   const value=Math.max(lower,Math.min(upper,number('slice-value')+direction*step));
@@ -441,7 +480,7 @@ function moveSlice(direction){
 function fitData(){
   const scene=displayScene();if(!scene){if(mapping?.active)fitMappingInputs(mapping.inputFeatures());return;}const b=scene.bounds;
   const width=$('map').clientWidth||800;
-  map.fitBounds([[b[0],b[1]],[b[2],b[3]]],{padding:{top:75,left:Math.min(50,width*.1),right:Math.min(250,width*.3),bottom:40},maxZoom:20,duration:400});
+  map.fitBounds([[b[0],b[1]],[b[2],b[3]]],{padding:{top:75,left:Math.min(50,width*.1),right:Math.min(250,width*.3),bottom:40},maxZoom:20,duration:motionDuration(400)});
   state.miniFitPending=true;fitMini();
 }
 function exportControls(){
@@ -490,13 +529,14 @@ function endMode(){
   state.mode=null;state.drag=null;state.drawBounds=null;map.dragPan.enable();mini.dragPan.enable();map.getCanvas().style.cursor='';mini.getCanvas().style.cursor='';
   for(const m of [map,mini])m.getSource('draw-box')?.setData(empty);
   $('mode-banner').hidden=true;
-  if(state.modeCamera){map.easeTo({...state.modeCamera,duration:300});state.modeCamera=null;}
+  if(state.modeCamera){map.easeTo({...state.modeCamera,duration:motionDuration(300)});state.modeCamera=null;}
   render();
 }
 function beginMode(mode){
-  if(state.busy)return;endMode();state.mode=mode;$('mode-banner').hidden=false;
+  if(state.busy)return;playback?.pause();endMode();state.mode=mode;$('mode-banner').hidden=false;atlas?.closeWorkflow();
+  const controls=document.querySelector('.view-controls');if(controls)controls.open=false;
   if(mode==='osm'){
-    state.modeCamera={pitch:map.getPitch(),bearing:map.getBearing()};map.easeTo({pitch:0,bearing:0,duration:300});map.dragPan.disable();map.getCanvas().style.cursor='crosshair';
+    state.modeCamera={pitch:map.getPitch(),bearing:map.getBearing()};map.easeTo({pitch:0,bearing:0,duration:motionDuration(300)});map.dragPan.disable();map.getCanvas().style.cursor='crosshair';
     $('mode-banner').textContent='Drag a rectangle to download OSM footprints. Esc cancels.';
   }else{
     $('mini-panel').hidden=false;$('show-mini').hidden=true;$('mini-panel').classList.add('expanded');mini.resize();fitMini();mini.dragPan.disable();mini.getCanvas().style.cursor='crosshair';
@@ -528,9 +568,10 @@ function bindDraw(m,mode){
 }
 bindDraw(map,'osm');bindDraw(mini,'box');
 
-async function changeBackground(kind){
+async function changeBackground(kind,fromTheme=false){
   if(kind==='custom'&&!state.custom){$('custom-dialog').showModal();$('basemap').value=state.background;return;}
   if(kind.startsWith('google-')&&!state.config.google_available)throw new Error('Google backgrounds require a configured Map Tiles API key.');
+  if(!fromTheme)state.backgroundExplicit=true;
   state.background=kind;state.mapReady=false;state.miniReady=false;state.fallback.clear();state.mapWarnings.clear();updateMapWarnings();
   map.setStyle(baseStyle(kind));mini.setStyle(baseStyle(kind));
   $('google-attribution').hidden=!kind.startsWith('google-');
@@ -549,13 +590,15 @@ map.on('moveend',googleAttribution);
 mini.on('moveend',googleAttribution);
 
 async function selectTab(name){
+  playback?.pause();
   const button=document.querySelector(`[data-tab="${name}"]`);
-  for(const b of document.querySelectorAll('[data-tab]'))b.classList.toggle('active',b===button);
+  for(const b of document.querySelectorAll('[data-tab]')){b.classList.toggle('active',b===button);if(b===button)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');}
   $('generalize-tab').hidden=button.dataset.tab!=='generalize';$('inspect-tab').hidden=button.dataset.tab!=='inspect';
   $('mapping-tab').hidden=button.dataset.tab!=='mapping';
   if(button.dataset.tab==='mapping')await mapping?.activate();
   if(button.dataset.tab==='generalize'&&mapping?.active){mapping.deactivate();state.section=null;state.edge=null;await refreshScene(false);}
   $('open-import').hidden=Boolean(mapping?.active);$('draw-bbox').hidden=Boolean(mapping?.active);
+  render();
 }
 for(const button of document.querySelectorAll('[data-tab]'))button.onclick=guard(()=>selectTab(button.dataset.tab));
 $('operation').onchange=()=>{discardPreview();operationFields();};
@@ -625,8 +668,9 @@ $('hide-mini').onclick=()=>{$('mini-panel').hidden=true;$('show-mini').hidden=fa
 $('show-mini').onclick=()=>{$('mini-panel').hidden=false;$('show-mini').hidden=true;mini.resize();fitMini();};
 $('expand-mini').onclick=()=>{$('mini-panel').classList.toggle('expanded');mini.resize();};
 $('show-3d').onchange=()=>{
-  if(!$('show-3d').checked){state.camera={pitch:map.getPitch(),bearing:map.getBearing()};map.setMaxPitch(0);map.easeTo({pitch:0,bearing:0,duration:400});}
-  else{map.setMaxPitch(80);map.easeTo({...state.camera||{pitch:55,bearing:-20},duration:400});state.camera=null;}
+  playback?.pause();
+  if(!$('show-3d').checked){state.camera={pitch:map.getPitch(),bearing:map.getBearing()};map.setMaxPitch(0);map.easeTo({pitch:0,bearing:0,duration:motionDuration(400)});}
+  else{map.setMaxPitch(80);map.easeTo({...state.camera||{pitch:55,bearing:-20},duration:motionDuration(400)});state.camera=null;}
   render();requestSlice();
 };
 for(const id of ['primal','dual','fill','opacity','exaggeration','dual-size','dual-width','dual-labels','exterior','dual-style','show-plane'])$(id).addEventListener('input',guard(render));
@@ -649,12 +693,13 @@ $('slice-value').oninput=guard(requestSlice);
 for(const id of ['tilt','azimuth']){
   const update=guard(()=>{$('slice-value').value=0;requestSlice();});$(id).oninput=update;$(id).onchange=update;
 }
-const updateStep=guard(()=>{const step=number('slice-step');if(step<=0)throw new Error('Step size must be positive.');$('slice-slider').step=step;$('slice-value').step=step;});
+const updateStep=guard(()=>{playback?.pause();const step=number('slice-step');if(step<=0)throw new Error('Step size must be positive.');$('slice-slider').step=step;$('slice-value').step=step;});
 $('slice-step').oninput=updateStep;$('slice-step').onchange=updateStep;
 $('lower').onclick=guard(()=>moveSlice(-1));$('raise').onclick=guard(()=>moveSlice(1));
 $('slice-slider').addEventListener('wheel',event=>{event.preventDefault();event.stopPropagation();try{moveSlice(event.deltaY<0?1:-1);}catch(error){status(error.message,true);}},{passive:false});
 $('source-level').onclick=()=>{if(!displayScene())return;$('orientation').value='Horizontal';$('slice-value').value=displayScene().levels.z_s;resetSlice(false);};
 $('target-level').onclick=()=>resetSlice(true);
+$('import-osm').onclick=()=>{$('import-dialog').close();openOSM('generalize');};
 document.addEventListener('keydown',event=>{
   if(event.key==='Escape'){endMode();return;}
   if(['INPUT','SELECT','TEXTAREA'].includes(document.activeElement?.tagName))return;
@@ -735,7 +780,7 @@ function fitMappingInputs(features){
   const pairs=value=>Array.isArray(value)&&typeof value[0]==='number'?[value]:Array.isArray(value)?value.flatMap(pairs):[];
   const points=features.flatMap(f=>pairs(f.geometry.coordinates));if(!points.length)return;
   const bounds=[Infinity,Infinity,-Infinity,-Infinity];for(const p of points){bounds[0]=Math.min(bounds[0],p[0]);bounds[1]=Math.min(bounds[1],p[1]);bounds[2]=Math.max(bounds[2],p[0]);bounds[3]=Math.max(bounds[3],p[1]);}
-  map.fitBounds([[bounds[0],bounds[1]],[bounds[2],bounds[3]]],{padding:65,duration:300});
+  map.fitBounds([[bounds[0],bounds[1]],[bounds[2],bounds[3]]],{padding:65,duration:motionDuration(300)});
 }
 function mappingChanged(reset){
   if(!mapping?.active)return;

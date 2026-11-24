@@ -20,6 +20,10 @@ jobs:
             requirements-web.txt
       - run: python -m pip install -r requirements-web.txt
       - run: python scripts/fetch_demo_data.py
-      - run: python -m unittest test_web_cloud test_web_generalization test_web_launch test_mapping test_space_export
+      - run: python -m unittest test_web_cloud test_web_generalization test_web_launch test_mapping test_space_export test_web_measurements
         env:
           MPLBACKEND: Agg
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: node --test test_atlas_ui.mjs

@@ -296,7 +296,7 @@ def create_app(*,default_path=DEFAULT_WEB_DATA,initial_height=5.,autoload=True,w
                 try:await cleanup
                 except asyncio.CancelledError:pass
             await run_in_threadpool(registry.close if registry else w.close)
-    app=FastAPI(title='DHE Transition Atlas',lifespan=lifespan)
+    app=FastAPI(title='LoD Transition Space (LTS)',lifespan=lifespan)
     app.state.workspace=w;app.state.registry=registry;app.state.google=google
     app.add_middleware(GZipMiddleware,minimum_size=1000)
     @app.middleware('http')

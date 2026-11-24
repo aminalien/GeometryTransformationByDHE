@@ -18,8 +18,12 @@ class Element{
   replaceChildren(...children){this.children=[];this._text='';if(this.tagName==='SELECT')this.value='';this.append(...children);}
   append(...children){this.children.push(...children);if(this.tagName==='SELECT'&&!this.value&&this.children.length)this.value=this.children[0].value;}
   addEventListener(type,callback){(this.events[type]??=[]).push(callback);}
+  setAttribute(key,value){this[key]=String(value);}
+  removeAttribute(key){delete this[key];}
+  get firstChild(){return this.children[0];}
+  get lastChild(){return this.children.at(-1);}
   async emit(type,event={}){for(const callback of this.events[type]||[])await callback(event);if(this['on'+type])await this['on'+type](event);}
-  querySelector(selector){const match=selector.match(/option\[value="(.*)"\]/);return this.children.find(c=>c.value===match?.[1]);}
+  querySelector(selector){if(/^[a-z]+$/.test(selector))return this.children.find(c=>c.tagName===selector.toUpperCase());const match=selector.match(/option\[value="(.*)"\]/);return this.children.find(c=>c.value===match?.[1]);}
   showModal(){this.open=true;}
   close(){this.open=false;}
   click(){if(this.tagName==='A')downloads.push({filename:this.download,blob:blobs.get(this.href)});}
@@ -37,8 +41,9 @@ for(const match of html.matchAll(/<select[^>]*id="([^"]+)"[^>]*>([\s\S]*?)<\/sel
 const tabs=['generalize','inspect','mapping'].map(tab=>{const e=new Element('button');e.dataset.tab=tab;return e;});
 const hops=['nf','s','adjacent'].map(hop=>{const e=new Element('button');e.dataset.hop=hop;return e;});
 const documentEvents={};
-const document={hidden:false,activeElement:new Element('body'),getElementById:id=>{assert.ok(elements.has(id),id);return elements.get(id);},
-  createElement:tag=>new Element(tag),createTextNode:text=>({textContent:text}),querySelectorAll:selector=>selector==='[data-tab]'?tabs:selector==='[data-hop]'?hops:[],addEventListener(event,callback){documentEvents[event]=callback;}};
+const document={hidden:false,documentElement:new Element('html'),body:new Element('body'),activeElement:new Element('body'),getElementById:id=>{assert.ok(elements.has(id),id);return elements.get(id);},
+  createElement:tag=>new Element(tag),createTextNode:text=>({textContent:text}),querySelectorAll:selector=>selector==='[data-tab]'?tabs:selector==='[data-hop]'?hops:[],addEventListener(event,callback){const previous=documentEvents[event];documentEvents[event]=e=>{previous?.(e);callback(e);};}};
+document.querySelector=selector=>selector.startsWith('[data-tab=')?tabs.find(t=>selector.includes('"'+t.dataset.tab+'"')):null;
 const maps=[];const overlays=[];
 class FakeMap{
   constructor(options){this.options=options;this.events={};this.sources={};this.layers={};this.pitch=options.pitch;this.bearing=options.bearing;this.canvas={style:{}};this.dragPan={enable(){},disable(){}};this.bounds=[17.01,51.13,17.02,51.14];maps.push(this);setTimeout(()=>this.emit('style.load'),5);}
@@ -74,10 +79,11 @@ class FocusViewport{
 }
 const realFetch=globalThis.fetch;let submitted,automaticSubmitted,activeSlices=0,maxActiveSlices=0,slowSlices=false;
 async function fetchLocal(path,options){
-  if(path==='/api/apply'){submitted=JSON.parse(options.body);return {ok:true,json:async()=>({job_id:'failure-test'})};}
-  if(path==='/api/jobs/failure-test')return {ok:true,json:async()=>({status:'failed',error:'Test construction rejection'})};
-  if(path==='/api/automatic'){automaticSubmitted=JSON.parse(options.body);return {ok:true,json:async()=>({job_id:'automatic-failure'})};}
-  if(path==='/api/jobs/automatic-failure')return {ok:true,json:async()=>({status:'failed',error:'Test atomic automatic rejection'})};
+  const mock=data=>({ok:true,status:200,headers:new Headers(),json:async()=>data});
+  if(path==='/api/apply'){submitted=JSON.parse(options.body);return mock({job_id:'failure-test'});}
+  if(path==='/api/jobs/failure-test')return mock({status:'failed',error:'Test construction rejection'});
+  if(path==='/api/automatic'){automaticSubmitted=JSON.parse(options.body);return mock({job_id:'automatic-failure'});}
+  if(path==='/api/jobs/automatic-failure')return mock({status:'failed',error:'Test atomic automatic rejection'});
   if(path==='/api/scene'&&process.env.DHE_WEB_STRESS_INSPECTOR==='1'){
     // Synthetic menu stress only: repeat actual topology records in the mock client.
     // This does not alter server geometry or constitute a DHE validity test.
@@ -102,6 +108,7 @@ const source=await fs.readFile(new URL('./web_generalization/app.js',import.meta
 const module=new vm.SourceTextModule(source,{context});
 await module.link(async specifier=>{
   if(specifier==='./cell_focus.js')return new vm.SourceTextModule(await fs.readFile(new URL('./web_generalization/cell_focus.js',import.meta.url),'utf8'),{context});
+  if(specifier==='./atlas_ui.js')return new vm.SourceTextModule(await fs.readFile(new URL('./web_generalization/atlas_ui.js',import.meta.url),'utf8'),{context});
   const exports=specifier==='maplibre-gl'?{Map:FakeMap,Marker,NavigationControl:class{},ScaleControl:class{}}:
     specifier.includes('/maplibre@')?{MapLibreOverlay:Overlay}:{...Object.fromEntries(['SolidPolygonLayer','PathLayer','LineLayer','ScatterplotLayer','TextLayer','SimpleMeshLayer','AmbientLight','DirectionalLight','LightingEffect'].map(key=>[key,Layer])),WebMercatorViewport:FocusViewport};
   return new vm.SyntheticModule(Object.keys(exports),function(){for(const [key,value] of Object.entries(exports))this.setExport(key,value);},{context});
@@ -112,6 +119,13 @@ const el=id=>elements.get(id);
 const layer=id=>overlays[0].props.layers.find(layer=>layer.id===id)?.props;
 await waitFor(()=>context.window.dheAtlas?.loaded&&layer('slice-fills')?.data.length,'App boot');
 assert.ok(layer('dhe-faces').data.length);assert.ok(layer('primal-vertices').data.length);
+assert.ok(el('measurement-rows').children.length===4);assert.equal(document.documentElement.dataset.theme,'light');
+await el('theme-toggle').emit('click');assert.equal(document.documentElement.dataset.theme,'dark');
+await el('theme-toggle').emit('click');assert.equal(document.documentElement.dataset.theme,'light');
+await el('toggle-results').emit('click');assert.equal(el('toggle-results')['aria-expanded'],'true');
+await el('close-results').emit('click');assert.equal(el('toggle-results')['aria-expanded'],'false');
+await el('toggle-workflow').emit('click');assert.equal(el('toggle-workflow')['aria-expanded'],'true');
+await el('close-workflow').emit('click');assert.equal(el('toggle-workflow')['aria-expanded'],'false');
 const revision=context.window.dheAtlas.revision;
 assert.equal(el('focus-cell').disabled,true);assert.equal(el('export-primal').disabled,false);
 await el('export-primal').emit('click');assert.ok(downloads.at(-1).filename.endsWith('.zip'));
@@ -162,12 +176,19 @@ await pause(100);slowSlices=true;
 for(const value of ['1','1.5','2','2.5']){el('slice-value').value=value;await el('slice-value').emit('input');await pause(100);}
 await waitFor(()=>layer('slice-fills')?.data.some(d=>Math.abs(d.rings[0][0][2]-15)<1e-6)&&activeSlices===0,'Latest queued section');
 assert.equal(maxActiveSlices,1);slowSlices=false;
+const beforePlayback=Number(el('slice-value').value);await el('slice-play').emit('click');
+await waitFor(()=>Number(el('slice-value').value)>beforePlayback&&activeSlices===0,'Horizontal slice playback');
+await el('lower').emit('click');assert.equal(el('slice-play')['aria-pressed'],'false');
+await pause(100);await el('slice-play').emit('click');document.hidden=true;documentEvents.visibilitychange();
+assert.equal(el('slice-play')['aria-pressed'],'false');document.hidden=false;
 el('orientation').value='Vertical';await el('orientation').emit('change');el('show-3d').checked=false;await el('show-3d').emit('change');
 await waitFor(()=>el('slice-label').textContent.startsWith('Vertical')&&layer('slice-outlines')?.data.length,'Vertical sections');
 await pause(150);assert.equal(layer('slice-fills').data.length,0);assert.ok(layer('slice-outlines').data.every(d=>d.path.every(p=>p[2]===.04)));
 el('orientation').value='Inclined';await el('orientation').emit('change');await waitFor(()=>el('slice-label').textContent.startsWith('Inclined')&&layer('slice-fills')?.data.length,'Inclined sections');
 el('basemap').value='blank';await el('basemap').emit('change');await pause(25);assert.ok(layer('slice-fills'));
 assert.equal(maps[0].style.layers[0].paint['background-color'],'#ffffff');
+await el('theme-toggle').emit('click');assert.equal(el('basemap').value,'blank');
+await el('theme-toggle').emit('click');assert.equal(el('basemap').value,'blank');
 await maps[0].emit('error',{sourceId:'background',error:new Error('tile test failure')});assert.ok(el('map-warning').textContent.includes('background'));assert.ok(layer('slice-fills'));
 await maps[0].emit('sourcedata',{sourceId:'background',isSourceLoaded:true});assert.equal(el('map-warning').hidden,true);
 overlays[0].props.onError?.(new Error('mesh test failure'),{id:'dual-vertices'});
@@ -183,6 +204,7 @@ await maps[1].emit('mousemove',{lngLat:{lng:bounds[2],lat:bounds[3]}});
 await maps[1].emit('mouseup',{lngLat:{lng:bounds[2],lat:bounds[3]}});
 assert.equal(el('selection-count').textContent,maps[1].getSource('current').data.features.length+' selected');
 await el('draw-bbox').emit('click');
+assert.ok(el('osm-dialog').open);await el('osm-draw').emit('click');
 await maps[0].emit('mousedown',{originalEvent:{button:0},lngLat:{lng:17.01,lat:51.13},preventDefault(){}});
 await maps[0].emit('mouseup',{lngLat:{lng:17.02,lat:51.14}});
 assert.ok(el('mode-banner').children.some(c=>c.textContent==='Download footprints'));
@@ -190,7 +212,7 @@ documentEvents.keydown({key:'Escape'});assert.equal(el('mode-banner').hidden,tru
 el('indices').value='1';await el('select-indices').emit('click');assert.equal(el('selection-count').textContent,'1 selected');
 el('operation').value='smoothing';await el('operation').emit('change');await el('apply').emit('click');
 assert.equal(submitted.operation,'smoothing');assert.deepEqual(submitted.selected,[1]);assert.equal(submitted.revision,revision);
-assert.ok(el('status').textContent.includes('Test construction rejection'));assert.equal(context.window.dheAtlas.revision,revision);assert.equal(el('apply').disabled,false);
+assert.ok(el('status').textContent.includes('Test construction rejection'),el('status').textContent);assert.equal(context.window.dheAtlas.revision,revision);assert.equal(el('apply').disabled,false);
 assert.equal((await (await realFetch(origin+'/api/state')).json()).revision,revision);
 el('operation').value='point';await el('operation').emit('change');await el('level-add').emit('click');
 assert.equal(el('level-actions').children.length,1);
@@ -223,10 +245,11 @@ if(process.env.DHE_WEB_TEST_MAPPING==='1'){
   assert.ok(el('mapping-summary').textContent.includes('Automatic review'));
   assert.ok(el('mapping-group-rows').children.every(row=>row.children[0].children[0].disabled));
   // Preview works directly after loading, without analysis or confirmation.
+  const beforePreviewState=await (await realFetch(origin+'/api/mapping/state')).json();
   await el('mapping-preview').emit('click');
   await waitFor(()=>el('scene-title').textContent==='Validated preview'&&layer('slice-fills')?.data.length,'Mapping preview');
   assert.ok(layer('dhe-faces')?.data.length===undefined||layer('dhe-faces').data.length>0);
-  const previewState=await (await realFetch(origin+'/api/mapping/state')).json();assert.ok(previewState.has_preview);assert.equal(previewState.has_result,false);
+  const previewState=await (await realFetch(origin+'/api/mapping/state')).json();assert.ok(previewState.has_preview);assert.equal(previewState.has_result,beforePreviewState.has_result);
   await el('mapping-discard').emit('click');assert.equal((await (await realFetch(origin+'/api/mapping/state')).json()).has_preview,false);
   // Optional edits remain available after automatic review.
   el('mapping-edit-sources').value='s1';el('mapping-edit-targets').value='t1';

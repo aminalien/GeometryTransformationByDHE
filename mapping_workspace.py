@@ -13,6 +13,7 @@ from mapping_data import (DEFAULT_MAPPING_SOURCE,DEFAULT_MAPPING_TARGET,prepare_
                           automatic_review,review_summary,member_records,id_groups,validate_id_groups,matching_id,change_layer_side)
 from mapping_builders import build_mapping
 from mapping_scene import MappingScene
+from web_measurements import layer_comparison
 from web_generalization_data import UploadStore,fetch_mapping_osm
 
 
@@ -71,6 +72,7 @@ class MappingWorkspace:
                             if key in r:g[key]=deepcopy(r[key])
             return dict(revision=self.revision,layers=layers,groups=groups,settings=self.settings.copy(),suggestions=deepcopy(self.suggestions),
                         automatic_review=review_summary(self.layers,self.groups),
+                        measurements=layer_comparison(self.layers),
                         has_result=self.result is not None,has_preview=self.preview is not None,
                         preview_id=self.preview.preview_id if self.preview else None,
                         can_swap=len(self.layers)==2 and all(f.geometry.geom_type in ('Polygon','MultiPolygon') for f in self.layers['target'].features.values()),
@@ -157,6 +159,7 @@ class MappingWorkspace:
             preview=bool(p.get('preview',False));next_revision=self.revision+int(not preview or changed)
             progress('Checking endpoint geometry and preparing geographic DHE snapshot')
             snapshot=MappingScene(result,next_revision,uuid4().hex if preview else None)
+            snapshot.payload['measurements']=layer_comparison(layers)
             snapshot.validate_endpoints(layers['source'],layers['target'],groups)
             if cancelled():raise ValueError('Mapping cancelled; previously published model preserved.')
             with self.lock:

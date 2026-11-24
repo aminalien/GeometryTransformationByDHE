@@ -2,20 +2,24 @@
 <html lang="en">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>DHE · Transition Atlas</title>
+  <meta name="theme-color" content="#f4f1ea">
+  <meta name="description" content="LoD Transition Space: explore generalization, layer correspondence and DHE topology in an interactive scientific workspace.">
+  <title>LoD Transition Space · LTS</title>
   <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@6.16.0/dist/maplibre-gl.css">
   <link rel="stylesheet" href="/assets/app.css">
   <script type="importmap">{"imports":{"maplibre-gl":"https://esm.sh/maplibre-gl@6.16.0","@deck.gl/core":"https://esm.sh/@deck.gl/core@9.4.1"}}</script>
 </head>
 <body>
+<a class="skip-link" href="#workspace-canvas">Skip to visualization</a>
 <header class="topbar">
-  <div class="brand"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="m16 3 13 7-13 7L3 10Z M3 16l13 7 13-7M3 22l13 7 13-7"/></svg><div><strong>Transition Atlas</strong><span>DHE generalization workspace</span></div></div>
+  <div class="brand"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="m16 3 13 7-13 7L3 10Z M3 16l13 7 13-7M3 22l13 7 13-7"/></svg><div><strong>LoD Transition Space <small>LTS</small></strong><span>A spatial atlas of continuous change</span></div></div>
   <div class="dataset-pill"><i></i><span id="dataset-name">Connecting to workspace…</span></div>
-  <div class="top-actions"><button id="draw-bbox">⌖ Draw OSM area</button><button id="open-import" class="primary">＋ Load data</button></div>
+  <div class="top-actions"><button id="toggle-workflow" aria-controls="workflow-panel" aria-expanded="false">Workflow</button><button id="theme-toggle" aria-pressed="false">◐ Dark</button><button id="toggle-results" aria-controls="results-panel" aria-expanded="false">Results</button><button id="draw-bbox">⌖ OSM area</button><button id="open-import" class="primary">＋ Load data</button></div>
 </header>
 <main class="app-layout">
-<aside class="sidebar">
-  <div class="side-tabs"><button class="active" data-tab="generalize">Generalize</button><button data-tab="mapping">Mapping</button><button data-tab="inspect">Inspect DHE</button></div>
+<aside class="sidebar" id="workflow-panel" aria-label="Scientific workflow">
+  <div class="panel-intro"><span class="eyebrow">WORKSPACE / 01</span><h1>Explore change.</h1><p>Construct, compare, and inspect spatial transitions.</p><button id="close-workflow" class="text-button">Close workflow ×</button></div>
+  <nav class="side-tabs" aria-label="Workspace mode"><button class="active" data-tab="generalize" aria-current="page">Generalize</button><button data-tab="mapping">Mapping</button><button data-tab="inspect">Inspect DHE</button></nav>
   <p id="session-notice" class="hint" hidden></p>
   <section id="generalize-tab">
     <div class="section-title"><span>01 / SELECTION</span><button id="clear-selection" class="text-button">Clear</button></div>
@@ -26,9 +30,9 @@
     <div id="feature-list" class="feature-list" aria-label="Current features"></div>
     <div class="section-title"><span>02 / TRANSFORMATION</span></div>
     <label>Operation<select id="operation"><option value="simplification">Simplification</option><option value="smoothing">Smoothing</option><option value="point">Collapse to point</option><option value="polyline">Collapse to polyline</option><option value="merging">Merging</option><option value="aggregation">Aggregation</option></select></label>
-    <div class="form-grid"><label>Top-up ΔZ<input id="dz" type="number" min="0.000001" step="1" value="10"></label><label id="tolerance-field">Tolerance (m)<input id="tolerance" type="number" min="0" step="0.1" value="1"></label></div>
+    <div class="form-grid"><label>Transition increment ΔZ<input id="dz" type="number" min="0.000001" step="1" value="10"></label><label id="tolerance-field">Tolerance (m)<input id="tolerance" type="number" min="0" step="0.1" value="1"></label></div>
     <label class="check"><input id="consider-substeps" type="checkbox" checked>Consider adjacent substeps</label>
-    <p class="hint" id="substeps-help">ON: adjacent selected operations use equal subintervals, least changed footprint area first. OFF: in each adjacent group, shared winners take priority, then greatest changed footprint area; successful winners defer their neighbours. Other non-adjacent selections also run, each over the full interval. A shared winner touches at least two selected neighbours and beats at least one by changed area. Failed candidates are reported and the next candidate is tried.</p>
+    <details class="workflow"><summary>How adjacent substeps work</summary><p class="hint" id="substeps-help">ON: adjacent selected operations use equal subintervals, least changed footprint area first. OFF: in each adjacent group, shared winners take priority, then greatest changed footprint area; successful winners defer their neighbours. Other non-adjacent selections also run, each over the full interval. A shared winner touches at least two selected neighbours and beats at least one by changed area. Failed candidates are reported and the next candidate is tried.</p></details>
     <div class="form-grid" id="smoothing-fields" hidden><label>Iterations<input id="iterations" type="number" min="1" max="8" value="1"></label><label>Corner ratio<input id="ratio" type="number" min="0.01" max="0.49" step="0.01" value="0.25"></label></div>
     <label id="winner-field" hidden>Merge winner<select id="winner"></select></label>
     <div id="operation-help" class="hint operation-help"></div>
@@ -53,8 +57,8 @@
     <div id="mapping-overlaps" class="mapping-overlaps"></div>
     <div class="section-title"><span>02 / DIMENSION & METHOD</span></div>
     <label>Mapping path<select id="mapping-mode"><option value="hybrid">Hybrid · Classic + Smooth</option><option value="classic">Classic · overlay interface</option><option value="smooth">Smooth · supplied targets</option></select></label>
-    <label class="check"><input id="mapping-match-by-id" type="checkbox">Map only by ID</label>
-    <p class="hint">Match all polygons with equal original IDs, regardless of location. Unmatched IDs appear or disappear. Turn off to use spatial matching.</p>
+    <details class="workflow"><summary>Identity matching</summary><label class="check"><input id="mapping-match-by-id" type="checkbox">Map only by ID</label>
+    <p class="hint">Match all polygons with equal original IDs, regardless of location. Unmatched IDs appear or disappear. Turn off to use spatial matching.</p></details>
     <div class="form-grid"><label>Source Z<input id="mapping-source-z" type="number" value="5" min="0.000001" step="1"></label><label>Target Z<input id="mapping-target-z" type="number" value="15" min="0.000001" step="1"></label></div>
     <details class="workflow"><summary>Scale / time / source labels</summary><label>Source label<input id="mapping-source-label" placeholder="e.g. OSM, 2020"></label><label>Target label<input id="mapping-target-label" placeholder="e.g. CityGML, 2026"></label><div class="form-grid"><label>Source scale 1:M<input id="mapping-source-scale" type="number" min="1"></label><label>Target scale 1:M<input id="mapping-target-scale" type="number" min="1"></label></div><label>Source time<input id="mapping-source-time" type="date"></label><label>Target time<input id="mapping-target-time" type="date"></label><p class="hint">Labels are metadata. Z is a transition coordinate, not building height.</p></details>
     <details class="workflow"><summary>Matching / correspondence settings</summary><label>Minimum overlap of smaller polygon<input id="mapping-overlap-fraction" type="number" min="0.01" max="1" step="0.05" value="0.25"></label><label>Proximity search (m)<input id="mapping-search-distance" type="number" min="0" step="1" value="10"></label><label>Rigid-fit tolerance (m)<input id="mapping-geometry-tolerance" type="number" min="0.000001" step="0.01" value="0.01"></label></details>
@@ -75,15 +79,56 @@
     <label>Find half-edge<input id="edge-search" placeholder="Label or raw ID (up to 300 matches)"></label>
     <label>Half-edge<select id="edge-select" aria-label="Half-edge"></select></label>
     <button id="focus-cell" class="focus-cell" disabled>Zoom to current cell</button>
-    <div class="section-title"><span>DUAL APPEARANCE</span></div>
+    <details class="workflow"><summary>Dual appearance</summary>
     <label class="check"><input type="checkbox" id="dual-labels">Dual labels</label>
     <label class="check"><input type="checkbox" id="exterior">Include exterior dual</label>
     <label>Dual vertices<select id="dual-style"><option value="spheres">3D spheres</option><option value="dots">Dots</option></select></label>
     <label>Dual radius <span class="unit">screen pixels at map centre</span><input id="dual-size" type="range" min="2" max="16" step="0.5" value="5"></label>
     <label>Dual edge width <span class="unit">pixels</span><input id="dual-width" type="range" min="0.5" max="6" step="0.25" value="2.5"></label>
-    <div class="section-title"><span>DATA DETAILS</span></div>
+    </details><div class="section-title"><span>DATA DETAILS</span></div>
     <div id="data-details" class="hint"></div>
   </section>
+  <details class="load-notes"><summary id="notes-title">Import & construction notes</summary><div id="notes"></div></details>
+</aside>
+<section class="workspace" id="workspace-canvas" tabindex="-1" aria-label="Interactive transition space">
+  <div class="canvas-heading"><div><span class="eyebrow">LoD TRANSITION SPACE</span><span>Geometry in transition</span></div><span class="canvas-coordinate">X · Y · Z</span></div>
+  <div id="action-message" class="action-message" role="alert" hidden></div>
+  <div class="map-area">
+    <div id="map" aria-label="DHE space over geographic background"></div>
+    <div class="scene-badge"><span class="live-dot"></span><strong id="scene-title">Current DHE space</strong><span id="scene-subtitle">Loading data…</span></div>
+    <details class="view-controls"><summary>Scene display <span>Primal / dual</span></summary>
+      <label class="master-switch"><input id="show-3d" type="checkbox" checked><span>3D DHE space</span><span class="switch-track"></span></label>
+      <div class="view-row"><label class="check"><input id="primal" type="checkbox" checked>Primal</label><label class="check"><input id="dual" type="checkbox">Dual</label><label class="check"><input id="fill" type="checkbox" checked>Fill cells</label></div>
+      <label class="compact">Opacity<input id="opacity" type="range" min="0.05" max="0.8" step="0.05" value="0.3"></label>
+      <label class="compact">Z display ×<input id="exaggeration" type="number" min="0.1" max="100" step="0.5" value="3"></label>
+      <label class="compact">Background<select id="basemap"><option value="osm">OpenStreetMap</option><option value="light" selected>Light</option><option value="dark">Dark</option><option value="satellite">Satellite · Esri</option><option value="google-roadmap">Google Maps · road</option><option value="google-satellite">Google Maps · satellite</option><option value="blank">White / no background</option><option value="custom">Custom XYZ layer…</option></select></label>
+      <button id="fit" class="fit-button">⊞ Fit data</button>
+    </details>
+    <div id="mode-banner" class="mode-banner" hidden></div>
+    <div id="map-warning" class="map-warning" hidden></div>
+    <div id="map-recovery" class="map-recovery" hidden><button id="retry-background">Retry background</button><button id="white-background">White background</button></div>
+    <div class="mini-panel" id="mini-panel"><div class="mini-header"><strong>Current top · select features</strong><button id="expand-mini" title="Expand current map" aria-label="Expand current map">⤢</button><button id="hide-mini" title="Hide current map" aria-label="Hide current map">−</button></div><div id="mini-map" aria-label="Current top selection map"></div></div>
+    <button id="show-mini" class="mini-restore" hidden>▱ Current top map</button>
+    <details class="scene-legend"><summary>Reading the space</summary><div><span class="legend-primal"></span>Primal · faces and edges</div><div><span class="legend-dual"></span>Dual · spheres and links</div><div><i class="legend-same"></i>Same-Z dual adjacency</div><div><i class="legend-transition"></i>Cross-Z dual adjacency</div><div><i class="legend-exterior"></i>Exterior dual links</div><p>Cell colors preserve feature identity.</p></details>
+    <div id="tooltip" class="tooltip" hidden></div>
+    <div id="google-attribution" class="google-attribution" hidden></div>
+  </div>
+  <div class="slice-panel">
+    <div class="slice-heading"><div><span class="eyebrow">SECTION / Z NAVIGATOR</span><strong id="slice-label">Horizontal · Z = 5</strong></div><div class="slice-options"><select id="orientation" aria-label="Plane orientation"><option>Horizontal</option><option>Vertical</option><option>Inclined</option></select><label>Step<input id="slice-step" type="number" min="0.000001" value="0.1" step="0.1"></label><button id="source-level" title="Jump to source Z">Zs</button><button id="target-level" title="Jump to target Z">Zt</button></div></div>
+    <div class="slice-track"><button id="slice-play" aria-label="Play horizontal slices" aria-pressed="false">▶</button><button id="lower" aria-label="Lower slicing plane">−</button><input id="slice-slider" type="range" min="0" max="5" step="0.1" value="5" list="level-markers" aria-label="Slicing plane position"><datalist id="level-markers"></datalist><button id="raise" aria-label="Raise slicing plane">＋</button><input id="slice-value" type="number" value="5" step="0.1" aria-label="Slice value"></div>
+    <div id="plane-angles" class="plane-angles" hidden><label id="tilt-field">Tilt °<input id="tilt" type="number" min="0" max="90" value="45"></label><label>Azimuth °<input id="azimuth" type="number" min="0" max="360" value="0"></label><span>Azimuth clockwise from north · tilt from horizontal</span></div>
+    <div class="slice-visibility"><label class="check"><input id="show-sections" type="checkbox" checked>Slice features</label><label class="check"><input id="show-plane" type="checkbox">Slicing plane</label><span id="slice-bounds">Z 0 — 5</span></div>
+    <div class="slice-meta"><span id="slice-summary">Sections are reconstructed from DHE faces.</span><span>↑ / ↓ to step · Z is a transition coordinate</span></div>
+  </div>
+</section>
+<aside class="results-panel" id="results-panel" aria-label="Results and research diagnostics">
+  <div class="results-heading"><span class="eyebrow">OBSERVATIONS / 02</span><button id="close-results" class="text-button" aria-label="Close results">Close ×</button></div>
+  <h2 id="result-title">Transition overview</h2><span id="result-state" class="state-tag">No model</span><p id="result-context" class="hint">Load data to explore the transition space.</p>
+  <div id="result-metrics" class="result-metrics"></div>
+  <details id="research-diagnostics" class="research-diagnostics"><summary>Research diagnostics</summary>
+    <h3>Geometry comparison</h3><p id="comparison-label" class="hint"></p><div class="measurement-scroll"><table class="measurement-table"><thead><tr><th>Measure</th><th>Before</th><th>After</th><th>Change</th></tr></thead><tbody id="measurement-rows"></tbody></table></div><p id="geometry-types" class="hint"></p><p class="hint">Area and perimeter describe polygons only; vertices exclude ring closure duplicates. Measurements use projected metres. — indicates an unavailable value.</p>
+    <h3>Construction records</h3><div id="result-diagnostics" class="diagnostic-tree"></div>
+  </details>
   <section class="space-export">
     <div class="section-title"><span>EXPORT SPACE</span></div>
     <p id="export-details" class="hint">Load a validated model to export.</p>
@@ -92,36 +137,7 @@
     <p class="hint">All bounded cells and raw Z. Primal OBJ ZIP includes faces, materials and metadata; JSON includes the graph and DHE pointers. Edge OBJ files contain each exact geometric segment once. Dual edges include finite face adjacency only, omitting VINF and Mapping contact links.</p>
     <p id="export-message" class="hint" role="status"></p>
   </section>
-  <details class="load-notes"><summary id="notes-title">Import & construction notes</summary><div id="notes"></div></details>
 </aside>
-<section class="workspace">
-  <div class="map-area">
-    <div id="map" aria-label="DHE space over geographic background"></div>
-    <div class="scene-badge"><span class="live-dot"></span><strong id="scene-title">Current DHE space</strong><span id="scene-subtitle">Loading data…</span></div>
-    <div class="view-controls">
-      <label class="master-switch"><input id="show-3d" type="checkbox" checked><span>3D DHE space</span><span class="switch-track"></span></label>
-      <div class="view-row"><label class="check"><input id="primal" type="checkbox" checked>Primal</label><label class="check"><input id="dual" type="checkbox">Dual</label><label class="check"><input id="fill" type="checkbox" checked>Fill cells</label></div>
-      <label class="compact">Opacity<input id="opacity" type="range" min="0.05" max="0.8" step="0.05" value="0.3"></label>
-      <label class="compact">Z display ×<input id="exaggeration" type="number" min="0.1" max="100" step="0.5" value="3"></label>
-      <label class="compact">Background<select id="basemap"><option value="osm">OpenStreetMap</option><option value="light">Light</option><option value="dark">Dark</option><option value="satellite">Satellite · Esri</option><option value="google-roadmap">Google Maps · road</option><option value="google-satellite">Google Maps · satellite</option><option value="blank">White / no background</option><option value="custom">Custom XYZ layer…</option></select></label>
-      <button id="fit" class="fit-button">⊞ Fit data</button>
-    </div>
-    <div id="mode-banner" class="mode-banner" hidden></div>
-    <div id="map-warning" class="map-warning" hidden></div>
-    <div id="map-recovery" class="map-recovery" hidden><button id="retry-background">Retry background</button><button id="white-background">White background</button></div>
-    <div class="mini-panel" id="mini-panel"><div class="mini-header"><strong>Current top · select features</strong><button id="expand-mini" title="Expand current map">⤢</button><button id="hide-mini" title="Hide current map">−</button></div><div id="mini-map" aria-label="Current top selection map"></div></div>
-    <button id="show-mini" class="mini-restore" hidden>▱ Current top map</button>
-    <div id="tooltip" class="tooltip" hidden></div>
-    <div id="google-attribution" class="google-attribution" hidden></div>
-  </div>
-  <div class="slice-panel">
-    <div class="slice-visibility"><label class="check"><input id="show-sections" type="checkbox" checked>Show slice features</label><label class="check"><input id="show-plane" type="checkbox">Show slicing plane (3D)</label></div>
-    <div class="slice-heading"><div><span class="eyebrow">LIVE CROSS-SECTION</span><strong id="slice-label">Horizontal · Z = 5</strong></div><div class="slice-options"><select id="orientation" aria-label="Plane orientation"><option>Horizontal</option><option>Vertical</option><option>Inclined</option></select><label>Step<input id="slice-step" type="number" min="0.000001" value="0.1" step="0.1"></label><button id="source-level">Zs</button><button id="target-level">Zt</button></div></div>
-    <div class="slice-track"><button id="lower" aria-label="Lower slicing plane">−</button><input id="slice-slider" type="range" min="0" max="5" step="0.1" value="5" aria-label="Slicing plane position"><button id="raise" aria-label="Raise slicing plane">＋</button><input id="slice-value" type="number" value="5" step="0.1" aria-label="Slice value"></div>
-    <div id="plane-angles" class="plane-angles" hidden><label id="tilt-field">Tilt °<input id="tilt" type="number" min="0" max="90" value="45"></label><label>Azimuth °<input id="azimuth" type="number" min="0" max="360" value="0"></label><span>Azimuth clockwise from north · tilt from horizontal</span></div>
-    <div class="slice-meta"><span id="slice-summary">Sections are reconstructed from DHE faces.</span><span>↑ / ↓ or scroll over the slider</span></div>
-  </div>
-</section>
 </main>
 <footer><span id="status" role="status" aria-live="polite">Starting workspace…</span><span id="model-count">DHE · 2D + 1D transition space</span></footer>
 <dialog id="osm-dialog"><form method="dialog"><div class="dialog-heading"><h2>Download OSM buildings</h2><button class="icon-button" aria-label="Close">×</button></div></form>
@@ -135,6 +151,7 @@
   <p class="hint">Overlapping groups are unioned automatically. Touching neighbours stay separate.</p>
   <label>Initial extrusion ΔZ<input id="initial-height" type="number" min="0.000001" value="5"></label>
   <button id="load-default" class="source-card"><strong>↗ Open default dataset</strong><span id="default-path">osm_data1.shp</span></button>
+  <button id="import-osm" class="source-card"><strong>⌖ Download OSM buildings</strong><span>Draw an area or enter a longitude / latitude BBOX.</span></button>
   <label class="upload-card">＋ Choose a polygon dataset<input id="upload-file" type="file" multiple accept=".zip,.gpkg,.geojson,.json,.shp,.shx,.dbf,.prj,.cpg,.qix,.sbn,.sbx"><span>GeoJSON · GeoPackage · ZIP or .shp + .shx + .dbf (+ .prj/.cpg), 100 MiB combined</span></label>
   <div id="upload-fields" hidden><label>Layer<select id="upload-layer"></select></label><p id="upload-metadata" class="hint"></p><label>CRS, if missing<input id="upload-crs" placeholder="e.g. EPSG:2180"></label><label>Coordinate interpretation<select id="crs-choice"><option value="">Choose interpretation…</option><option value="declared">Use declared CRS</option><option value="override">Override declared CRS</option></select></label><label id="override-field" hidden>Interpret existing coordinates as<input id="override-crs" placeholder="e.g. EPSG:4326"></label><button id="load-upload" class="primary">Load uploaded layer</button></div>
   <p id="import-message" class="hint"></p>
@@ -143,7 +160,7 @@
 <dialog id="automatic-dialog"><form method="dialog"><div class="dialog-heading"><h2>Automatic generalization</h2><button class="icon-button" aria-label="Close">×</button></div></form>
   <p class="hint">Selected polygons become one feature. All levels are constructed privately, then the final result is displayed. Failure or cancellation preserves the original map.</p>
   <label>Starting scale 1:M<input id="auto-scale" type="number" value="10000" min="1"></label>
-  <div class="form-grid"><label>Scale multiplier<input id="auto-multiplier" type="number" value="2" min="1.01" step=".1"></label><label>Top-up ΔZ<input id="auto-dz" type="number" value="10" min=".000001"></label></div>
+  <div class="form-grid"><label>Scale multiplier<input id="auto-multiplier" type="number" value="2" min="1.01" step=".1"></label><label>Transition increment ΔZ<input id="auto-dz" type="number" value="10" min=".000001"></label></div>
   <label>Final representation<select id="auto-kind"><option value="automatic">Automatic</option><option value="polygon">Polygon</option><option value="point">Point</option><option value="polyline">Polyline</option></select></label>
   <label>Optional class constraint<select id="auto-class"><option value="">Geometry / topology only</option></select></label>
   <label>Maximum constructed levels<input id="auto-max-levels" type="number" value="20" min="1" max="100"></label>

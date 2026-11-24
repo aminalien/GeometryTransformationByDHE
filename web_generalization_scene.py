@@ -13,6 +13,7 @@ from generalization_geometry import feature_color
 from plane_slicing import PlaneSlicer,SlicePlane
 from web_generalization_data import json_value
 from web_space_export import ExportSnapshot
+from web_measurements import geometry_summary,comparison
 
 
 def rgba(owner):return [round(v*255) for v in feature_color(int(owner))]
@@ -142,6 +143,12 @@ class WebScene:
             cursor=session.cursor,history=[dict(index=i,label=s.description,step_id=s.step_id,z=s.z) for i,s in enumerate(session.history)],
             operation=json_value(asdict(state.operation)) if state.operation else None,
             automatic_report=json_value(getattr(session,'last_automatic_report',None)))
+        baseline=session.state if proposal else session.history[max(0,session.cursor-1)]
+        self.payload['measurements']=comparison(
+            geometry_summary(f.geometry for f in baseline.features.values()),
+            geometry_summary(f.geometry for f in state.features.values()),scope='Whole current top',
+            before_label='Current model' if proposal else ('Previous step' if session.cursor else 'Initial model'),
+            after_label='Preview' if proposal else 'Current model')
         metadata={}
         for historic in [*session.history[:session.cursor+1],state]:
             for owner,f in historic.features.items():
