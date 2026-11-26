@@ -350,6 +350,8 @@ def create_app(*,default_path=DEFAULT_WEB_DATA,initial_height=5.,autoload=True,w
     attach_mapping_routes(app,w,workspace_dependency=request_workspace)
     from web_space_export import attach_export_routes
     attach_export_routes(app,w,workspace_dependency=request_workspace)
+    from web_figure_export import attach_figure_export_routes
+    attach_figure_export_routes(app,request_workspace)
 
     @app.get('/api/state')
     def state(w=Depends(request_workspace)):

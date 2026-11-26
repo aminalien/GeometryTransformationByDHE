@@ -5,6 +5,7 @@ import {SimpleMeshLayer} from 'https://esm.sh/@deck.gl/mesh-layers@9.4.1?externa
 import {AmbientLight,DirectionalLight,LightingEffect,WebMercatorViewport} from '@deck.gl/core';
 import {fitCellCamera} from './cell_focus.js';
 import {createAtlasUI,createSlicePlayback} from './atlas_ui.js';
+import {captureFigure,encodeFigure,fileName,saveBlob,sliceExportParameters,exportCredit} from './figure_export.js';
 
 const $=id=>document.getElementById(id);
 const empty={type:'FeatureCollection',features:[]};
@@ -16,6 +17,7 @@ const state={scene:null,preview:null,section:null,revision:0,selected:new Set(),
   levelActions:[],levelStep:null,jobId:null,automaticReport:null,autoInputs:{},exporting:false,osmDestination:'generalize'};
 let mapping=null;
 let atlas=null,playback=null,resultKey='';
+let figureSnapshot=null,printUrl=null;
 const media=globalThis.matchMedia?.bind(globalThis);
 const motionDuration=duration=>media?.('(prefers-reduced-motion: reduce)').matches?0:duration;
 // Shared unit sphere: only the instance centres/colours/scales vary between cells.
@@ -32,8 +34,10 @@ function unitSphere(){
   return {attributes:{positions:{value:new Float32Array(positions),size:3},normals:{value:new Float32Array(normals),size:3}},indices:{value:new Uint16Array(indices),size:1}};
 }
 const sphereMesh=unitSphere();
-const lighting=new LightingEffect({ambient:new AmbientLight({color:[255,255,255],intensity:.65}),
-  sun:new DirectionalLight({color:[255,255,255],intensity:1,direction:[-1,-2,-3]})});
+function createLighting(){
+  return new LightingEffect({ambient:new AmbientLight({color:[255,255,255],intensity:.65}),
+    sun:new DirectionalLight({color:[255,255,255],intensity:1,direction:[-1,-2,-3]})});
+}
 const help={simplification:'Reduce boundary detail with a tolerance in metres.',smoothing:'Round corners using the existing Chaikin construction.',point:'Collapse to a point visible from every source boundary vertex.',polyline:'Collapse to a verified interior skeleton ridge or the existing fallback.',merging:'Grow the winner smoothly to the union of touching features.',aggregation:'Grow separate sources to one convex-hull target, retaining their lower DHE cells.'};
 function status(message,error=false){$('status').textContent=message;$('status').style.color=error?'#ffd4b2':'';atlas?.error(error?message:null);if(error)playback?.pause();}
 function number(id){const value=Number($(id).value);if(!Number.isFinite(value))throw new Error('Enter a finite value for '+id.replaceAll('-',' '));return value;}
@@ -56,17 +60,23 @@ const mini=new maplibregl.Map({container:'mini-map',style:baseStyle('light'),cen
 map.addControl(new maplibregl.NavigationControl({visualizePitch:true}),'top-right');
 map.addControl(new maplibregl.ScaleControl({unit:'metric'}),'bottom-left');
 function rendererError(error,layer){status(`3D renderer${layer?.id?' / '+layer.id:''}: ${error.message}`,true);console.error(error);}
-const overlay=new MapLibreOverlay({interleaved:true,layers:[],effects:[lighting],onError:rendererError});
+const overlay=new MapLibreOverlay({interleaved:true,layers:[],effects:[createLighting()],onError:rendererError});
 map.addControl(overlay);
 let themeStorage;try{themeStorage=globalThis.localStorage;}catch{}
-atlas=createAtlasUI({document,storage:themeStorage,matchMedia:media,
+atlas=createAtlasUI({document,storage:themeStorage,
   onTheme:theme=>{if(!state.backgroundExplicit&&['light','dark'].includes(state.background)){$('basemap').value=theme;changeBackground(theme,true).catch(e=>status(e.message,true));}render();},
   onLayout:()=>{map.resize();mini.resize();}});
 if(atlas.theme==='dark'){$('basemap').value='dark';state.background='dark';map.setStyle(baseStyle('dark'));mini.setStyle(baseStyle('dark'));}
 if(media?.('(max-width: 899px)').matches){
   document.querySelector('.view-controls').open=false;$('mini-panel').hidden=true;$('show-mini').hidden=false;
 }
-if(globalThis.ResizeObserver)new ResizeObserver(()=>{map.resize();mini.resize();}).observe($('map'));
+if(globalThis.ResizeObserver){
+  new ResizeObserver(()=>{map.resize();mini.resize();}).observe($('map'));
+  new ResizeObserver(([entry])=>{
+    const height=entry.target.offsetHeight;
+    document.body.style.setProperty('--slice-height',height+'px');
+  }).observe($('slice-panel'));
+}
 playback=createSlicePlayback({step:()=>number('slice-step'),position:()=>number('slice-value'),
   bounds:()=>[Number($('slice-slider').min),Number($('slice-slider').max)],
   ready:()=>!state.busy&&!state.sliceInFlight&&!state.sliceTimer,
@@ -358,52 +368,66 @@ function render(){
       new PathLayer({id:'prepared-input-boundaries',data:polygons.flatMap(p=>p.rings),getPath:d=>d,getColor:[21,94,82],getWidth:1,widthUnits:'pixels'})]});
     $('scene-title').textContent='Input preview — constructing DHE';return;
   }
+  const show3d=$('show-3d').checked&&!state.mode?.startsWith('osm');
+  overlay.setProps({layers:sceneLayers(scene,show3d,map.getZoom())});
+  if(!scene){
+    if(mapping?.active)$('scene-title').textContent='Mapping inputs · review before construction';
+    return;
+  }
+  $('scene-title').textContent=scene.preview?'Validated preview':mapping?.active?(show3d?'DHE two-layer mapping':'Mapping cross-section'):show3d?'DHE transition space':'Projected cross-section';
+  for(const id of ['primal','dual','fill','opacity','exaggeration','show-plane'])$(id).disabled=!$('show-3d').checked;
+}
+function sceneLayers(scene,show3d,zoom,forExport=false,labelTheme=atlas?.theme){
+  const zScale=number('exaggeration');
+  const position=(p,flat=false)=>[p[0],p[1],flat?0.04:p[2]*zScale];
   const inputLayers=[];
   if(mapping?.active){
     const polygons=[],paths=[],points=[];
     for(const f of mapping.inputFeatures()){
       const p=f.properties,g=f.geometry,c=p.side==='source'?[52,124,201,100]:[227,139,53,100];
-      const lift=ring=>ring.map(q=>zpoint([q[0],q[1],p.z],!$('show-3d').checked));
+      const lift=ring=>ring.map(q=>position([q[0],q[1],p.z],forExport?false:!$('show-3d').checked));
       const common={uid:p.uid,color:c,selected:p.selected,label:`${p.side} ${p.uid} · ${p.original_id}`};
       if(g.type==='Polygon'||g.type==='MultiPolygon')for(const rings of g.type==='Polygon'?[g.coordinates]:g.coordinates){polygons.push({...common,rings:rings.map(lift)});for(const ring of rings)paths.push({...common,path:lift(ring)});}
       else if(g.type==='LineString')paths.push({...common,path:lift(g.coordinates)});
-      else if(g.type==='Point')points.push({...common,position:zpoint([...g.coordinates,p.z],!$('show-3d').checked)});
+      else if(g.type==='Point')points.push({...common,position:position([...g.coordinates,p.z],forExport?false:!$('show-3d').checked)});
     }
     inputLayers.push(new SolidPolygonLayer({id:'mapping-input-fills',data:polygons,_full3d:true,getPolygon:d=>d.rings,getFillColor:d=>d.color,opacity:.35,material:false,pickable:true,onClick:i=>i.object&&mapping.pick(i.object.uid),onHover:i=>hover(i,d=>d.label)}));
     inputLayers.push(new PathLayer({id:'mapping-input-outlines',data:paths,getPath:d=>d.path,getColor:d=>d.color,getWidth:d=>d.selected?4:1.4,widthUnits:'pixels',pickable:true,onClick:i=>i.object&&mapping.pick(i.object.uid),onHover:i=>hover(i,d=>d.label)}));
     inputLayers.push(new ScatterplotLayer({id:'mapping-input-points',data:points,getPosition:d=>d.position,getFillColor:d=>d.color,getRadius:5,radiusUnits:'pixels',pickable:true,onClick:i=>i.object&&mapping.pick(i.object.uid)}));
   }
-  if(!scene){overlay.setProps({layers:inputLayers});if(mapping?.active)$('scene-title').textContent='Mapping inputs · review before construction';return;}
+  if(!scene)return inputLayers;
   topology();
-  const show3d=$('show-3d').checked&&!state.mode?.startsWith('osm');const primal=show3d&&$('primal').checked;
+  const primal=show3d&&$('primal').checked;
   const dual=show3d&&$('dual').checked;const chosen=state.edgeMap.get(state.edge);const layers=[...inputLayers];
-  const faceMap=state.faceMap;const opacity=number('opacity');
+  const faceMap=state.faceMap;const opacity=number('opacity');const fill=$('fill').checked;
+  const selected=forExport?new Set(state.selected):state.selected;
   if(primal){
-    if($('fill').checked)layers.push(new SolidPolygonLayer({id:'dhe-faces',data:scene.triangles.filter(t=>t.face!==chosen?.face),_full3d:true,
-      getPolygon:t=>t.polygon.map(p=>zpoint(p)),getFillColor:t=>faceMap.get(t.face).color,opacity,material:false,pickable:true,
+    if(fill)layers.push(new SolidPolygonLayer({id:'dhe-faces',data:scene.triangles.filter(t=>t.face!==chosen?.face),_full3d:true,
+      getPolygon:t=>t.polygon.map(p=>position(p)),getFillColor:t=>faceMap.get(t.face).color,opacity,material:false,pickable:true,
       onClick:(info,event)=>info.object&&pickFace(info.object.face,event),onHover:info=>hover(info,t=>`Cell ${faceMap.get(t.face).owners.join(' / ')} · DHE face ${t.face}`)}));
-    layers.push(new LineLayer({id:'primal-edges',data:scene.edges.slice(),getSourcePosition:e=>zpoint(e.source),getTargetPosition:e=>zpoint(e.target),
-      getColor:e=>e.color,getWidth:e=>state.selected.has(e.owner)?2:1,widthUnits:'pixels',opacity:.85,pickable:true,
+    layers.push(new LineLayer({id:'primal-edges',data:scene.edges.slice(),getSourcePosition:e=>position(e.source),getTargetPosition:e=>position(e.target),
+      getColor:e=>e.color,getWidth:e=>selected.has(e.owner)?2:1,widthUnits:'pixels',opacity:.85,pickable:true,
       onClick:info=>{if(info.object&&!state.mode)inspectEdge(info.object.edge);},onHover:info=>hover(info,e=>`Cell ${e.owner} · half-edge ${e.edge}`)}));
-    layers.push(new ScatterplotLayer({id:'primal-vertices',data:scene.vertices.slice(),getPosition:d=>zpoint(d.position),getFillColor:d=>d.color,getRadius:1.8,radiusUnits:'pixels',opacity:.9}));
+    layers.push(new ScatterplotLayer({id:'primal-vertices',data:scene.vertices.slice(),getPosition:d=>position(d.position),getFillColor:d=>d.color,getRadius:1.8,radiusUnits:'pixels',opacity:.9}));
     if(chosen){
-      layers.push(new SolidPolygonLayer({id:'selected-face',data:scene.triangles.filter(t=>t.face===chosen.face),_full3d:true,getPolygon:t=>t.polygon.map(p=>zpoint(p)),getFillColor:rgba(chosen.owner),opacity:.5,material:false}));
-      layers.push(new LineLayer({id:'current-halfedge',data:[chosen],getSourcePosition:e=>zpoint(e.source),getTargetPosition:e=>zpoint(e.target),getColor:[235,43,54],getWidth:3,widthUnits:'pixels'}));
+      if(fill||!forExport)layers.push(new SolidPolygonLayer({id:'selected-face',data:scene.triangles.filter(t=>t.face===chosen.face),_full3d:true,getPolygon:t=>t.polygon.map(p=>position(p)),getFillColor:rgba(chosen.owner),opacity:.5,material:false}));
+      layers.push(new LineLayer({id:'current-halfedge',data:[chosen],getSourcePosition:e=>position(e.source),getTargetPosition:e=>position(e.target),getColor:[235,43,54],getWidth:3,widthUnits:'pixels'}));
     }
   }
   if(dual){
     const nodes=scene.duals.filter(d=>$('exterior').checked||d.owner!==null);
+    const dualSize=number('dual-size');
     if($('dual-style').value==='spheres'){
       const latitude=(scene.bounds[1]+scene.bounds[3])/2;
-      const radius=number('dual-size')*40075016.686*Math.cos(latitude*Math.PI/180)/(512*2**map.getZoom());
-      layers.push(new SimpleMeshLayer({id:'dual-vertices',data:nodes,mesh:sphereMesh,getPosition:d=>zpoint(d.position),getColor:d=>d.color,
+      const radius=dualSize*40075016.686*Math.cos(latitude*Math.PI/180)/(512*2**zoom);
+      layers.push(new SimpleMeshLayer({id:'dual-vertices',data:nodes,mesh:sphereMesh,getPosition:d=>position(d.position),getColor:d=>d.color,
         sizeScale:radius,getScale:[1,1,1],material:{ambient:.4,diffuse:.7,shininess:32,specularColor:[180,180,180]},
         pickable:true,onHover:info=>hover(info,d=>'Dual vertex · cell '+d.id)}));
-    }else layers.push(new ScatterplotLayer({id:'dual-vertices',data:nodes,getPosition:d=>zpoint(d.position),getFillColor:d=>d.color,getRadius:number('dual-size'),radiusUnits:'pixels',stroked:true,getLineColor:[22,43,44],lineWidthUnits:'pixels',getLineWidth:1,pickable:true,onHover:info=>hover(info,d=>'Dual vertex · cell '+d.id)}));
-    layers.push(new LineLayer({id:'dual-edges',data:scene.dual_edges.filter(d=>$('exterior').checked||!d.exterior),getSourcePosition:d=>zpoint(d.source),getTargetPosition:d=>zpoint(d.target),
+    }else layers.push(new ScatterplotLayer({id:'dual-vertices',data:nodes,getPosition:d=>position(d.position),getFillColor:d=>d.color,getRadius:dualSize,radiusUnits:'pixels',stroked:true,getLineColor:[22,43,44],lineWidthUnits:'pixels',getLineWidth:1,pickable:true,onHover:info=>hover(info,d=>'Dual vertex · cell '+d.id)}));
+    layers.push(new LineLayer({id:'dual-edges',data:scene.dual_edges.filter(d=>$('exterior').checked||!d.exterior),getSourcePosition:d=>position(d.source),getTargetPosition:d=>position(d.target),
       getColor:d=>d.exterior?[145,67,194]:d.source[2]===d.target[2]?[38,156,116]:[229,131,57],getWidth:number('dual-width'),widthUnits:'pixels',pickable:true,
       onClick:info=>info.object&&inspectEdge(faceMap.get(info.object.face)?.edge||info.object.edge),onHover:info=>hover(info,d=>'Dual '+(d.kind||'face')+' interface · '+d.owners.join(' ↔ '))}));
-    if($('dual-labels').checked)layers.push(new TextLayer({id:'dual-labels',data:nodes,getPosition:d=>zpoint(d.position),getText:d=>'d'+d.id,getSize:12,getPixelOffset:[9,-9],getColor:atlas?.theme==='dark'?[238,244,235]:[20,45,44],getTextAnchor:'start'}));
+    if($('dual-labels').checked)layers.push(new TextLayer({id:'dual-labels',data:nodes,getPosition:d=>position(d.position),getText:d=>'d'+d.id,getSize:12,getPixelOffset:[9,-9],getColor:labelTheme==='dark'?[238,244,235]:[20,45,44],getTextAnchor:'start'}));
   }
   const section=state.section;
   if(section&&section.revision===(mapping?.active?mapping.revision:state.revision)&&section.preview_id===(scene.preview_id||null)){
@@ -411,10 +435,10 @@ function render(){
     for(const f of $('show-sections').checked?section.features.features:[]){
       const g=f.geometry,p=f.properties;
       if(g.type==='Polygon'){
-        if(!flat||Math.abs(section.normal[2])>1e-12)polygons.push({rings:g.coordinates.map(r=>r.map(q=>zpoint(q,flat))),...p});
-        for(const ring of g.coordinates)paths.push({path:ring.map(q=>zpoint(q,flat)),...p});
-      }else if(g.type==='Point')points.push({position:zpoint(g.coordinates,flat),...p});
-      else paths.push({path:g.coordinates.map(q=>zpoint(q,flat)),...p});
+        if(!flat||Math.abs(section.normal[2])>1e-12)polygons.push({rings:g.coordinates.map(r=>r.map(q=>position(q,flat))),...p});
+        for(const ring of g.coordinates)paths.push({path:ring.map(q=>position(q,flat)),...p});
+      }else if(g.type==='Point')points.push({position:position(g.coordinates,flat),...p});
+      else paths.push({path:g.coordinates.map(q=>position(q,flat)),...p});
     }
     if($('show-sections').checked){
     layers.push(new SolidPolygonLayer({id:'slice-fills',data:polygons,_full3d:true,getPolygon:d=>d.rings,getFillColor:d=>d.color,opacity:show3d?0.73:0.58,material:false,pickable:true,onClick:info=>info.object&&selectFeature(info.object.owner,true),onHover:info=>hover(info,d=>`Section · cell ${d.owner}`)}));
@@ -422,14 +446,12 @@ function render(){
     layers.push(new ScatterplotLayer({id:'slice-points',data:points,getPosition:d=>d.position,getFillColor:d=>d.color,getRadius:5,radiusUnits:'pixels',stroked:true,getLineColor:[255,255,255],getLineWidth:1,lineWidthUnits:'pixels'}));
     }
     if(show3d&&$('show-plane').checked&&section.outline.length>=3){
-      const ring=section.outline.map(q=>zpoint(q));
+      const ring=section.outline.map(q=>position(q));
       layers.push(new SolidPolygonLayer({id:'cutting-plane',data:[ring],_full3d:true,getPolygon:d=>d,getFillColor:[133,73,163],opacity:.075,material:false}));
       layers.push(new PathLayer({id:'plane-outline',data:[[...ring,ring[0]]],getPath:d=>d,getColor:[133,73,163,150],getWidth:1,widthUnits:'pixels'}));
     }
   }
-  overlay.setProps({layers});
-  $('scene-title').textContent=scene.preview?'Validated preview':mapping?.active?(show3d?'DHE two-layer mapping':'Mapping cross-section'):show3d?'DHE transition space':'Projected cross-section';
-  for(const id of ['primal','dual','fill','opacity','exaggeration','show-plane'])$(id).disabled=!$('show-3d').checked;
+  return layers;
 }
 function rgba(k){return displayScene().duals.find(d=>d.owner===k)?.color||[26,120,105,255];}
 
@@ -487,6 +509,7 @@ function exportControls(){
   const scene=displayScene(),available=Boolean(scene?.snapshot_id)&&!state.inputPreview;
   for(const id of ['export-primal','export-duality','export-primal-edges','export-dual-edges','export-coordinates'])$(id).disabled=!available||state.busy||state.exporting;
   $('export-details').textContent=available?`${scene.workspace==='mapping'?'Mapping':'Generalize'} · ${scene.preview?'validated preview':'validated model'} · ${scene.cells} cells/primitives · ${scene.crs}${scene.stale?' · built from an earlier review':''}`:'Load or build a validated model to export.';
+  updateFigureControls(scene,available);
   topology();const edge=state.edgeMap.get(state.edge);
   $('focus-cell').disabled=!edge||!state.mapReady||Boolean(state.inputPreview);
   $('focus-cell').textContent=edge?`Zoom to cell ${edge.owner}`:'Zoom to current cell';
@@ -498,15 +521,105 @@ async function downloadSpace(kind){
   try{
     const response=await fetch('/api/export/'+kind+'?'+q);
     if(!response.ok){const error=await response.json();throw new Error(error.detail||'Export failed.');}
-    const blob=await response.blob(),url=URL.createObjectURL(blob),a=document.createElement('a');
-    a.href=url;a.download=response.headers.get('Content-Disposition')?.match(/filename="([^"]+)"/)?.[1]||('dhe_'+kind+(kind==='primal'?'.zip':kind==='duality'?'.json':'.obj'));
-    a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+    const name=response.headers.get('Content-Disposition')?.match(/filename="([^"]+)"/)?.[1]||('dhe_'+kind+(kind==='primal'?'.zip':kind==='duality'?'.json':'.obj'));
+    saveBlob(await response.blob(),name);
     $('export-message').textContent=`Downloaded ${kind} from snapshot ${scene.snapshot_id.slice(0,8)}.`;
   }catch(error){$('export-message').textContent=error.message;status(error.message,true);}
   finally{state.exporting=false;exportControls();}
 }
 $('export-primal').onclick=()=>downloadSpace('primal');$('export-duality').onclick=()=>downloadSpace('duality');
 $('export-primal-edges').onclick=()=>downloadSpace('primal-edges');$('export-dual-edges').onclick=()=>downloadSpace('dual-edges');
+
+function updateFigureControls(scene,available){
+  const slices=$('figure-content').value==='slices';
+  const format=$('figure-format').value;
+  const bounds=available?scene.z_bounds:null;
+  $('figure-3d-options').hidden=slices;
+  $('figure-slice-options').hidden=!slices;
+  const boundsKey=bounds?scene.snapshot_id:null;
+  if(boundsKey!==figureSnapshot){
+    figureSnapshot=boundsKey;
+    const [lower,upper]=bounds||['',''];
+    for(const id of ['figure-start-z','figure-end-z']){
+      $(id).min=lower;$(id).max=upper;
+    }
+    $('figure-start-z').value=lower;$('figure-end-z').value=upper;
+    if(bounds&&lower===upper)$('figure-count').value=1;
+    $('figure-z-bounds').textContent=bounds?`Min Z ${lower} m · Max Z ${upper} m`:'Min Z — · Max Z —';
+  }
+  const google=state.background.startsWith('google-');
+  if(google)$('figure-background').checked=false;
+  $('figure-background').disabled=google||state.exporting;
+  $('figure-background-note').hidden=!google;
+  $('figure-background-note').textContent='Google Map Tiles cannot be included in saved figures. Select another background to include a basemap.';
+  const layers=['Primal '+($('primal').checked?'on':'off'),'Dual '+($('dual').checked?'on':'off')];
+  if($('primal').checked)layers.push('Fill cells '+($('fill').checked?'on':'off'));
+  $('figure-layer-note').textContent=layers.join(' · ')+'. Change these layers in Scene display.';
+  $('figure-format-note').textContent=slices
+    ?(format==='pdf'?'One vector PDF page per slice.':'One image per slice in a ZIP file.')
+    :(['pdf','svg'].includes(format)?'Contains the rendered 3D image.':'');
+  $('figure-end-z').disabled=state.exporting||Number($('figure-count').value)===1;
+  for(const id of ['figure-content','figure-format','figure-count','figure-start-z'])$(id).disabled=state.exporting;
+  const blocked=!available||state.busy||state.exporting||(slices?!bounds:!state.mapReady||Boolean(state.mode));
+  $('figure-download').disabled=blocked;
+  $('figure-print').disabled=blocked;
+}
+async function exportSlices(scene,format){
+  const field=id=>$(id).value===''?NaN:Number($(id).value);
+  const parameters=sliceExportParameters(field('figure-count'),field('figure-start-z'),field('figure-end-z'),scene.z_bounds);
+  const response=await fetch('/api/export/slices',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({...parameters,workspace_name:scene.workspace||'generalize',snapshot_id:scene.snapshot_id,format})});
+  if(!response.ok){
+    const {detail}=await response.json();
+    throw new Error(Array.isArray(detail)?detail.map(item=>item.msg).join(', '):detail||'Slice export failed.');
+  }
+  return response.blob();
+}
+async function export3D(scene,format){
+  const include=$('figure-background').checked;
+  const background=include?state.background:'blank';
+  const style=include?baseStyle(background):{version:8,sources:{},layers:[]};
+  const zoom=map.getZoom();
+  const angle=$('show-3d').checked?{pitch:map.getPitch(),bearing:map.getBearing()}:state.camera||{pitch:55,bearing:-20};
+  const canvas=await captureFigure({Map:maplibregl.Map,Overlay:MapLibreOverlay,style,
+    camera:{center:map.getCenter(),zoom,padding:map.getPadding(),...angle},
+    width:$('map').clientWidth,height:$('map').clientHeight,
+    layers:sceneLayers(scene,true,zoom,true,include?atlas.theme:'light'),effects:[createLighting()],transparent:!include,
+    credit:include?exportCredit(background,state.custom?.credit):''});
+  return encodeFigure(canvas,format);
+}
+async function exportFigure(print=false){
+  if($(print?'figure-print':'figure-download').disabled)return;
+  const scene=displayScene(),slices=$('figure-content').value==='slices';
+  const format=print?'pdf':$('figure-format').value;
+  const printWindow=print?window.open('about:blank','_blank'):null;
+  if(printWindow)printWindow.opener=null;
+  const link=$('figure-print-link');
+  if(printUrl){URL.revokeObjectURL(printUrl);printUrl=null;link.hidden=true;link.removeAttribute('href');}
+  state.exporting=true;exportControls();
+  const message=$('figure-message');
+  message.textContent=slices?'Preparing slices…':'Rendering 3D figure…';
+  try{
+    const blob=slices?await exportSlices(scene,format):await export3D(scene,format);
+    if(print){
+      printUrl=URL.createObjectURL(blob);
+      if(printWindow&&!printWindow.closed)printWindow.location.replace(printUrl);
+      else{link.href=printUrl;link.hidden=false;}
+      message.textContent='PDF ready. Use Print in the PDF viewer.';
+    }else{
+      const extension=slices&&format!=='pdf'?'zip':format==='jpeg'?'jpg':format;
+      saveBlob(blob,fileName(scene,slices?'slices':'3d',extension));
+      message.textContent='Download ready.';
+    }
+  }catch(error){
+    printWindow?.close();
+    message.textContent=error.message;
+  }finally{state.exporting=false;exportControls();}
+}
+for(const id of ['figure-content','figure-format','figure-count'])$(id).addEventListener('input',exportControls);
+$('figure-download').onclick=()=>exportFigure();
+$('figure-print').onclick=()=>exportFigure(true);
+
 $('focus-cell').onclick=guard(()=>{
   topology();const edge=state.edgeMap.get(state.edge);if(!edge)throw new Error('Select a half-edge first.');
   const unique=new Map();for(const e of state.edgesByCell.get(edge.owner)||[])for(const p of [e.source,e.target])unique.set(p.join(','),zpoint(p,!$('show-3d').checked));

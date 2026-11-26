@@ -107,8 +107,7 @@ vm.runInContext(await fs.readFile(new URL('./web_generalization/mapping.js',impo
 const source=await fs.readFile(new URL('./web_generalization/app.js',import.meta.url),'utf8');
 const module=new vm.SourceTextModule(source,{context});
 await module.link(async specifier=>{
-  if(specifier==='./cell_focus.js')return new vm.SourceTextModule(await fs.readFile(new URL('./web_generalization/cell_focus.js',import.meta.url),'utf8'),{context});
-  if(specifier==='./atlas_ui.js')return new vm.SourceTextModule(await fs.readFile(new URL('./web_generalization/atlas_ui.js',import.meta.url),'utf8'),{context});
+  if(specifier.startsWith('./'))return new vm.SourceTextModule(await fs.readFile(new URL('./web_generalization/'+specifier.slice(2),import.meta.url),'utf8'),{context});
   const exports=specifier==='maplibre-gl'?{Map:FakeMap,Marker,NavigationControl:class{},ScaleControl:class{}}:
     specifier.includes('/maplibre@')?{MapLibreOverlay:Overlay}:{...Object.fromEntries(['SolidPolygonLayer','PathLayer','LineLayer','ScatterplotLayer','TextLayer','SimpleMeshLayer','AmbientLight','DirectionalLight','LightingEffect'].map(key=>[key,Layer])),WebMercatorViewport:FocusViewport};
   return new vm.SyntheticModule(Object.keys(exports),function(){for(const [key,value] of Object.entries(exports))this.setExport(key,value);},{context});
@@ -126,6 +125,14 @@ await el('toggle-results').emit('click');assert.equal(el('toggle-results')['aria
 await el('close-results').emit('click');assert.equal(el('toggle-results')['aria-expanded'],'false');
 await el('toggle-workflow').emit('click');assert.equal(el('toggle-workflow')['aria-expanded'],'true');
 await el('close-workflow').emit('click');assert.equal(el('toggle-workflow')['aria-expanded'],'false');
+await el('toggle-exports').emit('click');assert.equal(el('toggle-exports')['aria-expanded'],'true');
+documentEvents.keydown({key:'Escape'});assert.equal(el('toggle-exports')['aria-expanded'],'false');
+el('figure-content').value='slices';await el('figure-content').emit('input');
+assert.match(el('figure-z-bounds').textContent,/Min Z 0 m · Max Z 5 m/);
+el('figure-count').value='3';await el('figure-count').emit('input');
+el('figure-format').value='svg';await el('figure-format').emit('input');
+await el('figure-download').emit('click');assert.equal(downloads.at(-1).blob.type,'application/zip');
+assert.match(downloads.at(-1).filename,/_slices_.*\.zip$/);
 const revision=context.window.dheAtlas.revision;
 assert.equal(el('focus-cell').disabled,true);assert.equal(el('export-primal').disabled,false);
 await el('export-primal').emit('click');assert.ok(downloads.at(-1).filename.endsWith('.zip'));

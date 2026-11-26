@@ -3,6 +3,7 @@ from io import BytesIO
 from dataclasses import replace
 import json
 from pathlib import Path
+import re
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -234,6 +235,53 @@ class SpaceExportApiTests(unittest.TestCase):
 
     def request(self,kind='duality',snapshot=None,workspace='generalize',**extra):
         return self.client.get('/api/export/'+kind,params=dict(workspace_name=workspace,snapshot_id=snapshot or self.w.scene.export.snapshot_id,**extra))
+
+    def slices(self, **extra):
+        body = dict(workspace_name='generalize', snapshot_id=self.w.scene.export.snapshot_id,
+                    start_z=0, end_z=5, count=3, format='svg')
+        return self.client.post('/api/export/slices', json={**body, **extra})
+
+    def test_slice_exports_format_and_elevation_order(self):
+        self.assertEqual(self.w.scene.payload['z_bounds'], (0, 5))
+        with ZipFile(BytesIO(self.slices().content)) as archive:
+            self.assertEqual(archive.namelist(), ['slice_01.svg', 'slice_02.svg', 'slice_03.svg'])
+            for name, z in zip(archive.namelist(), ('0', '2.5', '5')):
+                svg = archive.read(name).decode()
+                self.assertIn(f'Z = {z} m', svg)
+                self.assertNotIn('<image', svg)
+        for format, extension, signature in [('png', 'png', b'\x89PNG'), ('jpeg', 'jpg', b'\xff\xd8')]:
+            with ZipFile(BytesIO(self.slices(format=format, count=1, start_z=3).content)) as archive:
+                self.assertTrue(archive.read(f'slice_01.{extension}').startswith(signature))
+                self.assertEqual(len(archive.namelist()), 1)
+        pdf = self.slices(format='pdf')
+        self.assertEqual(pdf.headers['content-type'], 'application/pdf')
+        self.assertTrue(pdf.content.startswith(b'%PDF'))
+        self.assertEqual(len(re.findall(rb'/Type /Page\b', pdf.content)), 3)
+
+    def test_slice_export_rejects_invalid_or_expired_requests(self):
+        self.assertEqual(self.slices(start_z=4, end_z=3).status_code, 400)
+        self.assertEqual(self.slices(start_z=0, end_z=0).status_code, 400)
+        self.assertEqual(self.slices(start_z=-1).status_code, 400)
+        self.assertEqual(self.slices(count=51).status_code, 422)
+        self.assertEqual(self.slices(count=1.5).status_code, 422)
+        self.assertEqual(self.slices(snapshot_id='expired').status_code, 409)
+        result = self.w.execute('preview', self.w.revision, operation='point', selected=[1])
+        preview = self.w.preview_scene
+        answer = self.slices(snapshot_id=preview.export.snapshot_id, start_z=preview.payload['z_bounds'][1],
+                             end_z=preview.payload['z_bounds'][1], count=1)
+        self.assertEqual(answer.status_code, 200, result)
+        self.assertEqual(self.w.scene.payload['z_bounds'], (0, 5))
+
+    def test_slice_export_pins_mapping_scene(self):
+        for side in ('source', 'target'):
+            self.w.execute('mapping:load', self.w.mapping.revision, side=side)
+        self.w.execute('mapping:build', self.w.mapping.revision)
+        scene = self.w.mapping.result
+        start_z, end_z = scene.payload['z_bounds']
+        answer = self.slices(workspace_name='mapping', snapshot_id=scene.export.snapshot_id,
+                             start_z=start_z, end_z=end_z, format='pdf')
+        self.assertEqual(answer.status_code, 200)
+        self.assertIn('dhe_mapping_slices_', answer.headers['content-disposition'])
 
     def test_downloads_validation_and_no_construction_on_export(self):
         before=_core();revision=self.w.revision

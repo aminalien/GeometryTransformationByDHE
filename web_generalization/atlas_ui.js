@@ -1,9 +1,10 @@
 /* Presentation only: scientific state and geometry remain owned by the app/server. */
 export const formatNumber=value=>value==null?'—':new Intl.NumberFormat('en',{maximumFractionDigits:2}).format(value);
 
-export function createAtlasUI({document,storage,matchMedia,onTheme,onLayout}){
+export function createAtlasUI({document,storage,onTheme,onLayout}){
   const $=id=>document.getElementById(id);
-  let theme='light',resultsOpen=Boolean(matchMedia?.('(min-width: 1440px)').matches),workflowOpen=false;
+  const drawers={workflow:['toggle-workflow','close-workflow'],results:['toggle-results','close-results'],exports:['toggle-exports','close-exports']};
+  let theme='light',openDrawer=null;
   try{theme=storage?.getItem('lts-theme')==='dark'?'dark':'light';}catch{}
   function applyTheme(){
     document.documentElement.dataset.theme=theme;
@@ -11,10 +12,11 @@ export function createAtlasUI({document,storage,matchMedia,onTheme,onLayout}){
     $('theme-toggle').setAttribute('aria-pressed',String(theme==='dark'));
   }
   function layout(){
-    document.body.classList.toggle('results-open',resultsOpen);
-    document.body.classList.toggle('workflow-open',workflowOpen);
-    $('toggle-results').setAttribute('aria-expanded',String(resultsOpen));
-    $('toggle-workflow').setAttribute('aria-expanded',String(workflowOpen));
+    document.body.classList.toggle('drawer-open',Boolean(openDrawer));
+    for(const [name,[toggle]] of Object.entries(drawers)){
+      document.body.classList.toggle(name+'-open',openDrawer===name);
+      $(toggle).setAttribute('aria-expanded',String(openDrawer===name));
+    }
     onLayout?.();
   }
   $('theme-toggle').onclick=()=>{
@@ -22,11 +24,24 @@ export function createAtlasUI({document,storage,matchMedia,onTheme,onLayout}){
     try{storage?.setItem('lts-theme',theme);}catch{}
     onTheme?.(theme);
   };
-  $('toggle-results').onclick=()=>{resultsOpen=!resultsOpen;workflowOpen=false;layout();};
-  $('close-results').onclick=()=>{resultsOpen=false;layout();$('toggle-results').focus?.();};
-  $('toggle-workflow').onclick=()=>{workflowOpen=!workflowOpen;resultsOpen=false;layout();};
-  $('close-workflow').onclick=()=>{workflowOpen=false;layout();$('toggle-workflow').focus?.();};
-  document.addEventListener('keydown',e=>{if(e.key==='Escape'){workflowOpen=false;if(!matchMedia?.('(min-width: 1440px)').matches)resultsOpen=false;layout();}});
+  function closeDrawer(restoreFocus){
+    const toggle=drawers[openDrawer]?.[0];
+    if(!toggle)return;
+    openDrawer=null;layout();
+    if(restoreFocus)$(toggle).focus?.();
+  }
+  for(const [name,[toggle,close]] of Object.entries(drawers)){
+    $(toggle).onclick=()=>{openDrawer=openDrawer===name?null:name;layout();};
+    $(close).onclick=()=>closeDrawer(true);
+  }
+  $('toggle-slice-options').onclick=()=>{
+    const advanced=$('slice-advanced');
+    advanced.hidden=!advanced.hidden;
+    $('toggle-slice-options').setAttribute('aria-expanded',String(!advanced.hidden));
+  };
+  document.addEventListener('keydown',e=>{
+    if(e.key==='Escape'&&!document.querySelector('dialog[open]'))closeDrawer(true);
+  });
   applyTheme();layout();
   const card=(label,value,unit='')=>{
     const div=document.createElement('div');div.className='metric';
@@ -55,7 +70,7 @@ export function createAtlasUI({document,storage,matchMedia,onTheme,onLayout}){
   }
   return {
     get theme(){return theme;},
-    closeWorkflow(){workflowOpen=false;layout();},
+    closeWorkflow(){if(openDrawer==='workflow')closeDrawer(false);},
     error(message,diagnostic){
       $('action-message').hidden=!message;$('action-message').textContent=message||'';
       if(diagnostic){diagnosticRows($('result-diagnostics'),diagnostic);$('research-diagnostics').open=true;}

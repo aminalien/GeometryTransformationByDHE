@@ -4,6 +4,21 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#f4f1ea">
   <meta name="description" content="LoD Transition Space: explore generalization, layer correspondence and DHE topology in an interactive scientific workspace.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://dhe-transition-atlas.onrender.com/">
+  <meta property="og:title" content="LoD Transition Space">
+  <meta property="og:description" content="Explore how map geometry changes across levels of detail in the interactive DHE atlas.">
+  <meta property="og:image" content="https://dhe-transition-atlas.onrender.com/assets/share-card.png">
+  <meta property="og:image:type" content="image/png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="LoD Transition Space title beside a 3D DHE model of building footprints changing across levels of detail.">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="LoD Transition Space">
+  <meta name="twitter:description" content="Explore how map geometry changes across levels of detail in the interactive DHE atlas.">
+  <meta name="twitter:image" content="https://dhe-transition-atlas.onrender.com/assets/share-card.png">
+  <meta name="twitter:image:alt" content="LoD Transition Space title beside a 3D DHE model of building footprints changing across levels of detail.">
+  <link rel="icon" type="image/png" sizes="48x48" href="/assets/favicon.png">
   <title>LoD Transition Space · LTS</title>
   <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@6.16.0/dist/maplibre-gl.css">
   <link rel="stylesheet" href="/assets/app.css">
@@ -14,7 +29,7 @@
 <header class="topbar">
   <div class="brand"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="m16 3 13 7-13 7L3 10Z M3 16l13 7 13-7M3 22l13 7 13-7"/></svg><div><strong>LoD Transition Space <small>LTS</small></strong><span>A spatial atlas of continuous change</span></div></div>
   <div class="dataset-pill"><i></i><span id="dataset-name">Connecting to workspace…</span></div>
-  <div class="top-actions"><button id="toggle-workflow" aria-controls="workflow-panel" aria-expanded="false">Workflow</button><button id="theme-toggle" aria-pressed="false">◐ Dark</button><button id="toggle-results" aria-controls="results-panel" aria-expanded="false">Results</button><button id="draw-bbox">⌖ OSM area</button><button id="open-import" class="primary">＋ Load data</button></div>
+  <div class="top-actions"><button id="toggle-workflow" aria-controls="workflow-panel" aria-expanded="false">Workflow</button><button id="toggle-results" aria-controls="results-panel" aria-expanded="false">Results</button><button id="toggle-exports" aria-controls="figure-export-panel" aria-expanded="false">Export / Print</button><button id="theme-toggle" aria-pressed="false">◐ Dark</button><button id="draw-bbox">⌖ OSM area</button><button id="open-import" class="primary">＋ Load data</button></div>
 </header>
 <main class="app-layout">
 <aside class="sidebar" id="workflow-panel" aria-label="Scientific workflow">
@@ -91,7 +106,6 @@
   <details class="load-notes"><summary id="notes-title">Import & construction notes</summary><div id="notes"></div></details>
 </aside>
 <section class="workspace" id="workspace-canvas" tabindex="-1" aria-label="Interactive transition space">
-  <div class="canvas-heading"><div><span class="eyebrow">LoD TRANSITION SPACE</span><span>Geometry in transition</span></div><span class="canvas-coordinate">X · Y · Z</span></div>
   <div id="action-message" class="action-message" role="alert" hidden></div>
   <div class="map-area">
     <div id="map" aria-label="DHE space over geographic background"></div>
@@ -113,12 +127,15 @@
     <div id="tooltip" class="tooltip" hidden></div>
     <div id="google-attribution" class="google-attribution" hidden></div>
   </div>
-  <div class="slice-panel">
-    <div class="slice-heading"><div><span class="eyebrow">SECTION / Z NAVIGATOR</span><strong id="slice-label">Horizontal · Z = 5</strong></div><div class="slice-options"><select id="orientation" aria-label="Plane orientation"><option>Horizontal</option><option>Vertical</option><option>Inclined</option></select><label>Step<input id="slice-step" type="number" min="0.000001" value="0.1" step="0.1"></label><button id="source-level" title="Jump to source Z">Zs</button><button id="target-level" title="Jump to target Z">Zt</button></div></div>
+  <div class="slice-panel" id="slice-panel" aria-label="Slice controls">
+    <div class="slice-heading"><strong id="slice-label">Horizontal · Z = 5</strong><button id="toggle-slice-options" aria-controls="slice-advanced" aria-expanded="false">Slice settings</button></div>
     <div class="slice-track"><button id="slice-play" aria-label="Play horizontal slices" aria-pressed="false">▶</button><button id="lower" aria-label="Lower slicing plane">−</button><input id="slice-slider" type="range" min="0" max="5" step="0.1" value="5" list="level-markers" aria-label="Slicing plane position"><datalist id="level-markers"></datalist><button id="raise" aria-label="Raise slicing plane">＋</button><input id="slice-value" type="number" value="5" step="0.1" aria-label="Slice value"></div>
+    <div id="slice-advanced" hidden>
+    <div class="slice-options"><select id="orientation" aria-label="Plane orientation"><option>Horizontal</option><option>Vertical</option><option>Inclined</option></select><label>Step<input id="slice-step" type="number" min="0.000001" value="0.1" step="0.1"></label><button id="source-level" title="Jump to source Z">Zs</button><button id="target-level" title="Jump to target Z">Zt</button></div>
     <div id="plane-angles" class="plane-angles" hidden><label id="tilt-field">Tilt °<input id="tilt" type="number" min="0" max="90" value="45"></label><label>Azimuth °<input id="azimuth" type="number" min="0" max="360" value="0"></label><span>Azimuth clockwise from north · tilt from horizontal</span></div>
     <div class="slice-visibility"><label class="check"><input id="show-sections" type="checkbox" checked>Slice features</label><label class="check"><input id="show-plane" type="checkbox">Slicing plane</label><span id="slice-bounds">Z 0 — 5</span></div>
     <div class="slice-meta"><span id="slice-summary">Sections are reconstructed from DHE faces.</span><span>↑ / ↓ to step · Z is a transition coordinate</span></div>
+    </div>
   </div>
 </section>
 <aside class="results-panel" id="results-panel" aria-label="Results and research diagnostics">
@@ -129,9 +146,28 @@
     <h3>Geometry comparison</h3><p id="comparison-label" class="hint"></p><div class="measurement-scroll"><table class="measurement-table"><thead><tr><th>Measure</th><th>Before</th><th>After</th><th>Change</th></tr></thead><tbody id="measurement-rows"></tbody></table></div><p id="geometry-types" class="hint"></p><p class="hint">Area and perimeter describe polygons only; vertices exclude ring closure duplicates. Measurements use projected metres. — indicates an unavailable value.</p>
     <h3>Construction records</h3><div id="result-diagnostics" class="diagnostic-tree"></div>
   </details>
+</aside>
+<aside class="figure-export-panel" id="figure-export-panel" aria-labelledby="figure-export-title">
+  <div class="results-heading"><h2 id="figure-export-title">Export / Print</h2><button id="close-exports" class="text-button">Close ×</button></div>
+  <p id="export-details" class="hint">Load a validated model to export.</p>
+  <label>Content<select id="figure-content"><option value="figure">3D figure</option><option value="slices">2D horizontal slices</option></select></label>
+  <div id="figure-3d-options">
+    <label class="check"><input id="figure-background" type="checkbox">Include background</label>
+    <p id="figure-background-note" class="hint" hidden></p>
+    <p id="figure-layer-note" class="hint">Uses Primal, Dual and Fill cells from Scene display.</p>
+  </div>
+  <div id="figure-slice-options" hidden>
+    <p id="figure-z-bounds" class="hint">Min Z — · Max Z —</p>
+    <label>Number of slices<input id="figure-count" type="number" min="1" max="50" step="1" value="5"></label>
+    <div class="form-grid"><label>Start Z (m)<input id="figure-start-z" type="number" step="any"></label><label>End Z (m)<input id="figure-end-z" type="number" step="any"></label></div>
+  </div>
+  <label>Format<select id="figure-format" aria-describedby="figure-format-note"><option value="png">PNG</option><option value="jpeg">JPEG</option><option value="pdf">PDF</option><option value="svg">SVG</option></select></label>
+  <p id="figure-format-note" class="hint"></p>
+  <div class="operation-actions"><button id="figure-download" class="primary" disabled>Download</button><button id="figure-print" disabled>Open PDF to print</button></div>
+  <p id="figure-message" class="hint" role="status" aria-live="polite"></p>
+  <a id="figure-print-link" target="_blank" rel="noopener" hidden>Open generated PDF</a>
   <section class="space-export">
-    <div class="section-title"><span>EXPORT SPACE</span></div>
-    <p id="export-details" class="hint">Load a validated model to export.</p>
+    <div class="section-title"><span>DHE GEOMETRY AND TOPOLOGY</span></div>
     <label>Coordinates<select id="export-coordinates"><option value="local">Local XY (metres)</option><option value="projected">Absolute projected CRS</option></select></label>
     <div class="operation-actions"><button id="export-primal" disabled>Primal OBJ</button><button id="export-duality" disabled>Duality JSON</button><button id="export-primal-edges" disabled>Primal edges OBJ</button><button id="export-dual-edges" disabled>Dual edges OBJ</button></div>
     <p class="hint">All bounded cells and raw Z. Primal OBJ ZIP includes faces, materials and metadata; JSON includes the graph and DHE pointers. Edge OBJ files contain each exact geometric segment once. Dual edges include finite face adjacency only, omitting VINF and Mapping contact links.</p>

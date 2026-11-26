@@ -216,6 +216,19 @@ class ExportSnapshot:
         except BaseException:output.close();raise
 
 
+def find_export_scene(workspace,workspace_name,snapshot_id):
+    with workspace.lock:
+        if workspace_name=='generalize':
+            candidates=[workspace.preview_scene,workspace.scene]
+            revision=workspace.revision
+        else:
+            with workspace.mapping.lock:
+                candidates=[workspace.mapping.preview,workspace.mapping.result]
+                revision=workspace.mapping.revision
+        scene=next((s for s in candidates if s is not None and s.export.snapshot_id==snapshot_id),None)
+        return scene,revision
+
+
 def attach_export_routes(app,workspace,*,workspace_dependency=None):
     from typing import Literal
     from fastapi import HTTPException,Depends
@@ -226,14 +239,9 @@ def attach_export_routes(app,workspace,*,workspace_dependency=None):
     @app.get('/api/export/{kind}')
     def download(kind:Literal['primal','duality','primal-edges','dual-edges'],workspace_name:Literal['generalize','mapping'],snapshot_id:str,
                  coordinates:Literal['local','projected']='local',workspace=Depends(dependency)):
-        with workspace.lock:
-            if workspace_name=='generalize':
-                candidates=[workspace.preview_scene,workspace.scene];revision=workspace.revision
-            else:
-                with workspace.mapping.lock:
-                    candidates=[workspace.mapping.preview,workspace.mapping.result];revision=workspace.mapping.revision
-            frozen=next((s.export for s in candidates if s is not None and s.export.snapshot_id==snapshot_id),None)
-            if frozen is None:raise HTTPException(409,'The displayed snapshot expired or changed. Refresh before exporting.')
+        scene,revision=find_export_scene(workspace,workspace_name,snapshot_id)
+        if scene is None:raise HTTPException(409,'The displayed snapshot expired or changed. Refresh before exporting.')
+        frozen=scene.export
         prefix=f'dhe_{workspace_name}_{kind}_{snapshot_id[:8]}'
         headers={'Cache-Control':'no-store','Content-Disposition':f'attachment; filename="{prefix}.json"'}
         if kind=='duality':return StreamingResponse(frozen.duality_chunks(coordinates,revision),media_type='application/json',headers=headers)

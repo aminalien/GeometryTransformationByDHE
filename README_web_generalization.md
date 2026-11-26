@@ -1,6 +1,12 @@
 # DHE Transition Atlas · local web workspace
 
-This browser application uses the existing Python generalization engine and actual DHE cells. It is independent of `main.py` and the desktop defaults. It provides interactive map/3D views rather than publication exports or quantitative evaluation.
+This browser application uses the existing Python generalization engine and actual DHE cells. It is independent of `main.py` and the desktop defaults. The map fills the browser viewport, with floating controls for the scientific workflow, results, and figure exports.
+
+## Export and print figures
+
+Open **Export / Print** to save the current validated model or preview. **3D figure** follows the current camera and the **Primal**, **Dual**, and **Fill cells** settings. Enable **Include background** to include a supported basemap and its credits. PNG preserves a transparent background when the basemap is off, and JPEG uses white. SVG and PDF embed the rendered 3D image.
+
+Choose **2D horizontal slices** to set the number of slices and the start and end elevations within the displayed Z bounds. The endpoints are included for multiple slices, and one slice uses Start Z. PNG, JPEG, and vector SVG slices download in a ZIP. PDF places each slice on a separate vector page at a consistent XY scale. Use **Open PDF to print** to open the browser PDF viewer. The same panel also provides DHE geometry and topology downloads.
 
 ## Run
 

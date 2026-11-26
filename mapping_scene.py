@@ -5,7 +5,7 @@ from shapely.ops import unary_union
 
 import DHECore as dhe
 from plane_slicing import PlaneSlicer,SlicePlane
-from web_generalization_scene import GeographicCoordinates,display_triangles,rgba,WebScene
+from web_generalization_scene import GeographicCoordinates,display_triangles,horizontal_bounds,rgba,WebScene
 from web_space_export import ExportSnapshot
 
 
@@ -29,6 +29,12 @@ class MappingScene:
         self.slicer.vertices=np.array([(e.V.x,e.V.y,e.V.z) for e in edges])
         self.slicer.minimum=self.slicer.vertices.min(axis=0);self.slicer.maximum=self.slicer.vertices.max(axis=0)
         self.slicer.center=(self.slicer.minimum+self.slicer.maximum)/2
+        self.section_edges={}
+        for cell in model.mapping_primitives:
+            if cell.mapping_dimension==1:
+                edge=cell.seed
+                self.section_edges[int(cell.feature_id)]=np.array(
+                    [(point.x,point.y,point.z) for point in (edge.V,edge.S.V)])
         self.features={o:g for o,g in result.geometries.items()
                        if result.metadata[o]['layer']=='target' and not result.metadata[o].get('intermediate',False)}
         records={};edge_faces={};triangles=[]
@@ -74,7 +80,7 @@ class MappingScene:
         bounds=[min(p[0] for p in coordinates),min(p[1] for p in coordinates),max(p[0] for p in coordinates),max(p[1] for p in coordinates)]
         self.payload=dict(revision=revision,preview_id=preview_id,preview=preview_id is not None,workspace='mapping',
             dataset='Mapping: '+result.report['source']+' → '+result.report['target'],crs=result.crs.to_string(),origin=list(result.origin),
-            levels=result.levels,bounds=bounds,features=dict(type='FeatureCollection',features=features),faces=faces,triangles=triangles,
+            levels=result.levels,z_bounds=horizontal_bounds(self.slicer),bounds=bounds,features=dict(type='FeatureCollection',features=features),faces=faces,triangles=triangles,
             halfedges=halfedges,edges=list(segments.values()),vertices=list(vertices.values()),duals=[*duals.values(),exterior],dual_edges=links,
             cells=len(cells),cursor=0,history=[dict(index=0,label='Validated two-layer mapping',step_id='mapping',z=result.levels['z_t'])],
             notes=['Actual DHE cells; Classic symbols use typed edge/sheet primitives.'],operation=None,automatic_report=None,mapping_report=result.report)
@@ -82,21 +88,22 @@ class MappingScene:
                                           payload=self.payload,cell_metadata=result.metadata)
         self.payload['snapshot_id']=self.export.snapshot_id
 
+    def section_parts(self,plane):
+        yield from WebScene.section_parts(self,plane)
+        for owner,points in self.section_edges.items():
+            ds=plane.signed_distance(points);bound=1e-8
+            if np.max(np.abs(ds))<=bound:
+                yield owner,LineString(plane.project(points))
+            elif ds[0]*ds[1]<=0 or min(abs(ds))<=bound:
+                t=float(ds[0]/(ds[0]-ds[1])) if ds[0]!=ds[1] else 0.
+                yield owner,Point(plane.project(points[0]+np.clip(t,0.,1.)*(points[1]-points[0])))
+
+    def section_owner_active(self,owner):
+        return owner in self.features or owner in self.section_edges
+
     def section(self,orientation,value,tilt=45.,azimuth=0.,*,include_sections=True,clamp_position=False):
         answer=WebScene.section(self,orientation,value,tilt,azimuth,include_sections=include_sections,clamp_position=clamp_position)
         value=answer['value']
-        plane=SlicePlane.horizontal(value) if orientation=='Horizontal' else SlicePlane.from_angles(self.slicer.center,90. if orientation=='Vertical' else tilt,azimuth,value)
-        if include_sections:
-            for c in self.result.model.mapping_primitives:
-                if c.mapping_dimension!=1:continue
-                e=c.seed;points=np.array([(e.V.x,e.V.y,e.V.z),(e.S.V.x,e.S.V.y,e.S.V.z)])
-                ds=plane.signed_distance(points);bound=1e-8
-                if np.max(np.abs(ds))<=bound:g=dict(type='LineString',coordinates=[self.geo.point(p) for p in points])
-                elif ds[0]*ds[1]<=0 or min(abs(ds))<=bound:
-                    t=float(ds[0]/(ds[0]-ds[1])) if ds[0]!=ds[1] else 0.
-                    g=dict(type='Point',coordinates=self.geo.point(points[0]+max(0.,min(1.,t))*(points[1]-points[0])))
-                else:continue
-                answer['features']['features'].append(dict(type='Feature',geometry=g,properties=dict(owner=int(c.feature_id),color=rgba(int(c.feature_id)),active=True)))
         present={f['properties']['owner'] for f in answer['features']['features']}
         answer['missing']=sorted(set(self.features)-present) if include_sections and orientation=='Horizontal' and value==self.result.levels['z_t'] else []
         return answer
